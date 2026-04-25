@@ -1,12 +1,27 @@
 {
+  "ambiguous_scenes": [],
+  "best_epoch": null,
   "claim_id": "mlflow-train-smoke__20260425T113803510623Z",
   "errors": [],
   "job_id": "mlflow-train-smoke",
+  "matched_scenes_count": null,
   "metrics": {
     "accepted_geojson_mb": null,
     "accepted_objects": null,
-    "best_val_iou": null
+    "epoch": 3.0,
+    "epoch_duration_sec": 0.200313,
+    "learning_rate": 0.0006,
+    "train/dice": 0.63,
+    "train/iou": 0.48,
+    "train/loss": 0.68,
+    "val/dice": 0.55,
+    "val/f1": 0.59,
+    "val/iou": 0.41,
+    "val/loss": 0.82,
+    "val/precision": 0.62,
+    "val/recall": 0.56
   },
+  "missing_scenes": [],
   "mlflow_run_url": "http://172.26.12.169:5000/#/experiments/7/runs/ec24ac933c8448aa8302457283b8b0f5",
   "s3_artifacts": {
     "accepted_geojson": null,
@@ -16,6 +31,10 @@
   "server": "roskadastr-ml",
   "status": "done",
   "task": "train",
+  "train_scene_count": null,
+  "train_tile_count": null,
+  "val_scene_count": null,
+  "val_tile_count": null,
   "warnings": [
     "Low disk free space: 9.763 GB below threshold 20.0 GB",
     "GPU backend is disabled/not available; running CPU-only"

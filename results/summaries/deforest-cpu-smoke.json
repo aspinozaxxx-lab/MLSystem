@@ -1,12 +1,15 @@
 {
+  "ambiguous_scenes": [],
+  "best_epoch": null,
   "claim_id": "deforest_cpu_smoke",
   "errors": [],
   "job_id": "deforest-cpu-smoke",
+  "matched_scenes_count": null,
   "metrics": {
     "accepted_geojson_mb": null,
-    "accepted_objects": null,
-    "best_val_iou": null
+    "accepted_objects": null
   },
+  "missing_scenes": [],
   "mlflow_run_url": "http://127.0.0.1:5000/#/experiments/6/runs/e4f27be38baa476eb2e4147c53f041be",
   "s3_artifacts": {
     "accepted_geojson": null,
@@ -16,6 +19,10 @@
   "server": "roskadastr-ml",
   "status": "done",
   "task": "status_check",
+  "train_scene_count": null,
+  "train_tile_count": null,
+  "val_scene_count": null,
+  "val_tile_count": null,
   "warnings": [
     "Low disk free space: 9.844 GB below threshold 20.0 GB",
     "GPU backend is disabled/not available; running CPU-only"
