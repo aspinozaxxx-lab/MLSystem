@@ -18,3 +18,5 @@ python -m src.web_app
 ```
 
 Default web port: 8010.
+
+Deployment is split between the code and infrastructure GitHub Actions workflows.
