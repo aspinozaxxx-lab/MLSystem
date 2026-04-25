@@ -51,6 +51,7 @@ jobs:
               mlflow = run.get("mlflow") or {}
               result = run.get("result") or {}
               metrics = dict(result.get("last_epoch_metrics") or {})
+              metrics.update(result.get("postprocess_metrics") or {})
               if result.get("best_val_iou") is not None:
                   metrics["best_val_iou"] = result.get("best_val_iou")
               metrics.setdefault("accepted_objects", None)

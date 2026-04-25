@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import gzip
 import json
 import math
 import random
@@ -11,11 +12,13 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 import boto3
+import geopandas as gpd
 import numpy as np
 import torch
 from rasterio.features import rasterize
+from rasterio.features import shapes as raster_shapes
 from rasterio.session import AWSSession
-from shapely.geometry import box, shape
+from shapely.geometry import box, mapping, shape
 from shapely.ops import transform as shapely_transform
 
 from .io_utils import write_json
@@ -229,6 +232,28 @@ class TinyUNet(torch.nn.Module):
         return self.dec(torch.cat([x, skip], dim=1))
 
 
+def _build_model(model_name: str, in_channels: int, out_channels: int, base_channels: int) -> torch.nn.Module:
+    normalized = model_name.lower()
+    if normalized in {"tiny", "tiny_unet", "tiny_unet_4ch"}:
+        return TinyUNet(in_channels=in_channels, out_channels=out_channels, base=base_channels)
+    encoders = {
+        "unet_resnet18": "resnet18",
+        "unet_resnet34": "resnet34",
+        "unet_resnet50": "resnet50",
+    }
+    if normalized in encoders:
+        import segmentation_models_pytorch as smp
+
+        return smp.Unet(
+            encoder_name=encoders[normalized],
+            encoder_weights=None,
+            in_channels=in_channels,
+            classes=out_channels,
+            activation=None,
+        )
+    raise ValueError(f"Unsupported model_name={model_name}. Supported: tiny_unet_4ch, unet_resnet18, unet_resnet34, unet_resnet50")
+
+
 def _normalize_image(arr: np.ndarray) -> np.ndarray:
     arr = arr.astype("float32", copy=False)
     arr[~np.isfinite(arr)] = 0.0
@@ -389,6 +414,130 @@ def _write_history(experiment_dir: Path, history: list[dict[str, float]]) -> lis
     return [json_path, csv_path]
 
 
+def _write_pseudolabel_outputs(
+    config: PipelineConfig,
+    job: JobSpec,
+    experiment_dir: Path,
+    model: torch.nn.Module,
+    device: torch.device,
+    matches: list[SceneMatch],
+    input_bands: list[int],
+    patch_size: int,
+    threshold: float,
+    seed: int,
+) -> tuple[dict[str, Any], list[Path]]:
+    import rasterio
+    from rasterio.windows import Window
+
+    pseudolabel_cfg = job.predict.get("pseudolabel") or job.params.get("pseudolabel") or {}
+    if not pseudolabel_cfg.get("enabled", False):
+        return {"enabled": False}, []
+
+    post_cfg = job.postprocess or {}
+    thresholds = post_cfg.get("thresholds") or [threshold]
+    threshold_used = float(thresholds[0])
+    max_objects = int(post_cfg.get("max_objects") or 500)
+    min_area_candidates = post_cfg.get("min_object_area_m2_candidates") or [1000]
+    simplify_candidates = post_cfg.get("simplify_tolerance_m_candidates") or [5]
+    min_area = float(min_area_candidates[0])
+    simplify_tolerance = float(simplify_candidates[0])
+    max_windows_per_scene = int(pseudolabel_cfg.get("max_windows_per_scene") or 2)
+    rng = random.Random(seed + 5000)
+    features: list[dict[str, Any]] = []
+    aws = _aws_session(config)
+    model.eval()
+    started = time.time()
+    with rasterio.Env(aws, AWS_HTTPS="NO", AWS_VIRTUAL_HOSTING="FALSE"):
+        for match in matches:
+            path = f"/vsis3/{config.storage.s3_bucket}/{match.key}"
+            with rasterio.open(path) as ds:
+                if ds.width < patch_size or ds.height < patch_size:
+                    windows = [(0, 0)]
+                else:
+                    windows = [
+                        (rng.randint(0, ds.width - patch_size), rng.randint(0, ds.height - patch_size))
+                        for _ in range(max_windows_per_scene)
+                    ]
+                for x, y in windows:
+                    window = Window(x, y, patch_size, patch_size)
+                    arr = ds.read(input_bands, window=window, boundless=True, fill_value=0)
+                    if np.count_nonzero(arr) == 0:
+                        continue
+                    sample = torch.from_numpy(_normalize_image(arr)[None, ...]).to(device)
+                    with torch.no_grad():
+                        prob = torch.sigmoid(model(sample))[0, 0].detach().cpu().numpy()
+                    mask = (prob >= threshold_used).astype("uint8")
+                    if not mask.any():
+                        continue
+                    transform = ds.window_transform(window)
+                    for geom, value in raster_shapes(mask, mask=mask.astype(bool), transform=transform):
+                        if value != 1:
+                            continue
+                        poly = shape(geom)
+                        if poly.is_empty:
+                            continue
+                        area = float(poly.area)
+                        if area < min_area:
+                            continue
+                        if simplify_tolerance > 0:
+                            poly = poly.simplify(simplify_tolerance, preserve_topology=True)
+                        features.append(
+                            {
+                                "type": "Feature",
+                                "properties": {
+                                    "scene": match.name,
+                                    "threshold": threshold_used,
+                                    "area_m2": float(poly.area),
+                                },
+                                "geometry": mapping(poly),
+                            }
+                        )
+
+    features.sort(key=lambda item: float(item["properties"].get("area_m2") or 0), reverse=True)
+    if len(features) > max_objects:
+        features = features[:max_objects]
+    payload = {
+        "type": "FeatureCollection",
+        "name": f"{job.job_id}_accepted",
+        "crs": {"type": "name", "properties": {"name": "urn:ogc:def:crs:EPSG::3857"}},
+        "features": features,
+    }
+    geojson_path = experiment_dir / "accepted.geojson"
+    geojson_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    gz_path = experiment_dir / "accepted.geojson.gz"
+    with gzip.open(gz_path, "wt", encoding="utf-8") as fh:
+        json.dump(payload, fh, ensure_ascii=False)
+    artifacts = [geojson_path, gz_path]
+    gpkg_path = experiment_dir / "accepted.gpkg"
+    try:
+        if features:
+            gdf = gpd.GeoDataFrame.from_features(features, crs="EPSG:3857")
+        else:
+            gdf = gpd.GeoDataFrame({"scene": [], "threshold": [], "area_m2": []}, geometry=[], crs="EPSG:3857")
+        gdf.to_file(gpkg_path, driver="GPKG")
+        artifacts.append(gpkg_path)
+    except Exception as exc:
+        (experiment_dir / "pseudolabel_gpkg_error.txt").write_text(f"{type(exc).__name__}: {exc}\n", encoding="utf-8")
+        artifacts.append(experiment_dir / "pseudolabel_gpkg_error.txt")
+
+    geojson_mb = geojson_path.stat().st_size / (1024 * 1024)
+    metrics = {
+        "pseudolabel_enabled": True,
+        "accepted_objects": len(features),
+        "accepted_geojson_mb": geojson_mb,
+        "total_area_m2": float(sum(float(item["properties"].get("area_m2") or 0) for item in features)),
+        "total_vertices": int(sum(len(item["geometry"].get("coordinates", [[]])[0]) if item["geometry"].get("type") == "Polygon" else 0 for item in features)),
+        "threshold_used": threshold_used,
+        "min_object_area_m2_used": min_area,
+        "simplify_tolerance_m_used": simplify_tolerance,
+        "postprocess_sec": round(time.time() - started, 3),
+    }
+    summary_path = experiment_dir / "pseudolabel_summary.json"
+    write_json(summary_path, {"metrics": metrics, "artifacts": [str(path) for path in artifacts]})
+    artifacts.append(summary_path)
+    return metrics, artifacts
+
+
 def run_real_train(
     config: PipelineConfig,
     job: JobSpec,
@@ -500,7 +649,8 @@ def run_real_train(
     write_json(dataset_report_path, dataset_report)
 
     device = torch.device("cuda" if torch.cuda.is_available() and not config.cpu_only else "cpu")
-    model = TinyUNet(in_channels=len(input_bands), out_channels=1, base=int(job.train.get("base_channels") or 8)).to(device)
+    model_name = str(model_cfg.get("name") or job.train.get("model_name") or "tiny_unet_4ch")
+    model = _build_model(model_name, len(input_bands), 1, int(job.train.get("base_channels") or 8)).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=float(job.train.get("learning_rate") or 5e-4))
     batch_size = job.train.get("batch_size") or 2
     if batch_size == "auto":
@@ -508,6 +658,9 @@ def run_real_train(
     batch_size = max(1, int(batch_size))
     epochs = int(job.train.get("epochs") or 20)
     time_limit_sec = int(job.train.get("time_limit_sec") or 600)
+    early_cfg = job.train.get("early_stopping") or {}
+    early_enabled = bool(early_cfg.get("enabled", job.train.get("early_stopping_enabled", False)))
+    early_patience = int(early_cfg.get("patience") or job.train.get("early_stopping_patience") or 10)
     started = time.time()
     history: list[dict[str, float]] = []
 
@@ -519,6 +672,7 @@ def run_real_train(
 
     best_val_iou = -1.0
     best_epoch = 0
+    epochs_without_improvement = 0
     for epoch in range(1, epochs + 1):
         epoch_started = time.time()
         model.train()
@@ -571,25 +725,55 @@ def run_real_train(
         if row["val/iou"] > best_val_iou:
             best_val_iou = row["val/iou"]
             best_epoch = epoch
+            epochs_without_improvement = 0
+        else:
+            epochs_without_improvement += 1
+        if early_enabled and epochs_without_improvement >= early_patience:
+            log_fn(job_log, f"real_train early_stopping epoch={epoch} patience={early_patience}")
+            break
         if time.time() - started > time_limit_sec:
             break
 
     artifacts = _write_history(experiment_dir, history)
     checkpoint_path = experiment_dir / "tiny_unet_4ch.pt"
-    torch.save({"model_state_dict": model.state_dict(), "job_id": job.job_id, "best_epoch": best_epoch}, checkpoint_path)
+    checkpoint_path = experiment_dir / f"{model_name}.pt"
+    torch.save({"model_state_dict": model.state_dict(), "job_id": job.job_id, "model_name": model_name, "best_epoch": best_epoch}, checkpoint_path)
     artifacts.extend([dataset_report_path, checkpoint_path])
+    postprocess_metrics, postprocess_artifacts = _write_pseudolabel_outputs(
+        config,
+        job,
+        experiment_dir,
+        model,
+        device,
+        matches,
+        input_bands,
+        patch_size,
+        float((job.postprocess.get("thresholds") or [0.5])[0]),
+        seed,
+    )
+    if postprocess_metrics.get("pseudolabel_enabled"):
+        mlflow_run.log_metrics(
+            {
+                key: value
+                for key, value in postprocess_metrics.items()
+                if isinstance(value, (int, float, bool))
+            }
+        )
+        artifacts.extend(postprocess_artifacts)
     mlflow_run.log_artifacts(artifacts)
 
     last = history[-1] if history else {}
     return {
         "status": "done",
         "mode": "real_train",
+        "model_name": model_name,
         "device": str(device),
         "epochs_completed": len(history),
         "time_limit_sec": time_limit_sec,
         "best_epoch": best_epoch,
         "best_val_iou": best_val_iou,
         "last_epoch_metrics": last,
+        "postprocess_metrics": postprocess_metrics,
         "matched_scenes_count": len(matches),
         "missing_scenes": missing,
         "ambiguous_scenes": ambiguous,

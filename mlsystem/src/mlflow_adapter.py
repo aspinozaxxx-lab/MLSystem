@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 from .pipeline_config import PipelineConfig
 
-MAX_ARTIFACT_BYTES = 5_000_000
+MAX_ARTIFACT_BYTES = 20_000_000
 
 def _run_url(base_uri: str, experiment_id: str, run_id: str) -> str:
     return f"{base_uri.rstrip('/')}/#/experiments/{experiment_id}/runs/{run_id}"
