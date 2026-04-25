@@ -1,0 +1,78 @@
+---
+- name: Prepare GitHub self-hosted runner directory
+  hosts: mlservers
+  gather_facts: true
+  vars:
+    runner_dir: /home/worker/actions-runner
+    runner_version: "2.329.0"
+    github_repo_url: "https://github.com/aspinozaxxx-lab/MLSystem"
+    install_runner_archive: false
+    configure_runner: false
+    runner_registration_token: ""
+  tasks:
+    - name: Create runner directory
+      ansible.builtin.file:
+        path: "{{ runner_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Explain runner registration safety
+      ansible.builtin.debug:
+        msg:
+          - "Runner registration requires a fresh token from GitHub UI."
+          - "Do not commit or store the token. Pass it only via --extra-vars or interactive shell env."
+          - "Example: ansible-playbook ... runner.yml -e configure_runner=true -e runner_registration_token=$RUNNER_TOKEN"
+
+    - name: Download runner archive when explicitly requested
+      ansible.builtin.get_url:
+        url: "https://github.com/actions/runner/releases/download/v{{ runner_version }}/actions-runner-linux-x64-{{ runner_version }}.tar.gz"
+        dest: "{{ runner_dir }}/actions-runner-linux-x64-{{ runner_version }}.tar.gz"
+        mode: "0644"
+      when: install_runner_archive | bool
+
+    - name: Extract runner archive when explicitly requested
+      ansible.builtin.unarchive:
+        src: "{{ runner_dir }}/actions-runner-linux-x64-{{ runner_version }}.tar.gz"
+        dest: "{{ runner_dir }}"
+        remote_src: true
+      when: install_runner_archive | bool
+
+    - name: Configure runner only when a fresh token is supplied
+      ansible.builtin.command:
+        argv:
+          - "{{ runner_dir }}/config.sh"
+          - "--url"
+          - "{{ github_repo_url }}"
+          - "--token"
+          - "{{ runner_registration_token }}"
+          - "--name"
+          - "roskadastr-ml"
+          - "--labels"
+          - "self-hosted,linux,mlsystem,cpu-only"
+          - "--unattended"
+          - "--replace"
+      args:
+        chdir: "{{ runner_dir }}"
+        creates: "{{ runner_dir }}/.runner"
+      no_log: true
+      when:
+        - configure_runner | bool
+        - runner_registration_token | length > 0
+
+    - name: Install runner user service after configuration
+      ansible.builtin.command: "{{ runner_dir }}/svc.sh install"
+      args:
+        chdir: "{{ runner_dir }}"
+      when:
+        - configure_runner | bool
+        - runner_registration_token | length > 0
+      failed_when: false
+
+    - name: Start runner service after configuration
+      ansible.builtin.command: "{{ runner_dir }}/svc.sh start"
+      args:
+        chdir: "{{ runner_dir }}"
+      when:
+        - configure_runner | bool
+        - runner_registration_token | length > 0
+      failed_when: false

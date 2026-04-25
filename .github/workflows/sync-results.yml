@@ -1,0 +1,92 @@
+name: sync-results
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/15 * * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mlsystem-sync-results
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: [self-hosted, linux]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Pull lightweight summaries from server
+        shell: bash
+        run: |
+          rm -rf .tmp/mlsystem-results
+          mkdir -p .tmp/mlsystem-results results/summaries
+          src=/home/worker/mlsystem/storage/experiments
+          if [ -d "$src" ]; then
+            (cd "$src" && find . -maxdepth 2 -type f \( -name run_summary.json -o -name codex_summary.json \) -print0 | tar --null -T - -cf -) \
+              | tar -xf - -C .tmp/mlsystem-results || true
+          else
+            ssh mlserver 'cd /home/worker/mlsystem/storage/experiments && find . -maxdepth 2 -type f \( -name run_summary.json -o -name codex_summary.json \) -print0 | tar --null -T - -cf -' \
+              | tar -xf - -C .tmp/mlsystem-results || true
+          fi
+
+      - name: Normalize summaries
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+
+          src_root = Path(".tmp/mlsystem-results")
+          out_root = Path("results/summaries")
+          out_root.mkdir(parents=True, exist_ok=True)
+
+          for run_path in src_root.glob("*/run_summary.json"):
+              run = json.loads(run_path.read_text(encoding="utf-8"))
+              codex_path = run_path.parent / "codex_summary.json"
+              codex = json.loads(codex_path.read_text(encoding="utf-8")) if codex_path.exists() else {}
+              mlflow = run.get("mlflow") or {}
+              result = run.get("result") or {}
+              payload = {
+                  "schema_version": 1,
+                  "job_id": run.get("job_id"),
+                  "claim_id": run.get("claim_id", run_path.parent.name),
+                  "status": run.get("status", result.get("status")),
+                  "task": run.get("task"),
+                  "server": "roskadastr-ml",
+                  "mlflow_run_url": mlflow.get("run_url") or mlflow.get("url"),
+                  "s3_artifacts": {
+                      "accepted_geojson": None,
+                      "report_html": None,
+                  },
+                  "metrics": {
+                      "best_val_iou": None,
+                      "accepted_objects": None,
+                      "accepted_geojson_mb": None,
+                  },
+                  "warnings": codex.get("warnings", []),
+                  "errors": [] if run.get("status") != "failed" else [result.get("error")],
+              }
+              name = payload["job_id"] or payload["claim_id"]
+              safe_name = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in str(name))
+              (out_root / f"{safe_name}.json").write_text(
+                  json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                  encoding="utf-8",
+              )
+              print(f"synced {out_root / (safe_name + '.json')}")
+          PY
+
+      - name: Commit updated summaries
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add results/summaries
+          if git diff --cached --quiet; then
+            echo "No summary changes"
+          else
+            git commit -m "Sync MLSystem result summaries"
+            git push
+          fi

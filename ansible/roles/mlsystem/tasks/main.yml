@@ -1,0 +1,54 @@
+---
+- name: Ensure MLSystem root and runtime directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ mlsystem_root }}"
+    - "{{ mlsystem_root }}/logs"
+    - "{{ mlsystem_root }}/storage/images"
+    - "{{ mlsystem_root }}/storage/layouts"
+    - "{{ mlsystem_root }}/storage/jobs/pending"
+    - "{{ mlsystem_root }}/storage/jobs/running"
+    - "{{ mlsystem_root }}/storage/jobs/done"
+    - "{{ mlsystem_root }}/storage/jobs/failed"
+    - "{{ mlsystem_root }}/storage/cache"
+    - "{{ mlsystem_root }}/storage/experiments"
+    - "{{ mlsystem_root }}/storage/system"
+    - "/home/worker/.config/systemd/user"
+
+- name: Copy lightweight MLSystem project
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../mlsystem/"
+    dest: "{{ mlsystem_root }}/"
+    mode: preserve
+
+- name: Install user systemd unit for executor
+  ansible.builtin.template:
+    src: mlsystem-executor.service.j2
+    dest: /home/worker/.config/systemd/user/mlsystem-executor.service
+    mode: "0644"
+
+- name: Install user systemd unit for web API
+  ansible.builtin.template:
+    src: mlsystem-web.service.j2
+    dest: /home/worker/.config/systemd/user/mlsystem-web.service
+    mode: "0644"
+
+- name: Reload user systemd
+  ansible.builtin.command: systemctl --user daemon-reload
+  changed_when: false
+  failed_when: false
+
+- name: Restart managed MLSystem services when enabled
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    scope: user
+    state: restarted
+    enabled: true
+  loop:
+    - mlsystem-web.service
+    - mlsystem-executor.service
+  when: mlsystem_manage_services | bool
+  failed_when: false

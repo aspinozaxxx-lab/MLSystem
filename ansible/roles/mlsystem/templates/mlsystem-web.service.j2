@@ -1,0 +1,14 @@
+[Unit]
+Description=MLSystem FastAPI status API
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/worker/mlsystem
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/worker/ml-training/.venv/bin/python -m src.web_app
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

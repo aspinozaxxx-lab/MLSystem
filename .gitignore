@@ -1,0 +1,72 @@
+# Python/runtime
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# Secrets and local config
+.env
+*.env
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+*credentials*
+*secret*
+
+# Local/server runtime state
+mlsystem/storage/
+mlsystem/logs/
+storage/
+logs/
+mlruns/
+runs/
+reports/
+artifacts/
+cache/
+models/
+checkpoints/
+
+# Heavy geospatial/ML data
+*.tif
+*.tiff
+*.vrt
+*.gpkg
+*.mbtiles
+*.shp
+*.shx
+*.dbf
+*.prj
+*.cpg
+*.geojson
+*.geojsonl
+*.geojson.gz
+*.npy
+*.npz
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.safetensors
+*.parquet
+*.feather
+*.sqlite
+*.db
+*.zip
+*.tar
+*.tar.gz
+*.7z
+
+# Old local prototype/data should not be committed from this repo
+MLData/
+MLTraner/
+
+# Keep lightweight result summaries
+!results/
+!results/summaries/
+!results/summaries/**/*.json
+!results/summaries/**/*.md

@@ -1,0 +1,33 @@
+from __future__ import annotations
+from typing import Any
+from .io_utils import read_json, write_json
+from .job_queue import list_queue
+from .pipeline_config import PipelineConfig
+
+def _recent_state_jobs(config: PipelineConfig, state: str, limit: int) -> list[dict[str, Any]]:
+    root = config.jobs_root / state
+    if not root.exists():
+        return []
+    entries = sorted([p for p in root.iterdir() if p.is_dir()], key=lambda p: p.stat().st_mtime, reverse=True)[:limit]
+    rows = []
+    for entry in entries:
+        rows.append({"name": entry.name, "state": state, "claim": read_json(entry / "claim.json", None), "result": read_json(entry / "result.json", None), "error": read_json(entry / "error.json", None)})
+    return rows
+
+def build_codex_summary(config: PipelineConfig, resource_status: dict[str, Any] | None = None) -> dict[str, Any]:
+    resource_status = resource_status or read_json(config.system_root / "resource_status.json", default={}) or {}
+    queue = list_queue(config)
+    recent = []
+    for state in ("running", "failed", "done"):
+        recent.extend(_recent_state_jobs(config, state, config.recent_jobs_limit))
+    disk = resource_status.get("disk", {}) if isinstance(resource_status, dict) else {}
+    recommendations: list[str] = []
+    if disk.get("free_gb", 999) < config.disk_warning_free_gb:
+        recommendations.append("Mount or expand a dedicated data disk before creating large caches or copying TIFF files.")
+    if (resource_status.get("gpu") or {}).get("available") is False:
+        recommendations.append("Keep max_gpu_train_jobs=0 and run only lightweight/CPU jobs until a real GPU backend is available.")
+    if queue.get("counts", {}).get("pending", 0) == 0:
+        recommendations.append("Queue is empty; enqueue a YAML job when ready.")
+    payload = {"schema_version": 1, "queue": queue.get("counts", {}), "recent_jobs": recent[: config.recent_jobs_limit], "mlflow": resource_status.get("mlflow"), "s3": resource_status.get("s3"), "disk_warning": disk.get("free_gb", 999) < config.disk_warning_free_gb, "warnings": resource_status.get("warnings", []), "recommendations": recommendations}
+    write_json(config.system_root / "codex_summary.json", payload)
+    return payload

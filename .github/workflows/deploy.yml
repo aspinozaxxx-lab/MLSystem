@@ -1,0 +1,51 @@
+name: deploy
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "mlsystem/**"
+      - "ansible/**"
+      - ".github/workflows/deploy.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mlsystem-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ensure Ansible is available
+        run: |
+          ansible-playbook --version || python3 -m pip install --user ansible-core
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Deploy mlsystem to server
+        run: |
+          ansible-playbook -i 'localhost,' -c local ansible/playbooks/deploy.yml \
+            -e mlsystem_manage_services=true
+
+      - name: Write deploy summary
+        run: |
+          mkdir -p results/summaries
+          python3 - <<'PY'
+          import json, os, socket
+          from datetime import datetime, timezone
+          payload = {
+              "schema_version": 1,
+              "type": "deploy",
+              "status": "done",
+              "server": "roskadastr-ml",
+              "source_sha": os.environ.get("GITHUB_SHA"),
+              "runner_host": socket.gethostname(),
+              "finished_at": datetime.now(timezone.utc).isoformat(),
+          }
+          print(json.dumps(payload, ensure_ascii=False, indent=2))
+          PY

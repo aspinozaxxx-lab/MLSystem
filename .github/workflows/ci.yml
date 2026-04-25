@@ -1,0 +1,94 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install lightweight validation dependencies
+        run: python -m pip install --upgrade pip pydantic PyYAML
+
+      - name: Check YAML syntax
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+          for path in list(Path(".").rglob("*.yml")) + list(Path(".").rglob("*.yaml")):
+              if ".git" in path.parts:
+                  continue
+              with path.open("r", encoding="utf-8") as fh:
+                  yaml.safe_load(fh)
+              print(f"ok yaml {path}")
+          PY
+
+      - name: Compile Python sources
+        run: python -m compileall -q mlsystem/src
+
+      - name: Validate job schemas
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import sys, yaml
+          sys.path.insert(0, str(Path("mlsystem").resolve()))
+          from src.job_schema import JobSpec
+
+          paths = [Path("mlsystem/configs/job.example.yaml")]
+          paths += sorted(Path("jobs/examples").glob("*.yml"))
+          paths += sorted(Path("jobs/examples").glob("*.yaml"))
+          paths += sorted(Path("jobs/pending").glob("*.yml"))
+          paths += sorted(Path("jobs/pending").glob("*.yaml"))
+
+          for path in paths:
+              if not path.exists():
+                  continue
+              payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+              JobSpec.model_validate(payload)
+              print(f"ok job {path}")
+          PY
+
+      - name: Scan for obvious secrets
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re, sys
+
+          patterns = [
+              ("github token", re.compile(r"\b(?:ghp|gho|ghu|ghs|github_pat)_[A-Za-z0-9_]{20,}\b")),
+              ("aws access key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
+              ("private key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
+              ("secret assignment", re.compile(r"(?i)\b(?:aws_secret_access_key|minio_secret_key|secret_access_key|runner_registration_token)\s*[:=]\s*['\"]?[A-Za-z0-9/+=]{16,}")),
+          ]
+          ignored_dirs = {".git", ".venv", "venv", "__pycache__"}
+          findings = []
+          for path in Path(".").rglob("*"):
+              if not path.is_file() or any(part in ignored_dirs for part in path.parts):
+                  continue
+              if path.stat().st_size > 1_000_000:
+                  continue
+              try:
+                  text = path.read_text(encoding="utf-8")
+              except UnicodeDecodeError:
+                  continue
+              for line_no, line in enumerate(text.splitlines(), 1):
+                  if "${{ secrets." in line:
+                      continue
+                  for name, pattern in patterns:
+                      if pattern.search(line):
+                          findings.append(f"{path}:{line_no}: {name}")
+          if findings:
+              print("\n".join(findings))
+              sys.exit(1)
+          print("secret scan ok")
+          PY

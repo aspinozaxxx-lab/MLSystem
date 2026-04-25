@@ -1,0 +1,9 @@
+---
+- name: Deploy MLSystem lightweight code
+  hosts: mlservers
+  gather_facts: false
+  vars:
+    mlsystem_root: /home/worker/mlsystem
+    mlsystem_manage_services: false
+  roles:
+    - role: mlsystem

@@ -1,0 +1,29 @@
+schema_version: 1
+project_root: /home/worker/mlsystem
+storage_root: /home/worker/mlsystem/storage
+logs_root: /home/worker/mlsystem/logs
+mlflow_tracking_uri: http://127.0.0.1:5000
+mlflow_experiment: mlsystem-mvp
+s3_endpoint_url: http://127.0.0.1:9000
+s3_alias: mlplatform
+artifact_bucket: mlflow-artifacts
+dataset_cache_bucket: ml-datasets
+s3_write_test_enabled: false
+s3_test_bucket: null
+cpu_only: true
+max_gpu_train_jobs: 0
+max_cpu_train_jobs: 1
+max_cpu_preprocess_jobs: 1
+default_workers: 0
+known_data_roots:
+  - /home/worker/ml-training/data/raw
+  - /home/worker/ml-training/data/cog
+  - /home/worker/ml-training/data/labels
+  - /home/worker/ml-training/models
+max_inventory_files: 2000
+max_inventory_depth: 5
+disk_warning_free_gb: 20
+recent_jobs_limit: 20
+web:
+  host: 0.0.0.0
+  port: 8010
