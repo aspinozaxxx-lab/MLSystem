@@ -24,7 +24,7 @@ jobs:
         shell: bash
         run: |
           rm -rf .tmp/mlsystem-results
-          mkdir -p .tmp/mlsystem-results results/summaries
+          mkdir -p .tmp/mlsystem-results .tmp/mlsystem-queue/pending .tmp/mlsystem-queue/running results/summaries
           src=/home/worker/mlsystem/storage/experiments
           if [ -d "$src" ]; then
             (cd "$src" && find . -maxdepth 2 -type f \( -name run_summary.json -o -name codex_summary.json \) -print0 | tar --null -T - -cf -) \
@@ -32,6 +32,12 @@ jobs:
           else
             ssh mlserver 'cd /home/worker/mlsystem/storage/experiments && find . -maxdepth 2 -type f \( -name run_summary.json -o -name codex_summary.json \) -print0 | tar --null -T - -cf -' \
               | tar -xf - -C .tmp/mlsystem-results || true
+          fi
+          queue=/home/worker/mlsystem/storage/jobs
+          if [ -d "$queue" ]; then
+            find "$queue/pending" -maxdepth 1 -type f -name "*.json" -exec cp {} .tmp/mlsystem-queue/pending/ \; || true
+            find "$queue/running" -maxdepth 2 -type f \( -name claim.json -o -name queue_metadata.json -o -name result.json \) -print0 \
+              | tar --null -T - -cf - | tar -xf - -C .tmp/mlsystem-queue/running --strip-components=5 || true
           fi
 
       - name: Normalize summaries
@@ -87,6 +93,30 @@ jobs:
                   encoding="utf-8",
               )
               print(f"synced {out_root / (safe_name + '.json')}")
+
+          queue_root = Path(".tmp/mlsystem-queue")
+          for meta_path in sorted((queue_root / "pending").glob("*.json")):
+              meta = json.loads(meta_path.read_text(encoding="utf-8"))
+              mlflow = meta.get("mlflow") or {}
+              payload = {
+                  "schema_version": 1,
+                  "job_id": meta.get("job_id"),
+                  "claim_id": None,
+                  "status": "queued",
+                  "job_status": "queued",
+                  "task": meta.get("task"),
+                  "server": "roskadastr-ml",
+                  "mlflow_run_url": mlflow.get("run_url_external") or mlflow.get("external_run_url"),
+                  "metrics": {},
+                  "warnings": [],
+                  "errors": [],
+              }
+              name = payload["job_id"] or meta_path.stem
+              safe_name = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in str(name))
+              out = out_root / f"{safe_name}.json"
+              if not out.exists():
+                  out.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+                  print(f"queued {out}")
           PY
 
       - name: Commit updated summaries
