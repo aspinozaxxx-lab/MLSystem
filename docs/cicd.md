@@ -62,6 +62,7 @@ Covered by Ansible:
 Manual exception:
 
 - GitHub runner registration, because it requires a short-lived GitHub registration token.
+- `ansible/playbooks/runner.yml` audits runner state only; it does not register or reconfigure the runner.
 
 Not managed here:
 

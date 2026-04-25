@@ -82,4 +82,4 @@ python -m src.cli status
 
 Runner registration remains the only manual exception. Use a fresh token from GitHub UI and do not persist it.
 
-The repository contains `ansible/playbooks/runner.yml` as documentation and optional helper for runner installation, but runner registration must still receive the temporary token only at execution time.
+The repository contains `ansible/playbooks/runner.yml` only as an audit playbook. It checks whether the runner exists and is active. It does not register the runner and does not accept a token.
