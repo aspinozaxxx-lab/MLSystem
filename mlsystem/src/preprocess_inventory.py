@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import socket
 import time
@@ -99,19 +100,29 @@ def _read_raster_metadata(config: PipelineConfig, bucket: str, key: str) -> dict
         import rasterio
 
         path = f"/vsis3/{bucket}/{key}"
-        with rasterio.Env(**_rasterio_env(config)):
-            with rasterio.open(path) as ds:
-                return {
-                    "read_ok": True,
-                    "driver": ds.driver,
-                    "crs": str(ds.crs) if ds.crs else None,
-                    "width": ds.width,
-                    "height": ds.height,
-                    "band_count": ds.count,
-                    "dtypes": list(ds.dtypes),
-                    "nodata": ds.nodata,
-                    "bounds": list(ds.bounds),
-                }
+        env = _rasterio_env(config)
+        old_env = {key: os.environ.get(key) for key in env}
+        try:
+            os.environ.update(env)
+            with rasterio.Env():
+                with rasterio.open(path) as ds:
+                    return {
+                        "read_ok": True,
+                        "driver": ds.driver,
+                        "crs": str(ds.crs) if ds.crs else None,
+                        "width": ds.width,
+                        "height": ds.height,
+                        "band_count": ds.count,
+                        "dtypes": list(ds.dtypes),
+                        "nodata": ds.nodata,
+                        "bounds": list(ds.bounds),
+                    }
+        finally:
+            for env_key, old_value in old_env.items():
+                if old_value is None:
+                    os.environ.pop(env_key, None)
+                else:
+                    os.environ[env_key] = old_value
     except Exception as exc:
         return {"read_ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
