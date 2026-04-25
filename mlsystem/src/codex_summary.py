@@ -14,7 +14,12 @@ def _recent_state_jobs(config: PipelineConfig, state: str, limit: int) -> list[d
         rows.append({"name": entry.name, "state": state, "claim": read_json(entry / "claim.json", None), "result": read_json(entry / "result.json", None), "error": read_json(entry / "error.json", None)})
     return rows
 
-def build_codex_summary(config: PipelineConfig, resource_status: dict[str, Any] | None = None, current_mlflow: dict[str, Any] | None = None) -> dict[str, Any]:
+def build_codex_summary(
+    config: PipelineConfig,
+    resource_status: dict[str, Any] | None = None,
+    current_mlflow: dict[str, Any] | None = None,
+    current_job: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     resource_status = resource_status or read_json(config.system_root / "resource_status.json", default={}) or {}
     queue = list_queue(config)
     recent = []
@@ -40,6 +45,27 @@ def build_codex_summary(config: PipelineConfig, resource_status: dict[str, Any] 
             "run_url_internal": current_mlflow.get("run_url_internal") or current_mlflow.get("internal_run_url"),
             "status": "ok" if current_mlflow.get("ok") else "error",
         }
-    payload = {"schema_version": 1, "queue": queue.get("counts", {}), "recent_jobs": recent[: config.recent_jobs_limit], "mlflow": mlflow_status, "s3": resource_status.get("s3"), "disk_warning": disk.get("free_gb", 999) < config.disk_warning_free_gb, "warnings": resource_status.get("warnings", []), "recommendations": recommendations}
+    payload = {
+        "schema_version": 1,
+        "queue": queue.get("counts", {}),
+        "recent_jobs": recent[: config.recent_jobs_limit],
+        "mlflow": mlflow_status,
+        "s3": resource_status.get("s3"),
+        "disk_warning": disk.get("free_gb", 999) < config.disk_warning_free_gb,
+        "warnings": resource_status.get("warnings", []),
+        "recommendations": recommendations,
+    }
+    if current_job:
+        payload.update(
+            {
+                "job_id": current_job.get("job_id"),
+                "claim_id": current_job.get("claim_id"),
+                "task": current_job.get("task"),
+                "status": current_job.get("status"),
+                "server": current_job.get("server"),
+                "metrics": current_job.get("metrics", {}),
+                "errors": current_job.get("errors", []),
+            }
+        )
     write_json(config.system_root / "codex_summary.json", payload)
     return payload

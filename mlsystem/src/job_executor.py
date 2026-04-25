@@ -2,6 +2,7 @@ from __future__ import annotations
 import csv
 import json
 import shutil
+import socket
 import time
 from pathlib import Path
 from typing import Any
@@ -171,7 +172,20 @@ def run_once(config: PipelineConfig) -> dict[str, Any]:
             write_json(experiment_dir / "run_summary.json", run_summary)
             write_json(running_dir / "result.json", {**result, "mlflow": mlflow_result})
             status = collect_status(config, include_services=True)
-            codex = build_codex_summary(config, status, current_mlflow=mlflow_result)
+            codex = build_codex_summary(
+                config,
+                status,
+                current_mlflow=mlflow_result,
+                current_job={
+                    "claim_id": claim_id,
+                    "job_id": job.job_id,
+                    "task": job.task,
+                    "status": run_summary["status"],
+                    "server": socket.gethostname(),
+                    "metrics": result.get("last_epoch_metrics", {}),
+                    "errors": [],
+                },
+            )
             write_json(experiment_dir / "codex_summary.json", codex)
             mlflow_run.log_artifacts([experiment_dir / "run_summary.json", experiment_dir / "codex_summary.json", experiment_dir / "job.yml"])
         _log(job_log, f"completed status={run_summary['status']} mlflow_ok={mlflow_result.get('ok')}")
