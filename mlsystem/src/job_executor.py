@@ -164,7 +164,15 @@ def run_once(config: PipelineConfig) -> dict[str, Any]:
             experiment_name,
             run_name,
             params=_job_params(job),
-            tags={"job_status": "running", "queue_state": "running", "claim_id": claim_id, **job.mlflow.tags},
+            tags={
+                "job_id": job.job_id,
+                "task": job.task,
+                "class_name": job.class_name or "",
+                "job_status": "running",
+                "queue_state": "running",
+                "claim_id": claim_id,
+                **job.mlflow.tags,
+            },
             run_id=existing_run_id,
         ) as mlflow_run:
             result = _execute(config, job, experiment_dir, mlflow_run, job_log)
