@@ -7,7 +7,7 @@ from .job_queue import enqueue, list_queue
 from .mlflow_adapter import check_mlflow
 from .pipeline_config import load_config, ensure_storage_layout
 from .resource_manager import collect_status
-from .s3_adapter import check_s3
+from .s3_adapter import build_s3_layout_status, check_s3
 
 def print_json(payload: object) -> None:
     print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
@@ -16,7 +16,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="MLSystem server MVP CLI")
     parser.add_argument("--config", default=None)
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ["status", "check-mlflow", "check-s3", "queue-list", "run-once", "resources"]:
+    for name in ["status", "check-mlflow", "check-s3", "s3-layout", "queue-list", "run-once", "resources"]:
         sub.add_parser(name)
     p_forever = sub.add_parser("run-forever")
     p_forever.add_argument("--interval", type=float, default=10.0)
@@ -32,6 +32,8 @@ def main() -> None:
         print_json(check_mlflow(config))
     elif args.command == "check-s3":
         print_json(check_s3(config, write_test=False))
+    elif args.command == "s3-layout":
+        print_json(build_s3_layout_status(config))
     elif args.command == "queue-list":
         print_json(list_queue(config))
     elif args.command == "enqueue":

@@ -16,12 +16,31 @@ class MLflowConfig(BaseModel):
     tracking_uri_external: str = "http://172.26.12.169:5000"
     default_experiment: str = "mlsystem"
 
+class StorageConfig(BaseModel):
+    heavy_backend: str = "s3"
+    s3_bucket: str = "mlsystems"
+    s3_prefix: str = ""
+
+class S3PathsConfig(BaseModel):
+    images: str = "s3://mlsystems/images/"
+    layouts: str = "s3://mlsystems/layouts/"
+    datasets: str = "s3://mlsystems/datasets/"
+    cache: str = "s3://mlsystems/cache/"
+    models: str = "s3://mlsystems/models/"
+    predictions: str = "s3://mlsystems/predictions/"
+    pseudolabels: str = "s3://mlsystems/pseudolabels/"
+    reports: str = "s3://mlsystems/reports/"
+    experiments: str = "s3://mlsystems/experiments/"
+    system: str = "s3://mlsystems/system/"
+
 class PipelineConfig(BaseModel):
     schema_version: int = 1
     project_root: Path
     storage_root: Path
     logs_root: Path
     mlflow: MLflowConfig = Field(default_factory=MLflowConfig)
+    storage: StorageConfig = Field(default_factory=StorageConfig)
+    s3_paths: S3PathsConfig = Field(default_factory=S3PathsConfig)
     mlflow_tracking_uri: str | None = None
     mlflow_experiment: str | None = None
     s3_endpoint_url: str = "http://127.0.0.1:9000"

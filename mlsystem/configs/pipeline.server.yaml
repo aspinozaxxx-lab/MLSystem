@@ -8,8 +8,23 @@ mlflow:
   default_experiment: mlsystem
 s3_endpoint_url: http://127.0.0.1:9000
 s3_alias: mlplatform
-artifact_bucket: mlflow-artifacts
-dataset_cache_bucket: ml-datasets
+artifact_bucket: mlsystems
+dataset_cache_bucket: mlsystems
+storage:
+  heavy_backend: s3
+  s3_bucket: mlsystems
+  s3_prefix: ""
+s3_paths:
+  images: s3://mlsystems/images/
+  layouts: s3://mlsystems/layouts/
+  datasets: s3://mlsystems/datasets/
+  cache: s3://mlsystems/cache/
+  models: s3://mlsystems/models/
+  predictions: s3://mlsystems/predictions/
+  pseudolabels: s3://mlsystems/pseudolabels/
+  reports: s3://mlsystems/reports/
+  experiments: s3://mlsystems/experiments/
+  system: s3://mlsystems/system/
 s3_write_test_enabled: false
 s3_test_bucket: null
 cpu_only: true
