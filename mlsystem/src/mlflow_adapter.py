@@ -87,6 +87,7 @@ class MLflowJobRun:
         self.run_id = self._run.info.run_id
         mlflow.set_tags(
             {
+                "mlflow.runName": self.run_name,
                 "mlsystem.host": socket.gethostname(),
                 "mlsystem.cpu_only": str(self.config.cpu_only).lower(),
                 "mlsystem.tracking_uri_internal": self.config.mlflow_tracking_uri_internal,
