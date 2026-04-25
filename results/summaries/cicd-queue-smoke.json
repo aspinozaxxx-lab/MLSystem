@@ -1,0 +1,23 @@
+{
+  "claim_id": "cicd-queue-smoke__20260425T105654333810Z",
+  "errors": [],
+  "job_id": "cicd-queue-smoke",
+  "metrics": {
+    "accepted_geojson_mb": null,
+    "accepted_objects": null,
+    "best_val_iou": null
+  },
+  "mlflow_run_url": "http://127.0.0.1:5000/#/experiments/6/runs/a8b8159414d542d483dc51d001bc548e",
+  "s3_artifacts": {
+    "accepted_geojson": null,
+    "report_html": null
+  },
+  "schema_version": 1,
+  "server": "roskadastr-ml",
+  "status": "done",
+  "task": "status_check",
+  "warnings": [
+    "Low disk free space: 9.806 GB below threshold 20.0 GB",
+    "GPU backend is disabled/not available; running CPU-only"
+  ]
+}
