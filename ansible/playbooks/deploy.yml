@@ -1,6 +1,6 @@
 ---
 - name: Deploy MLSystem lightweight code
-  hosts: mlservers
+  hosts: all
   gather_facts: false
   vars:
     mlsystem_root: /home/worker/mlsystem
