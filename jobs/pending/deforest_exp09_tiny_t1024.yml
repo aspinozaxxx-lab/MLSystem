@@ -1,0 +1,82 @@
+schema_version: 1
+job_id: deforest_exp09_tiny_t1024
+task: train
+class_name: deforest
+priority: 100
+description: "Deforest experiment 09: Tiny UNet 4-channel baseline, 1024 window."
+params:
+  model:
+    name: tiny_unet_4ch
+    in_channels: 4
+    out_channels: 1
+    input_bands: [1, 2, 3, 4]
+    preview_bands: [4, 1, 2]
+  seed: 109
+  use_all_matched_scenes: true
+data:
+  images_uri: s3://mlsystems/images/
+  layout_uri: s3://mlsystems/layouts/deforest/
+  scenes_file: scenes.txt
+  annotation_file: auto
+  scene_name_matching: fuzzy
+  include_negative_scenes: true
+preprocess:
+  tile_size: 1024
+  stride: 768
+  max_nodata_fraction: 0.35
+  max_empty_tile_share: 0.5
+  cache: true
+  heavy_cache_backend: s3
+train:
+  enabled: true
+  time_limit_sec: 10800
+  workers: 0
+  batch_size: auto
+  patch_size: 1024
+  epochs: 80
+  max_train_tiles: 96
+  max_val_tiles: 24
+  max_tiles_per_scene: 18
+  learning_rate: 0.0005
+  optimizer: adamw
+  early_stopping:
+    enabled: true
+    patience: 10
+  loss: [weighted_bce, dice]
+  augmentations:
+    flips: true
+    rot90: true
+    brightness_contrast: false
+predict:
+  pseudolabel:
+    enabled: true
+    run_on: matched_scenes
+    use_best_checkpoint: true
+    max_windows_per_scene: 2
+postprocess:
+  enabled: true
+  auto_tune: true
+  max_geojson_mb: 20
+  target_object_count_min: 300
+  target_object_count_max: 500
+  min_object_area_m2_candidates: [500, 1000, 2000, 5000]
+  simplify_tolerance_m_candidates: [2, 5, 10, 20]
+  thresholds: [0.35, 0.45, 0.55, 0.65]
+  keep_largest_if_too_many: true
+  max_objects: 500
+  export:
+    geojson: true
+    geojson_gz: true
+    gpkg: true
+resources:
+  requires_gpu: false
+  cpu_train_slots: 1
+  workers: 0
+mlflow:
+  experiment: mlsystem-deforest
+  tags:
+    model_name: tiny_unet_4ch
+    tile_size: "1024"
+    stride: "768"
+    pseudolabel_enabled: "true"
+
