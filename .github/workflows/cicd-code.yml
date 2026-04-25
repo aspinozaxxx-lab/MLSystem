@@ -6,6 +6,8 @@ on:
     branches: [main]
     paths:
       - "mlsystem/**"
+      - "mlsystem/**/*"
+      - "mlsystem/*.md"
       - "configs/**"
       - ".github/workflows/cicd-code.yml"
 
