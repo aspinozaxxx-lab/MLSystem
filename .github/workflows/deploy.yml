@@ -7,6 +7,8 @@ on:
     paths:
       - "mlsystem/**"
       - "ansible/**"
+      - "configs/**"
+      - "mlsystem/configs/**"
       - ".github/workflows/deploy.yml"
 
 permissions:
@@ -30,6 +32,11 @@ jobs:
             /home/worker/ml-training/.venv/bin/python -m pip install ansible-core
             echo "/home/worker/ml-training/.venv/bin" >> "$GITHUB_PATH"
           fi
+
+      - name: Preflight checks
+        run: |
+          /home/worker/ml-training/.venv/bin/python -m compileall -q mlsystem/src
+          ansible-playbook -i 'localhost,' -c local ansible/playbooks/deploy.yml --syntax-check
 
       - name: Deploy mlsystem to server
         run: |

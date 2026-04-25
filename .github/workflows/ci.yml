@@ -1,8 +1,25 @@
 name: ci
 
 on:
+  workflow_dispatch:
   push:
+    branches: [main]
+    paths:
+      - "mlsystem/**"
+      - "ansible/**"
+      - ".github/workflows/ci.yml"
+      - "configs/**"
+      - "mlsystem/configs/**"
+      - "jobs/examples/**"
   pull_request:
+    branches: [main]
+    paths:
+      - "mlsystem/**"
+      - "ansible/**"
+      - ".github/workflows/ci.yml"
+      - "configs/**"
+      - "mlsystem/configs/**"
+      - "jobs/examples/**"
 
 permissions:
   contents: read
@@ -18,7 +35,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install lightweight validation dependencies
-        run: python -m pip install --upgrade pip pydantic PyYAML ansible-core
+        run: python -m pip install --upgrade pip pydantic PyYAML
 
       - name: Check YAML syntax
         run: |
@@ -26,7 +43,7 @@ jobs:
           from pathlib import Path
           import yaml
           for path in list(Path(".").rglob("*.yml")) + list(Path(".").rglob("*.yaml")):
-              if ".git" in path.parts:
+              if ".git" in path.parts or "results" in path.parts:
                   continue
               with path.open("r", encoding="utf-8") as fh:
                   yaml.safe_load(fh)
@@ -36,13 +53,7 @@ jobs:
       - name: Compile Python sources
         run: python -m compileall -q mlsystem/src
 
-      - name: Check Ansible syntax
-        run: |
-          ansible-playbook -i ansible/inventory/hosts.ini ansible/playbooks/bootstrap.yml --syntax-check
-          ansible-playbook -i ansible/inventory/hosts.ini ansible/playbooks/deploy.yml --syntax-check
-          ansible-playbook -i ansible/inventory/hosts.ini ansible/playbooks/runner.yml --syntax-check
-
-      - name: Validate job schemas
+      - name: Validate example job schemas
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -53,8 +64,6 @@ jobs:
           paths = [Path("mlsystem/configs/job.example.yaml")]
           paths += sorted(Path("jobs/examples").glob("*.yml"))
           paths += sorted(Path("jobs/examples").glob("*.yaml"))
-          paths += sorted(Path("jobs/pending").glob("*.yml"))
-          paths += sorted(Path("jobs/pending").glob("*.yaml"))
 
           for path in paths:
               if not path.exists():

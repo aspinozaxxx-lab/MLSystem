@@ -1,0 +1,47 @@
+name: validate-ansible
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "ansible/**"
+      - ".github/workflows/deploy.yml"
+      - ".github/workflows/validate-ansible.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "ansible/**"
+      - ".github/workflows/deploy.yml"
+      - ".github/workflows/validate-ansible.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Ansible
+        run: python -m pip install --upgrade pip ansible-core
+
+      - name: Check inventory
+        run: ansible-inventory -i ansible/inventory/hosts.ini --list >/dev/null
+
+      - name: Check playbook syntax
+        run: |
+          ansible-playbook -i ansible/inventory/hosts.ini ansible/playbooks/bootstrap.yml --syntax-check
+          ansible-playbook -i ansible/inventory/hosts.ini ansible/playbooks/deploy.yml --syntax-check
+          ansible-playbook -i ansible/inventory/hosts.ini ansible/playbooks/runner.yml --syntax-check
+
+      - name: Check expected templates
+        run: |
+          test -f ansible/roles/mlsystem/templates/mlsystem-web.service.j2
+          test -f ansible/roles/mlsystem/templates/mlsystem-executor.service.j2
+          test -f ansible/roles/mlsystem/templates/mlsystem.env.j2

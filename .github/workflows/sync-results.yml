@@ -87,6 +87,6 @@ jobs:
           if git diff --cached --quiet; then
             echo "No summary changes"
           else
-            git commit -m "Sync MLSystem result summaries"
+            git commit -m "Sync MLSystem result summaries [skip ci]"
             git push
           fi

@@ -5,12 +5,28 @@
 `ci.yml`
 
 - runs on GitHub-hosted runner
+- triggers on pull requests to `main`, manual dispatch, and push to code/config/example-job paths only
+- does not trigger for `results/**`, docs-only changes, or `jobs/pending/**`
 - checks YAML syntax
-- checks Ansible playbook syntax
 - compiles Python sources
-- validates job examples and pending jobs with Pydantic
+- validates example jobs with Pydantic
 - scans for obvious committed secrets
 - never deploys and never starts training
+
+`validate-jobs.yml`
+
+- runs on GitHub-hosted runner
+- validates `jobs/examples/**/*.yml` and `jobs/pending/**/*.yml`
+- triggers on job YAML changes and manual dispatch
+- shares the same schema logic used before `enqueue-jobs.yml`
+
+`validate-ansible.yml`
+
+- runs on GitHub-hosted runner
+- checks inventory parsing
+- runs `ansible-playbook --syntax-check` for bootstrap/deploy/runner playbooks
+- checks that expected systemd/env templates exist
+- triggers on `ansible/**`, deploy workflow changes, and manual dispatch
 
 `deploy.yml`
 
@@ -18,6 +34,7 @@
 - triggers on `workflow_dispatch`
 - also triggers on push to `main` when `mlsystem/`, `ansible/`, or deploy workflow files change
 - runs Ansible deploy locally on `roskadastr-ml`
+- performs preflight Python compile and Ansible syntax check before deploying
 - checks:
   - `systemctl is-active mlsystem-web.service`
   - `systemctl is-active mlsystem-executor.service`
@@ -29,7 +46,8 @@
 `enqueue-jobs.yml`
 
 - runs on self-hosted runner
-- validates `jobs/pending/*.yml`
+- validates `jobs/pending/**/*.yml`
+- triggers only on `jobs/pending/**/*.yml` pushes or manual dispatch
 - enqueues jobs through the deployed server CLI:
 
 ```bash

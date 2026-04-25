@@ -5,9 +5,8 @@ on:
   push:
     branches: [main]
     paths:
-      - "jobs/pending/*.yml"
-      - "jobs/pending/*.yaml"
-      - ".github/workflows/enqueue-jobs.yml"
+      - "jobs/pending/**/*.yml"
+      - "jobs/pending/**/*.yaml"
 
 permissions:
   contents: read
@@ -29,7 +28,7 @@ jobs:
           import sys, yaml
           sys.path.insert(0, str(Path("mlsystem").resolve()))
           from src.job_schema import JobSpec
-          files = sorted(Path("jobs/pending").glob("*.yml")) + sorted(Path("jobs/pending").glob("*.yaml"))
+          files = sorted(Path("jobs/pending").glob("**/*.yml")) + sorted(Path("jobs/pending").glob("**/*.yaml"))
           for path in files:
               JobSpec.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")) or {})
               print(f"ok {path}")
@@ -39,8 +38,8 @@ jobs:
       - name: Copy jobs into server queue
         shell: bash
         run: |
-          shopt -s nullglob
-          files=(jobs/pending/*.yml jobs/pending/*.yaml)
+          shopt -s nullglob globstar
+          files=(jobs/pending/**/*.yml jobs/pending/**/*.yaml)
           if [ ${#files[@]} -eq 0 ]; then
             echo "No pending job files to enqueue"
             exit 0
