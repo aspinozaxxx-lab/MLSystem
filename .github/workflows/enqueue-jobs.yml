@@ -24,8 +24,7 @@ jobs:
 
       - name: Validate pending jobs
         run: |
-          python3 -m pip install --user pydantic PyYAML
-          python3 - <<'PY'
+          /home/worker/ml-training/.venv/bin/python - <<'PY'
           from pathlib import Path
           import sys, yaml
           sys.path.insert(0, str(Path("mlsystem").resolve()))

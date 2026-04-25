@@ -24,8 +24,12 @@ jobs:
 
       - name: Ensure Ansible is available
         run: |
-          ansible-playbook --version || python3 -m pip install --user ansible-core
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          if command -v ansible-playbook >/dev/null 2>&1; then
+            ansible-playbook --version
+          else
+            /home/worker/ml-training/.venv/bin/python -m pip install ansible-core
+            echo "/home/worker/ml-training/.venv/bin" >> "$GITHUB_PATH"
+          fi
 
       - name: Deploy mlsystem to server
         run: |
