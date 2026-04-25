@@ -1,6 +1,6 @@
 ---
 - name: Audit GitHub self-hosted runner
-  hosts: mlservers
+  hosts: all
   gather_facts: true
   vars:
     runner_dir: /home/worker/actions-runner
