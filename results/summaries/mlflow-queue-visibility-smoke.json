@@ -1,0 +1,23 @@
+{
+  "claim_id": "mlflow-queue-visibility-smoke__20260425T135045312748Z",
+  "errors": [],
+  "job_id": "mlflow-queue-visibility-smoke",
+  "metrics": {
+    "accepted_geojson_mb": null,
+    "accepted_objects": null,
+    "best_val_iou": null
+  },
+  "mlflow_run_url": "http://172.26.12.169:5000/#/experiments/7/runs/5599cb8c280c4346b5d2fb929ea37711",
+  "s3_artifacts": {
+    "accepted_geojson": null,
+    "report_html": null
+  },
+  "schema_version": 1,
+  "server": "roskadastr-ml",
+  "status": "done",
+  "task": "status_check",
+  "warnings": [
+    "Low disk free space: 8.597 GB below threshold 20.0 GB",
+    "GPU backend is disabled/not available; running CPU-only"
+  ]
+}
