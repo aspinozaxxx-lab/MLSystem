@@ -50,6 +50,11 @@ jobs:
               codex = json.loads(codex_path.read_text(encoding="utf-8")) if codex_path.exists() else {}
               mlflow = run.get("mlflow") or {}
               result = run.get("result") or {}
+              metrics = dict(result.get("last_epoch_metrics") or {})
+              if result.get("best_val_iou") is not None:
+                  metrics["best_val_iou"] = result.get("best_val_iou")
+              metrics.setdefault("accepted_objects", None)
+              metrics.setdefault("accepted_geojson_mb", None)
               payload = {
                   "schema_version": 1,
                   "job_id": run.get("job_id"),
@@ -62,12 +67,16 @@ jobs:
                       "accepted_geojson": None,
                       "report_html": None,
                   },
-                  "metrics": {
-                      "best_val_iou": None,
-                      "accepted_objects": None,
-                      "accepted_geojson_mb": None,
-                  },
-                  "warnings": codex.get("warnings", []),
+                  "metrics": metrics,
+                  "matched_scenes_count": result.get("matched_scenes_count"),
+                  "missing_scenes": result.get("missing_scenes", []),
+                  "ambiguous_scenes": result.get("ambiguous_scenes", []),
+                  "train_scene_count": result.get("train_scene_count"),
+                  "val_scene_count": result.get("val_scene_count"),
+                  "train_tile_count": result.get("train_tile_count"),
+                  "val_tile_count": result.get("val_tile_count"),
+                  "best_epoch": result.get("best_epoch"),
+                  "warnings": (codex.get("warnings", []) or []) + (result.get("warnings", []) or []),
                   "errors": [] if run.get("status") != "failed" else [result.get("error")],
               }
               name = payload["job_id"] or payload["claim_id"]

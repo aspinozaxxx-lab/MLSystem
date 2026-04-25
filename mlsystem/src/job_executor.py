@@ -13,6 +13,7 @@ from .job_schema import JobSpec
 from .mlflow_adapter import MLflowJobRun, set_run_tags, start_job_run
 from .pipeline_config import PipelineConfig, ensure_storage_layout
 from .preprocess_inventory import build_preprocess_inventory
+from .real_train import run_real_train
 from .resource_manager import collect_status
 
 IMPLEMENTED_TASKS = {"noop", "status_check", "inventory", "train"}
@@ -106,7 +107,7 @@ def _execute(config: PipelineConfig, job: JobSpec, experiment_dir: Path, mlflow_
     if job.task == "train" and _is_smoke_train(job):
         return _smoke_train(job, experiment_dir, mlflow_run, job_log)
     if job.task == "train":
-        return {"status": "not_implemented", "message": "Full train is not implemented in MVP executor; use train.smoke=true for MLflow smoke checks"}
+        return run_real_train(config, job, experiment_dir, mlflow_run, job_log, _log)
     return {"status": "not_implemented", "message": f"Task {job.task} is validated but not implemented in MVP executor"}
 
 def _job_params(job: JobSpec) -> dict[str, Any]:
