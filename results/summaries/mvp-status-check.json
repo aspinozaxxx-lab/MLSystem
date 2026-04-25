@@ -1,0 +1,23 @@
+{
+  "claim_id": "mvp-status-check__20260424T111831734313Z",
+  "errors": [],
+  "job_id": "mvp-status-check",
+  "metrics": {
+    "accepted_geojson_mb": null,
+    "accepted_objects": null,
+    "best_val_iou": null
+  },
+  "mlflow_run_url": "http://127.0.0.1:5000/#/experiments/6/runs/60273f60271c40d4bc7671f997d0b13f",
+  "s3_artifacts": {
+    "accepted_geojson": null,
+    "report_html": null
+  },
+  "schema_version": 1,
+  "server": "roskadastr-ml",
+  "status": "done",
+  "task": "status_check",
+  "warnings": [
+    "Low disk free space: 10.524 GB below threshold 20.0 GB",
+    "GPU backend is disabled/not available; running CPU-only"
+  ]
+}
