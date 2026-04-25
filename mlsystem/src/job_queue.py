@@ -25,7 +25,6 @@ def enqueue(config: PipelineConfig, source_yaml: Path) -> dict[str, Any]:
     job = load_job_file(source_yaml)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     dest = config.jobs_root / "pending" / f"{job.job_id}__{stamp}.yml"
-    shutil.copy2(source_yaml, dest)
     queue_position = len(list((config.jobs_root / "pending").glob("*.yml")))
     experiment_name = job.mlflow.experiment or (f"mlsystem-{job.class_name}" if job.class_name else "mlsystem-queue")
     mlflow_result = create_queued_job_run(
@@ -66,7 +65,10 @@ def enqueue(config: PipelineConfig, source_yaml: Path) -> dict[str, Any]:
         "queue_file": str(dest),
         "mlflow": mlflow_result,
     }
+    # Write metadata before exposing the YAML to the executor. This prevents a
+    # fast polling loop from claiming the job before its MLflow run_id is known.
     write_json(dest.with_suffix(".json"), metadata)
+    shutil.copy2(source_yaml, dest)
     return {"queued": True, "job_id": job.job_id, "queue_file": str(dest), "mlflow": mlflow_result}
 
 def list_queue(config: PipelineConfig) -> dict[str, Any]:
