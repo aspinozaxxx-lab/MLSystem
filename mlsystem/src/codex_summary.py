@@ -14,7 +14,7 @@ def _recent_state_jobs(config: PipelineConfig, state: str, limit: int) -> list[d
         rows.append({"name": entry.name, "state": state, "claim": read_json(entry / "claim.json", None), "result": read_json(entry / "result.json", None), "error": read_json(entry / "error.json", None)})
     return rows
 
-def build_codex_summary(config: PipelineConfig, resource_status: dict[str, Any] | None = None) -> dict[str, Any]:
+def build_codex_summary(config: PipelineConfig, resource_status: dict[str, Any] | None = None, current_mlflow: dict[str, Any] | None = None) -> dict[str, Any]:
     resource_status = resource_status or read_json(config.system_root / "resource_status.json", default={}) or {}
     queue = list_queue(config)
     recent = []
@@ -28,6 +28,18 @@ def build_codex_summary(config: PipelineConfig, resource_status: dict[str, Any] 
         recommendations.append("Keep max_gpu_train_jobs=0 and run only lightweight/CPU jobs until a real GPU backend is available.")
     if queue.get("counts", {}).get("pending", 0) == 0:
         recommendations.append("Queue is empty; enqueue a YAML job when ready.")
-    payload = {"schema_version": 1, "queue": queue.get("counts", {}), "recent_jobs": recent[: config.recent_jobs_limit], "mlflow": resource_status.get("mlflow"), "s3": resource_status.get("s3"), "disk_warning": disk.get("free_gb", 999) < config.disk_warning_free_gb, "warnings": resource_status.get("warnings", []), "recommendations": recommendations}
+    mlflow_status = resource_status.get("mlflow")
+    if current_mlflow:
+        mlflow_status = {
+            "tracking_uri_internal": current_mlflow.get("tracking_uri_internal", config.mlflow_tracking_uri_internal),
+            "tracking_uri_external": current_mlflow.get("tracking_uri_external", config.mlflow_tracking_uri_external),
+            "experiment_name": current_mlflow.get("experiment_name"),
+            "experiment_id": current_mlflow.get("experiment_id"),
+            "run_id": current_mlflow.get("run_id"),
+            "run_url_external": current_mlflow.get("run_url_external") or current_mlflow.get("external_run_url"),
+            "run_url_internal": current_mlflow.get("run_url_internal") or current_mlflow.get("internal_run_url"),
+            "status": "ok" if current_mlflow.get("ok") else "error",
+        }
+    payload = {"schema_version": 1, "queue": queue.get("counts", {}), "recent_jobs": recent[: config.recent_jobs_limit], "mlflow": mlflow_status, "s3": resource_status.get("s3"), "disk_warning": disk.get("free_gb", 999) < config.disk_warning_free_gb, "warnings": resource_status.get("warnings", []), "recommendations": recommendations}
     write_json(config.system_root / "codex_summary.json", payload)
     return payload

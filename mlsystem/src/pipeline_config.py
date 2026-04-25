@@ -11,13 +11,19 @@ class WebConfig(BaseModel):
     host: str = "0.0.0.0"
     port: int = 8010
 
+class MLflowConfig(BaseModel):
+    tracking_uri_internal: str = "http://127.0.0.1:5000"
+    tracking_uri_external: str = "http://172.26.12.169:5000"
+    default_experiment: str = "mlsystem"
+
 class PipelineConfig(BaseModel):
     schema_version: int = 1
     project_root: Path
     storage_root: Path
     logs_root: Path
-    mlflow_tracking_uri: str = "http://127.0.0.1:5000"
-    mlflow_experiment: str = "mlsystem-mvp"
+    mlflow: MLflowConfig = Field(default_factory=MLflowConfig)
+    mlflow_tracking_uri: str | None = None
+    mlflow_experiment: str | None = None
     s3_endpoint_url: str = "http://127.0.0.1:9000"
     s3_alias: str | None = "mlplatform"
     artifact_bucket: str = "mlflow-artifacts"
@@ -45,6 +51,15 @@ class PipelineConfig(BaseModel):
     @property
     def experiments_root(self) -> Path:
         return self.storage_root / "experiments"
+    @property
+    def mlflow_tracking_uri_internal(self) -> str:
+        return self.mlflow.tracking_uri_internal or self.mlflow_tracking_uri or "http://127.0.0.1:5000"
+    @property
+    def mlflow_tracking_uri_external(self) -> str:
+        return self.mlflow.tracking_uri_external or self.mlflow_tracking_uri_internal
+    @property
+    def mlflow_default_experiment(self) -> str:
+        return self.mlflow.default_experiment or self.mlflow_experiment or "mlsystem"
 
 def _expand_env(value: Any) -> Any:
     if isinstance(value, str):
@@ -61,9 +76,13 @@ def load_config(path: str | Path | None = None) -> PipelineConfig:
         payload = yaml.safe_load(fp) or {}
     payload = _expand_env(payload)
     if os.getenv("MLFLOW_TRACKING_URI"):
-        payload["mlflow_tracking_uri"] = os.environ["MLFLOW_TRACKING_URI"]
+        payload.setdefault("mlflow", {})["tracking_uri_internal"] = os.environ["MLFLOW_TRACKING_URI"]
     if os.getenv("MLFLOW_S3_ENDPOINT_URL"):
         payload["s3_endpoint_url"] = os.environ["MLFLOW_S3_ENDPOINT_URL"]
+    if "mlflow_tracking_uri" in payload and "mlflow" not in payload:
+        payload["mlflow"] = {"tracking_uri_internal": payload["mlflow_tracking_uri"]}
+    if "mlflow_experiment" in payload:
+        payload.setdefault("mlflow", {}).setdefault("default_experiment", payload["mlflow_experiment"])
     return PipelineConfig.model_validate(payload)
 
 def ensure_storage_layout(config: PipelineConfig) -> None:

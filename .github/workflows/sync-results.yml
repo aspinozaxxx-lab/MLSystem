@@ -57,7 +57,7 @@ jobs:
                   "status": run.get("status", result.get("status")),
                   "task": run.get("task"),
                   "server": "roskadastr-ml",
-                  "mlflow_run_url": mlflow.get("run_url") or mlflow.get("url"),
+                  "mlflow_run_url": mlflow.get("run_url_external") or mlflow.get("external_run_url") or mlflow.get("run_url") or mlflow.get("url"),
                   "s3_artifacts": {
                       "accepted_geojson": None,
                       "report_html": None,

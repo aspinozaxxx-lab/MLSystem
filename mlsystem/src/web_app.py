@@ -25,7 +25,7 @@ def index() -> str:
       <h1>MLSystem MVP</h1>
       <p>Storage: <code>{config.storage_root}</code></p>
       <p>Queue: <code>{json.dumps(queue)}</code></p>
-      <p>MLflow: <code>{mlflow.get('ok')}</code> <a href="{config.mlflow_tracking_uri}">{config.mlflow_tracking_uri}</a></p>
+      <p>MLflow: <code>{mlflow.get('ok')}</code> <a href="{config.mlflow_tracking_uri_external}">{config.mlflow_tracking_uri_external}</a></p>
       <p>S3: <code>{s3.get('ok')}</code> endpoint <code>{config.s3_endpoint_url}</code></p>
       <ul>
         <li><a href="/api/state">/api/state</a></li><li><a href="/api/resources">/api/resources</a></li>

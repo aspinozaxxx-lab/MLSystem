@@ -2,8 +2,10 @@ schema_version: 1
 project_root: /home/worker/mlsystem
 storage_root: /home/worker/mlsystem/storage
 logs_root: /home/worker/mlsystem/logs
-mlflow_tracking_uri: http://127.0.0.1:5000
-mlflow_experiment: mlsystem-mvp
+mlflow:
+  tracking_uri_internal: http://127.0.0.1:5000
+  tracking_uri_external: http://172.26.12.169:5000
+  default_experiment: mlsystem
 s3_endpoint_url: http://127.0.0.1:9000
 s3_alias: mlplatform
 artifact_bucket: mlflow-artifacts
