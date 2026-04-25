@@ -152,6 +152,14 @@
     - mlsystem_run_health_checks | bool
     - mlsystem_manage_services | bool
 
+- name: Check whether deployed web API supports preprocess endpoint
+  ansible.builtin.command:
+    cmd: "grep -q 'api_preprocess' {{ mlsystem_root }}/src/web_app.py"
+  register: mlsystem_web_supports_preprocess
+  changed_when: false
+  failed_when: false
+  when: mlsystem_run_health_checks | bool
+
 - name: Check MLSystem preprocess API endpoint
   ansible.builtin.uri:
     url: "{{ mlsystem_web_preprocess_uri }}"
@@ -166,6 +174,7 @@
   when:
     - mlsystem_run_health_checks | bool
     - mlsystem_manage_services | bool
+    - mlsystem_web_supports_preprocess.rc | default(1) == 0
 
 - name: Run safe preprocess dry-run check
   ansible.builtin.command:
