@@ -84,22 +84,40 @@
   become: true
   when: mlsystem_deploy_infra | bool
 
+- name: Install systemd unit for S3 preprocess daemon
+  ansible.builtin.template:
+    src: mlsystem-preprocess.service.j2
+    dest: /etc/systemd/system/mlsystem-preprocess.service
+    mode: "0644"
+  become: true
+  when: mlsystem_deploy_infra | bool
+
 - name: Reload systemd
   ansible.builtin.systemd_service:
     daemon_reload: true
   become: true
   when: mlsystem_deploy_infra | bool
 
-- name: Restart managed MLSystem services when enabled
-  ansible.builtin.systemd_service:
-    name: "{{ item }}"
-    state: restarted
-    enabled: true
+- name: Check managed MLSystem unit files
+  ansible.builtin.stat:
+    path: "/etc/systemd/system/{{ item }}"
   loop:
     - mlsystem-web.service
     - mlsystem-executor.service
-  when: mlsystem_manage_services | bool
+    - mlsystem-preprocess.service
+  register: mlsystem_unit_files
   become: true
+
+- name: Restart managed MLSystem services when enabled
+  ansible.builtin.systemd_service:
+    name: "{{ item.item }}"
+    state: restarted
+    enabled: true
+  loop: "{{ mlsystem_unit_files.results }}"
+  become: true
+  when:
+    - mlsystem_manage_services | bool
+    - item.stat.exists
 
 - name: Check MLflow endpoint
   ansible.builtin.uri:
@@ -134,10 +152,34 @@
     - mlsystem_run_health_checks | bool
     - mlsystem_manage_services | bool
 
+- name: Check MLSystem preprocess API endpoint
+  ansible.builtin.uri:
+    url: "{{ mlsystem_web_preprocess_uri }}"
+    method: GET
+    status_code: 200
+    return_content: true
+    timeout: 10
+  register: mlsystem_preprocess_check
+  retries: 6
+  delay: 2
+  until: mlsystem_preprocess_check.status == 200
+  when:
+    - mlsystem_run_health_checks | bool
+    - mlsystem_manage_services | bool
+
+- name: Run safe preprocess dry-run check
+  ansible.builtin.command:
+    cmd: "{{ mlsystem_venv }}/bin/python -m src.cli preprocess-once --dry-run"
+    chdir: "{{ mlsystem_root }}"
+  register: mlsystem_preprocess_dry_run
+  changed_when: false
+  when: mlsystem_run_health_checks | bool
+
 - name: Report MLSystem health checks
   ansible.builtin.debug:
     msg:
       mlflow_status: "{{ mlsystem_mlflow_check.status | default('skipped') }}"
       minio_status: "{{ mlsystem_minio_check.status | default('skipped') }}"
       web_state: "{{ mlsystem_web_check.json | default('skipped') }}"
+      preprocess_api: "{{ mlsystem_preprocess_check.json | default('skipped') }}"
   when: mlsystem_run_health_checks | bool

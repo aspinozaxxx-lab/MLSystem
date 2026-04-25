@@ -57,6 +57,8 @@ jobs:
         run: |
           systemctl is-active mlsystem-web.service
           systemctl is-active mlsystem-executor.service
+          systemctl is-active mlsystem-preprocess.service
           curl -fsS http://127.0.0.1:8010/api/state | /home/worker/ml-training/.venv/bin/python -m json.tool
+          curl -fsS http://127.0.0.1:8010/api/preprocess | /home/worker/ml-training/.venv/bin/python -m json.tool
           curl -fsS http://127.0.0.1:5000 >/dev/null
           curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null

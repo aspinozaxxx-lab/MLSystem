@@ -57,6 +57,7 @@ class PipelineConfig(BaseModel):
     known_data_roots: list[Path] = Field(default_factory=list)
     max_inventory_files: int = 2000
     max_inventory_depth: int = 5
+    preprocess_interval_sec: int = 300
     disk_warning_free_gb: float = 20.0
     recent_jobs_limit: int = 20
     web: WebConfig = Field(default_factory=WebConfig)

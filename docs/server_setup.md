@@ -23,6 +23,7 @@ Everything else is managed through Ansible:
 - non-secret env file `/etc/mlsystem/mlsystem.env`
 - `mlsystem-web.service`
 - `mlsystem-executor.service`
+- `mlsystem-preprocess.service`
 - systemd reload and service restart
 - MLflow, MinIO, and web API health checks
 
@@ -71,12 +72,13 @@ Templates:
 
 - `ansible/roles/mlsystem/templates/mlsystem-web.service.j2`
 - `ansible/roles/mlsystem/templates/mlsystem-executor.service.j2`
+- `ansible/roles/mlsystem/templates/mlsystem-preprocess.service.j2`
 - `ansible/roles/mlsystem/templates/mlsystem.env.j2`
 
 Logs:
 
 - application logs directory: `/home/worker/mlsystem/logs`
-- service logs: `journalctl -u mlsystem-web.service -u mlsystem-executor.service`
+- service logs: `journalctl -u mlsystem-web.service -u mlsystem-executor.service -u mlsystem-preprocess.service`
 - runner logs: `/home/worker/actions-runner/_diag/`
 
 ## Status Checks
@@ -84,7 +86,9 @@ Logs:
 ```bash
 systemctl is-active mlsystem-web.service
 systemctl is-active mlsystem-executor.service
+systemctl is-active mlsystem-preprocess.service
 curl -fsS http://127.0.0.1:8010/api/state
+curl -fsS http://127.0.0.1:8010/api/preprocess
 cd /home/worker/mlsystem
 source /home/worker/ml-training/.venv/bin/activate
 python -m src.cli status

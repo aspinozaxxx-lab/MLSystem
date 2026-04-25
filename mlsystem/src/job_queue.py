@@ -7,6 +7,7 @@ import yaml
 from .io_utils import write_json
 from .job_schema import JobSpec
 from .pipeline_config import PipelineConfig, ensure_storage_layout
+from .mlflow_adapter import create_queued_job_run
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -25,7 +26,48 @@ def enqueue(config: PipelineConfig, source_yaml: Path) -> dict[str, Any]:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     dest = config.jobs_root / "pending" / f"{job.job_id}__{stamp}.yml"
     shutil.copy2(source_yaml, dest)
-    return {"queued": True, "job_id": job.job_id, "queue_file": str(dest)}
+    queue_position = len(list((config.jobs_root / "pending").glob("*.yml")))
+    experiment_name = job.mlflow.experiment or (f"mlsystem-{job.class_name}" if job.class_name else "mlsystem-queue")
+    mlflow_result = create_queued_job_run(
+        config,
+        experiment_name,
+        f"queued:{job.job_id}",
+        params={
+            "job_id": job.job_id,
+            "task": job.task,
+            "class_name": job.class_name,
+            "priority": job.priority,
+            "description": job.description,
+            "params": job.params,
+            "data": job.data,
+            "preprocess": job.preprocess,
+            "train": job.train,
+            "predict": job.predict,
+            "postprocess": job.postprocess,
+            "resources": job.resources.model_dump(),
+        },
+        tags={
+            "job_id": job.job_id,
+            "task": job.task,
+            "class_name": job.class_name or "",
+            "priority": job.priority,
+            "created_at": utc_now(),
+            **job.mlflow.tags,
+        },
+        artifacts=[dest],
+        queue_position=queue_position,
+    )
+    metadata = {
+        "job_id": job.job_id,
+        "task": job.task,
+        "class_name": job.class_name,
+        "queue_state": "pending",
+        "created_at": utc_now(),
+        "queue_file": str(dest),
+        "mlflow": mlflow_result,
+    }
+    write_json(dest.with_suffix(".json"), metadata)
+    return {"queued": True, "job_id": job.job_id, "queue_file": str(dest), "mlflow": mlflow_result}
 
 def list_queue(config: PipelineConfig) -> dict[str, Any]:
     ensure_storage_layout(config)
@@ -33,7 +75,14 @@ def list_queue(config: PipelineConfig) -> dict[str, Any]:
     for state, directory in queue_dirs(config).items():
         if state == "pending":
             entries = sorted(directory.glob("*.yml"), key=lambda p: p.stat().st_mtime)
-            rows = [{"name": p.name, "path": str(p)} for p in entries]
+            rows = []
+            for p in entries:
+                meta_path = p.with_suffix(".json")
+                row = {"name": p.name, "path": str(p)}
+                if meta_path.exists():
+                    import json
+                    row["metadata"] = json.loads(meta_path.read_text(encoding="utf-8"))
+                rows.append(row)
         else:
             entries = sorted([p for p in directory.iterdir() if p.is_dir()], key=lambda p: p.stat().st_mtime, reverse=True)
             rows = [{"name": p.name, "path": str(p)} for p in entries]
@@ -57,16 +106,25 @@ def claim_next(config: PipelineConfig, executor_id: str | None = None) -> dict[s
         try:
             target_dir.mkdir(parents=True, exist_ok=False)
             os.replace(pending_file, target_dir / "job.yml")
+            meta_path = pending_file.with_suffix(".json")
+            if meta_path.exists():
+                os.replace(meta_path, target_dir / "queue_metadata.json")
         except (FileExistsError, OSError):
             continue
+        queue_metadata = {}
+        queue_metadata_path = target_dir / "queue_metadata.json"
+        if queue_metadata_path.exists():
+            import json
+            queue_metadata = json.loads(queue_metadata_path.read_text(encoding="utf-8"))
         claim = {
             "claim_id": claim_id, "job_id": job.job_id, "task": job.task,
             "executor_id": executor_id or f"{socket.gethostname()}:{os.getpid()}",
             "hostname": socket.gethostname(), "pid": os.getpid(),
             "claimed_at": utc_now(), "heartbeat_at": utc_now(),
+            "mlflow": queue_metadata.get("mlflow"),
         }
         write_json(target_dir / "claim.json", claim)
-        return {"claim_id": claim_id, "job": job, "run_dir": target_dir, "claim": claim}
+        return {"claim_id": claim_id, "job": job, "run_dir": target_dir, "claim": claim, "queue_metadata": queue_metadata}
     return None
 
 def heartbeat(run_dir: Path) -> None:

@@ -61,12 +61,14 @@ class MLflowJobRun:
         run_name: str,
         params: dict[str, Any] | None = None,
         tags: dict[str, str] | None = None,
+        run_id: str | None = None,
     ) -> None:
         self.config = config
         self.experiment_name = experiment_name or config.mlflow_default_experiment
         self.run_name = run_name
         self.params = params or {}
         self.tags = tags or {}
+        self.existing_run_id = run_id
         self._mlflow = None
         self._run = None
         self.experiment_id: str | None = None
@@ -78,7 +80,10 @@ class MLflowJobRun:
         mlflow.set_tracking_uri(self.config.mlflow_tracking_uri_internal)
         experiment = mlflow.set_experiment(self.experiment_name)
         self.experiment_id = experiment.experiment_id
-        self._run = mlflow.start_run(run_name=self.run_name)
+        if self.existing_run_id:
+            self._run = mlflow.start_run(run_id=self.existing_run_id)
+        else:
+            self._run = mlflow.start_run(run_name=self.run_name)
         self.run_id = self._run.info.run_id
         mlflow.set_tags(
             {
@@ -118,6 +123,11 @@ class MLflowJobRun:
         if clean:
             self._mlflow.log_metrics(clean, step=step)
 
+    def set_tags(self, tags: dict[str, Any]) -> None:
+        if not self._mlflow:
+            return
+        self._mlflow.set_tags({key: "" if value is None else str(value) for key, value in tags.items()})
+
     def log_artifacts(self, artifacts: list[Path]) -> None:
         if not self._mlflow:
             return
@@ -147,8 +157,35 @@ def start_job_run(
     run_name: str,
     params: dict[str, Any] | None = None,
     tags: dict[str, str] | None = None,
+    run_id: str | None = None,
 ) -> MLflowJobRun:
-    return MLflowJobRun(config, experiment_name, run_name, params=params, tags=tags)
+    return MLflowJobRun(config, experiment_name, run_name, params=params, tags=tags, run_id=run_id)
+
+def set_run_tags(config: PipelineConfig, run_id: str, tags: dict[str, Any]) -> None:
+    import mlflow
+    mlflow.set_tracking_uri(config.mlflow_tracking_uri_internal)
+    with mlflow.start_run(run_id=run_id):
+        mlflow.set_tags({key: "" if value is None else str(value) for key, value in tags.items()})
+
+def create_queued_job_run(
+    config: PipelineConfig,
+    experiment_name: str,
+    run_name: str,
+    params: dict[str, Any],
+    tags: dict[str, Any],
+    artifacts: list[Path] | None = None,
+    queue_position: int | None = None,
+) -> dict[str, Any]:
+    queued_tags = {
+        "job_status": "queued",
+        "queue_state": "pending",
+        **{key: "" if value is None else str(value) for key, value in tags.items()},
+    }
+    with start_job_run(config, experiment_name, run_name, params=params, tags=queued_tags) as run:
+        if queue_position is not None:
+            run.log_metrics({"queue/position": queue_position}, step=0)
+        run.log_artifacts(artifacts or [])
+        return run.result()
 
 def log_lightweight_run(
     config: PipelineConfig,

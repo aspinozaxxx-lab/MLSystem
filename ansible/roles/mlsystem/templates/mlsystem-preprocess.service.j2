@@ -1,0 +1,16 @@
+[Unit]
+Description=MLSystem S3 incoming inventory and preprocessing daemon
+After=network-online.target
+
+[Service]
+Type=simple
+User=worker
+Group=worker
+WorkingDirectory={{ mlsystem_root }}
+EnvironmentFile=/etc/mlsystem/mlsystem.env
+ExecStart={{ mlsystem_venv }}/bin/python -m src.cli preprocess-forever --interval {{ mlsystem_preprocess_interval_sec }}
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

@@ -10,8 +10,9 @@ from .codex_summary import build_codex_summary
 from .io_utils import append_text, write_json
 from .job_queue import claim_next, finish, heartbeat, utc_now
 from .job_schema import JobSpec
-from .mlflow_adapter import MLflowJobRun, start_job_run
+from .mlflow_adapter import MLflowJobRun, set_run_tags, start_job_run
 from .pipeline_config import PipelineConfig, ensure_storage_layout
+from .preprocess_inventory import build_preprocess_inventory
 from .resource_manager import collect_status
 
 IMPLEMENTED_TASKS = {"noop", "status_check", "inventory", "train"}
@@ -40,7 +41,8 @@ def _inventory(config: PipelineConfig) -> dict[str, Any]:
                     pass
             item["files"] = min(count, config.max_inventory_files)
         roots.append(item)
-    return {"inventory_roots": roots, "max_inventory_files": config.max_inventory_files}
+    s3_inventory = build_preprocess_inventory(config, dry_run=True)
+    return {"inventory_roots": roots, "s3_inventory": s3_inventory, "max_inventory_files": config.max_inventory_files}
 
 def _is_smoke_train(job: JobSpec) -> bool:
     return bool(job.params.get("smoke") or job.params.get("smoke_train") or job.train.get("smoke"))
@@ -144,23 +146,38 @@ def run_once(config: PipelineConfig) -> dict[str, Any]:
         started = time.time()
         experiment_name = job.mlflow.experiment or config.mlflow_default_experiment
         run_name = f"{job.task}:{job.job_id}"
+        existing_run_id = ((claimed.get("queue_metadata") or {}).get("mlflow") or {}).get("run_id")
+        if existing_run_id:
+            set_run_tags(
+                config,
+                existing_run_id,
+                {
+                    "job_status": "running",
+                    "queue_state": "running",
+                    "started_at": utc_now(),
+                    "claim_id": claim_id,
+                },
+            )
         with start_job_run(
             config,
             experiment_name,
             run_name,
             params=_job_params(job),
-            tags={"claim_id": claim_id, **job.mlflow.tags},
+            tags={"job_status": "running", "queue_state": "running", "claim_id": claim_id, **job.mlflow.tags},
+            run_id=existing_run_id,
         ) as mlflow_run:
             result = _execute(config, job, experiment_dir, mlflow_run, job_log)
             duration = round(time.time() - started, 3)
             mlflow_run.log_metrics({"duration_sec": duration})
             mlflow_result = mlflow_run.result()
+            run_summary_status = result.get("status", "done")
+            mlflow_run.set_tags({"job_status": run_summary_status, "queue_state": run_summary_status})
             run_summary = {
                 "schema_version": 1,
                 "claim_id": claim_id,
                 "job_id": job.job_id,
                 "task": job.task,
-                "status": result.get("status", "done"),
+                "status": run_summary_status,
                 "implemented": job.task in IMPLEMENTED_TASKS,
                 "started_at": claimed["claim"].get("claimed_at"),
                 "finished_at": utc_now(),
@@ -193,6 +210,9 @@ def run_once(config: PipelineConfig) -> dict[str, Any]:
         return {"claimed": True, "success": True, "claim_id": claim_id, "job_id": job.job_id, "task": job.task, "final_dir": str(final_dir), "result": result, "mlflow": mlflow_result}
     except Exception as exc:
         error = {"status": "failed", "error": f"{type(exc).__name__}: {exc}", "job_id": job.job_id, "task": job.task, "failed_at": utc_now(), "mlflow": mlflow_result}
+        existing_run_id = ((claimed.get("queue_metadata") or {}).get("mlflow") or {}).get("run_id")
+        if existing_run_id:
+            set_run_tags(config, existing_run_id, {"job_status": "failed", "queue_state": "failed", "error": error["error"]})
         write_json(running_dir / "error.json", error)
         _log(job_log, f"failed error={error['error']}")
         final_dir = finish(config, running_dir, success=False)

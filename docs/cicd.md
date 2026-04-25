@@ -17,7 +17,9 @@ Runs on the self-hosted runner. It parses Ansible YAML, checks inventory, runs p
 
 - `mlsystem-web.service`
 - `mlsystem-executor.service`
+- `mlsystem-preprocess.service`
 - `http://127.0.0.1:8010/api/state`
+- `http://127.0.0.1:8010/api/preprocess`
 - `http://127.0.0.1:5000`
 - `http://127.0.0.1:9000/minio/health/live`
 
@@ -33,7 +35,7 @@ Triggers:
   - `configs/**`
   - `.github/workflows/cicd-code.yml`
 
-Runs on the self-hosted runner. It compiles Python, validates configs, scans for obvious secrets, syntax-checks `ansible/playbooks/deploy_code.yml`, deploys code through Ansible, restarts the MLSystem services, and verifies the web API.
+Runs on the self-hosted runner. It compiles Python, validates configs, scans for obvious secrets, syntax-checks `ansible/playbooks/deploy_code.yml`, deploys code through Ansible, restarts the MLSystem services, and verifies the web API. If `mlsystem-preprocess.service` already exists, code deploy also checks that it is active.
 
 ## cicd-queue.yml
 

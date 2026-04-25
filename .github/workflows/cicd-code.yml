@@ -95,4 +95,8 @@ jobs:
         run: |
           systemctl is-active mlsystem-web.service
           systemctl is-active mlsystem-executor.service
+          if systemctl list-unit-files mlsystem-preprocess.service --no-legend | grep -q mlsystem-preprocess.service; then
+            systemctl is-active mlsystem-preprocess.service
+          fi
           curl -fsS http://127.0.0.1:8010/api/state | /home/worker/ml-training/.venv/bin/python -m json.tool
+          curl -fsS http://127.0.0.1:8010/api/preprocess | /home/worker/ml-training/.venv/bin/python -m json.tool

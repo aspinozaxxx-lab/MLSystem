@@ -39,6 +39,7 @@ known_data_roots:
   - /home/worker/ml-training/models
 max_inventory_files: 2000
 max_inventory_depth: 5
+preprocess_interval_sec: 300
 disk_warning_free_gb: 20
 recent_jobs_limit: 20
 web:

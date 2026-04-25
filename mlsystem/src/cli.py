@@ -6,6 +6,7 @@ from .job_executor import run_once
 from .job_queue import enqueue, list_queue
 from .mlflow_adapter import check_mlflow
 from .pipeline_config import load_config, ensure_storage_layout
+from .preprocess_inventory import build_preprocess_inventory, run_preprocess_forever
 from .resource_manager import collect_status
 from .s3_adapter import build_s3_layout_status, check_s3
 
@@ -18,6 +19,10 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
     for name in ["status", "check-mlflow", "check-s3", "s3-layout", "queue-list", "run-once", "resources"]:
         sub.add_parser(name)
+    p_preprocess = sub.add_parser("preprocess-once")
+    p_preprocess.add_argument("--dry-run", action="store_true")
+    p_preprocess_forever = sub.add_parser("preprocess-forever")
+    p_preprocess_forever.add_argument("--interval", type=float, default=300.0)
     p_forever = sub.add_parser("run-forever")
     p_forever.add_argument("--interval", type=float, default=10.0)
     p_enqueue = sub.add_parser("enqueue")
@@ -46,6 +51,10 @@ def main() -> None:
             time.sleep(max(args.interval, 1.0))
     elif args.command == "resources":
         print_json(collect_status(config, include_services=True))
+    elif args.command == "preprocess-once":
+        print_json(build_preprocess_inventory(config, dry_run=args.dry_run))
+    elif args.command == "preprocess-forever":
+        run_preprocess_forever(config, interval=args.interval)
 
 if __name__ == "__main__":
     main()

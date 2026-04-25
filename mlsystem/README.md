@@ -12,6 +12,8 @@ source /home/worker/ml-training/.venv/bin/activate
 python -m src.cli status
 python -m src.cli check-mlflow
 python -m src.cli check-s3
+python -m src.cli s3-layout
+python -m src.cli preprocess-once
 python -m src.cli enqueue configs/job.example.yaml
 python -m src.cli run-once
 python -m src.web_app
