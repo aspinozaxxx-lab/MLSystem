@@ -1,0 +1,13 @@
+{
+  "claim_id": null,
+  "errors": [],
+  "job_id": "deforest_exp10_r34_t1024_aug",
+  "job_status": "queued",
+  "metrics": {},
+  "mlflow_run_url": "http://172.26.12.169:5000/#/experiments/7/runs/0e90b62da0ca48b6b2fcce954722ffc0",
+  "schema_version": 1,
+  "server": "roskadastr-ml",
+  "status": "queued",
+  "task": "train",
+  "warnings": []
+}
