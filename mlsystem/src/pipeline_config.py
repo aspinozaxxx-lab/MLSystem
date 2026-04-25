@@ -17,6 +17,7 @@ class MLflowConfig(BaseModel):
     default_experiment: str = "mlsystem"
 
 class StorageConfig(BaseModel):
+    local_root: Path = Path("/data/mlsystem/storage")
     heavy_backend: str = "s3"
     s3_bucket: str = "mlsystems"
     s3_prefix: str = ""

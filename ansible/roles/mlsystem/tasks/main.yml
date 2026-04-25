@@ -1,4 +1,26 @@
 ---
+- name: Check /data mount exists
+  ansible.builtin.command: "findmnt {{ mlsystem_data_root }}"
+  register: mlsystem_data_mount
+  changed_when: false
+  failed_when: mlsystem_data_mount.rc != 0
+  become: true
+
+- name: Ensure MLSystem data directories exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ mlsystem_data_root }}", owner: root, group: root, mode: "0755" }
+    - { path: "{{ mlsystem_storage_root }}", owner: worker, group: worker, mode: "0755" }
+    - { path: "{{ mlsystem_logs_root }}", owner: worker, group: worker, mode: "0755" }
+    - { path: "{{ mlsystem_artifacts_root }}", owner: worker, group: worker, mode: "0755" }
+    - { path: "{{ mlsystem_minio_data_root }}", owner: root, group: root, mode: "0755" }
+  become: true
+
 - name: Ensure MLSystem root and runtime directories exist
   ansible.builtin.file:
     path: "{{ item }}"
@@ -6,16 +28,38 @@
     mode: "0755"
   loop:
     - "{{ mlsystem_root }}"
-    - "{{ mlsystem_root }}/logs"
-    - "{{ mlsystem_root }}/storage/images"
-    - "{{ mlsystem_root }}/storage/layouts"
-    - "{{ mlsystem_root }}/storage/jobs/pending"
-    - "{{ mlsystem_root }}/storage/jobs/running"
-    - "{{ mlsystem_root }}/storage/jobs/done"
-    - "{{ mlsystem_root }}/storage/jobs/failed"
-    - "{{ mlsystem_root }}/storage/cache"
-    - "{{ mlsystem_root }}/storage/experiments"
-    - "{{ mlsystem_root }}/storage/system"
+
+- name: Ensure MLSystem storage compatibility symlink exists
+  ansible.builtin.file:
+    src: "{{ mlsystem_storage_root }}"
+    dest: "{{ mlsystem_root }}/storage"
+    state: link
+    force: true
+
+- name: Ensure MLSystem logs compatibility symlink exists
+  ansible.builtin.file:
+    src: "{{ mlsystem_logs_root }}"
+    dest: "{{ mlsystem_root }}/logs"
+    state: link
+    force: true
+
+- name: Ensure MLSystem storage subdirectories exist on /data
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: worker
+    group: worker
+    mode: "0755"
+  loop:
+    - "{{ mlsystem_storage_root }}/images"
+    - "{{ mlsystem_storage_root }}/layouts"
+    - "{{ mlsystem_storage_root }}/jobs/pending"
+    - "{{ mlsystem_storage_root }}/jobs/running"
+    - "{{ mlsystem_storage_root }}/jobs/done"
+    - "{{ mlsystem_storage_root }}/jobs/failed"
+    - "{{ mlsystem_storage_root }}/cache"
+    - "{{ mlsystem_storage_root }}/experiments"
+    - "{{ mlsystem_storage_root }}/system"
 
 - name: Ensure MLSystem system config directory exists
   ansible.builtin.file:
@@ -57,7 +101,7 @@
 - name: Check local lightweight storage size
   ansible.builtin.shell: |
     set -e
-    du -sm "{{ mlsystem_root }}/storage/images" "{{ mlsystem_root }}/storage/layouts" "{{ mlsystem_root }}/storage/cache" | awk '{sum += $1} END {print sum + 0}'
+    du -sm "{{ mlsystem_storage_root }}/images" "{{ mlsystem_storage_root }}/layouts" "{{ mlsystem_storage_root }}/cache" | awk '{sum += $1} END {print sum + 0}'
   register: mlsystem_local_storage_du
   changed_when: false
 

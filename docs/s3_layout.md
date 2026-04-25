@@ -1,12 +1,12 @@
 # S3 Layout
 
-Активный bucket для тяжелых данных:
+Active bucket for heavy ML data:
 
 ```text
 s3://mlsystems/
 ```
 
-Целевая структура:
+Target structure:
 
 ```text
 s3://mlsystems/images/incoming/<delivery_name>/<files>
@@ -25,22 +25,22 @@ s3://mlsystems/system/manifests/images_manifest.json
 s3://mlsystems/system/manifests/deliveries_manifest.json
 ```
 
-`incoming` не удаляется и не перемещается автоматически. Preprocess daemon только регистрирует снимки, читает metadata и пишет маленькие JSON pointer-файлы в `images/kanopus/...`.
+`incoming` is never deleted or moved automatically. The preprocess daemon registers images, reads metadata, and writes small JSON pointer files under `images/kanopus/...`.
 
-Загрузка поставки:
+Upload an image delivery:
 
 ```bash
 mc cp --recursive ./batch_001/ mlplatform/mlsystems/images/incoming/batch_001/
 ```
 
-Загрузка разметки:
+Upload labels:
 
 ```bash
 mc cp ./layout.geojson mlplatform/mlsystems/layouts/deforest/layout.geojson
 mc cp ./scenes.txt mlplatform/mlsystems/layouts/deforest/scenes.txt
 ```
 
-Проверка:
+Check S3 and rebuild manifests:
 
 ```bash
 cd /home/worker/mlsystem
@@ -49,12 +49,18 @@ python -m src.cli s3-layout
 python -m src.cli preprocess-once
 ```
 
-Локальные копии маленьких manifests:
+Local copies of small manifests live on `/data`:
 
 ```text
-/home/worker/mlsystem/storage/system/images_manifest.json
-/home/worker/mlsystem/storage/system/deliveries_manifest.json
-/home/worker/mlsystem/storage/system/preprocess_status.json
+/data/mlsystem/storage/system/images_manifest.json
+/data/mlsystem/storage/system/deliveries_manifest.json
+/data/mlsystem/storage/system/preprocess_status.json
 ```
 
-В Git не кладутся TIFF, checkpoints, probability maps, большие GeoJSON/GPKG, reports и caches. Секреты S3 читаются из окружения или существующего `mc` alias на сервере.
+Compatibility symlink:
+
+```text
+/home/worker/mlsystem/storage -> /data/mlsystem/storage
+```
+
+Git must not store TIFF, checkpoints, probability maps, large GeoJSON/GPKG, reports, caches, or secrets.

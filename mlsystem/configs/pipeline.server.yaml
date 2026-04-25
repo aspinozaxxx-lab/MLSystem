@@ -1,7 +1,7 @@
 schema_version: 1
 project_root: /home/worker/mlsystem
-storage_root: /home/worker/mlsystem/storage
-logs_root: /home/worker/mlsystem/logs
+storage_root: /data/mlsystem/storage
+logs_root: /data/mlsystem/logs
 mlflow:
   tracking_uri_internal: http://127.0.0.1:5000
   tracking_uri_external: http://172.26.12.169:5000
@@ -11,6 +11,7 @@ s3_alias: mlplatform
 artifact_bucket: mlsystems
 dataset_cache_bucket: mlsystems
 storage:
+  local_root: /data/mlsystem/storage
   heavy_backend: s3
   s3_bucket: mlsystems
   s3_prefix: ""

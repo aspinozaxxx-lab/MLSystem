@@ -7,6 +7,9 @@ Target server:
 - OS: Ubuntu 22.04.5
 - runtime venv: `/home/worker/ml-training/.venv`
 - application root: `/home/worker/mlsystem`
+- data mount: `/data`
+- MLSystem storage: `/data/mlsystem/storage`
+- MinIO data: `/data/minio/data`
 - MLflow: `http://127.0.0.1:5000`
 - MinIO/S3: `http://127.0.0.1:9000`
 - current mode: CPU-only, `max_gpu_train_jobs: 0`
@@ -18,14 +21,52 @@ GitHub self-hosted runner registration is the only manual exception. It requires
 Everything else is managed through Ansible:
 
 - `/home/worker/mlsystem`
-- lightweight `storage/` folders
-- `/home/worker/mlsystem/logs`
+- `/data/mlsystem/storage`
+- `/data/mlsystem/logs`
+- compatibility symlinks `/home/worker/mlsystem/storage` and `/home/worker/mlsystem/logs`
 - non-secret env file `/etc/mlsystem/mlsystem.env`
 - `mlsystem-web.service`
 - `mlsystem-executor.service`
 - `mlsystem-preprocess.service`
 - systemd reload and service restart
 - MLflow, MinIO, and web API health checks
+
+## Disk And /data
+
+Initial manual disk setup is intentionally not automated in Ansible because it is destructive if pointed at the wrong disk. The server was prepared with:
+
+```bash
+sudo parted /dev/sda unit GiB print free
+sudo parted /dev/sda --script mkpart primary ext4 256GiB 100%
+sudo partprobe /dev/sda
+sudo mkfs.ext4 -F -L data /dev/sda3
+sudo mkdir -p /data
+sudo mount /dev/sda3 /data
+uuid=$(sudo blkid -s UUID -o value /dev/sda3)
+sudo cp /etc/fstab /etc/fstab.backup-$(date +%Y%m%dT%H%M%S)
+echo "UUID=$uuid /data ext4 defaults,nofail 0 2" | sudo tee -a /etc/fstab
+sudo mount -a
+df -h / /data
+lsblk -f
+```
+
+After `/data` exists, Ansible manages the application data directories:
+
+```text
+/data/mlsystem/storage
+/data/mlsystem/logs
+/data/mlsystem/artifacts
+/data/minio/data
+```
+
+MinIO is managed by `/home/worker/ml-platform/docker-compose.yml`, not by this repository. Its storage was moved from Docker volume `ml-platform_minio-data` to bind mount:
+
+```yaml
+volumes:
+  - /data/minio/data:/data
+```
+
+The old Docker volume was intentionally left as a backup and must not be removed until a separate cleanup is approved.
 
 ## Local Commands
 
@@ -77,7 +118,7 @@ Templates:
 
 Logs:
 
-- application logs directory: `/home/worker/mlsystem/logs`
+- application logs directory: `/data/mlsystem/logs`
 - service logs: `journalctl -u mlsystem-web.service -u mlsystem-executor.service -u mlsystem-preprocess.service`
 - runner logs: `/home/worker/actions-runner/_diag/`
 
@@ -89,6 +130,10 @@ systemctl is-active mlsystem-executor.service
 systemctl is-active mlsystem-preprocess.service
 curl -fsS http://127.0.0.1:8010/api/state
 curl -fsS http://127.0.0.1:8010/api/preprocess
+curl -fsS http://127.0.0.1:9000/minio/health/live
+curl -fsS http://127.0.0.1:5000
+mc ls mlplatform
+mc ls mlplatform/mlsystems
 cd /home/worker/mlsystem
 source /home/worker/ml-training/.venv/bin/activate
 python -m src.cli status

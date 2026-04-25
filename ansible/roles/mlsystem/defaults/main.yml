@@ -1,5 +1,10 @@
 ---
 mlsystem_root: /home/worker/mlsystem
+mlsystem_data_root: /data
+mlsystem_storage_root: /data/mlsystem/storage
+mlsystem_logs_root: /data/mlsystem/logs
+mlsystem_artifacts_root: /data/mlsystem/artifacts
+mlsystem_minio_data_root: /data/minio/data
 mlsystem_venv: /home/worker/ml-training/.venv
 mlsystem_deploy_code: true
 mlsystem_deploy_infra: true
