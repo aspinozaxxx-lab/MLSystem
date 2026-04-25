@@ -1,4 +1,4 @@
-name: enqueue-jobs
+name: cicd-queue
 
 on:
   workflow_dispatch:
@@ -7,21 +7,22 @@ on:
     paths:
       - "jobs/pending/**/*.yml"
       - "jobs/pending/**/*.yaml"
+      - ".github/workflows/cicd-queue.yml"
 
 permissions:
   contents: read
 
 concurrency:
-  group: mlsystem-enqueue
+  group: mlsystem-cicd-queue
   cancel-in-progress: false
 
 jobs:
-  enqueue:
+  queue:
     runs-on: [self-hosted, linux]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Validate pending jobs
+      - name: Validate pending job YAML
         run: |
           /home/worker/ml-training/.venv/bin/python - <<'PY'
           from pathlib import Path
@@ -35,7 +36,7 @@ jobs:
           print(f"pending_jobs={len(files)}")
           PY
 
-      - name: Copy jobs into server queue
+      - name: Enqueue jobs through server CLI
         shell: bash
         run: |
           shopt -s nullglob globstar

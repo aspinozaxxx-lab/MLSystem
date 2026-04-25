@@ -1,6 +1,8 @@
 ---
 mlsystem_root: /home/worker/mlsystem
 mlsystem_venv: /home/worker/ml-training/.venv
+mlsystem_deploy_code: true
+mlsystem_deploy_infra: true
 mlsystem_manage_services: false
 mlsystem_run_health_checks: true
 mlsystem_mlflow_uri: http://127.0.0.1:5000

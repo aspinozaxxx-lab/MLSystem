@@ -1,4 +1,4 @@
-name: ci
+name: cicd-code
 
 on:
   workflow_dispatch:
@@ -6,79 +6,54 @@ on:
     branches: [main]
     paths:
       - "mlsystem/**"
-      - "ansible/**"
-      - ".github/workflows/ci.yml"
       - "configs/**"
-      - "mlsystem/configs/**"
-      - "jobs/examples/**"
-  pull_request:
-    branches: [main]
-    paths:
-      - "mlsystem/**"
-      - "ansible/**"
-      - ".github/workflows/ci.yml"
-      - "configs/**"
-      - "mlsystem/configs/**"
-      - "jobs/examples/**"
+      - ".github/workflows/cicd-code.yml"
 
 permissions:
   contents: read
 
+concurrency:
+  group: mlsystem-cicd-code
+  cancel-in-progress: false
+
 jobs:
-  validate:
-    runs-on: ubuntu-latest
+  code:
+    runs-on: [self-hosted, linux]
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install lightweight validation dependencies
-        run: python -m pip install --upgrade pip pydantic PyYAML
-
-      - name: Check YAML syntax
+      - name: Ensure Ansible is available
         run: |
-          python - <<'PY'
-          from pathlib import Path
-          import yaml
-          for path in list(Path(".").rglob("*.yml")) + list(Path(".").rglob("*.yaml")):
-              if ".git" in path.parts or "results" in path.parts:
-                  continue
-              with path.open("r", encoding="utf-8") as fh:
-                  yaml.safe_load(fh)
-              print(f"ok yaml {path}")
-          PY
+          if command -v ansible-playbook >/dev/null 2>&1; then
+            ansible-playbook --version
+          else
+            /home/worker/ml-training/.venv/bin/python -m pip install ansible-core
+            echo "/home/worker/ml-training/.venv/bin" >> "$GITHUB_PATH"
+          fi
 
-      - name: Compile Python sources
-        run: python -m compileall -q mlsystem/src
+      - name: Compile Python
+        run: /home/worker/ml-training/.venv/bin/python -m compileall -q mlsystem/src
 
-      - name: Validate example job schemas
+      - name: Validate configs
         run: |
-          python - <<'PY'
+          /home/worker/ml-training/.venv/bin/python - <<'PY'
           from pathlib import Path
           import sys, yaml
           sys.path.insert(0, str(Path("mlsystem").resolve()))
+          from src.pipeline_config import PipelineConfig
           from src.job_schema import JobSpec
 
-          paths = [Path("mlsystem/configs/job.example.yaml")]
-          paths += sorted(Path("jobs/examples").glob("*.yml"))
-          paths += sorted(Path("jobs/examples").glob("*.yaml"))
-
-          for path in paths:
-              if not path.exists():
-                  continue
-              payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-              JobSpec.model_validate(payload)
-              print(f"ok job {path}")
+          config_path = Path("mlsystem/configs/pipeline.server.yaml")
+          PipelineConfig.model_validate(yaml.safe_load(config_path.read_text(encoding="utf-8")) or {})
+          JobSpec.model_validate(yaml.safe_load(Path("mlsystem/configs/job.example.yaml").read_text(encoding="utf-8")) or {})
+          print("configs ok")
           PY
 
       - name: Scan for obvious secrets
         run: |
-          python - <<'PY'
+          /home/worker/ml-training/.venv/bin/python - <<'PY'
           from pathlib import Path
           import re, sys
-
           patterns = [
               ("github token", re.compile(r"\b(?:ghp|gho|ghu|ghs|github_pat)_[A-Za-z0-9_]{20,}\b")),
               ("aws access key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
@@ -107,3 +82,15 @@ jobs:
               sys.exit(1)
           print("secret scan ok")
           PY
+
+      - name: Check code deploy playbook syntax
+        run: ansible-playbook -i 'localhost,' -c local ansible/playbooks/deploy_code.yml --syntax-check
+
+      - name: Deploy application code
+        run: ansible-playbook -i 'localhost,' -c local ansible/playbooks/deploy_code.yml
+
+      - name: Validate services
+        run: |
+          systemctl is-active mlsystem-web.service
+          systemctl is-active mlsystem-executor.service
+          curl -fsS http://127.0.0.1:8010/api/state | /home/worker/ml-training/.venv/bin/python -m json.tool

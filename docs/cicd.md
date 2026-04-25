@@ -1,90 +1,80 @@
 # CI/CD
 
-## Workflows
+The repository uses four GitHub Actions workflows. Each workflow owns one change domain.
 
-`ci.yml`
+## cicd-ansible.yml
 
-- runs on GitHub-hosted runner
-- triggers on pull requests to `main`, manual dispatch, and push to code/config/example-job paths only
-- does not trigger for `results/**`, docs-only changes, or `jobs/pending/**`
-- checks YAML syntax
-- compiles Python sources
-- validates example jobs with Pydantic
-- scans for obvious committed secrets
-- never deploys and never starts training
+Purpose: infrastructure, systemd units, non-secret runtime env, storage/log directories.
 
-`validate-jobs.yml`
+Triggers:
 
-- runs on GitHub-hosted runner
-- validates `jobs/examples/**/*.yml` and `jobs/pending/**/*.yml`
-- triggers on job YAML changes and manual dispatch
-- shares the same schema logic used before `enqueue-jobs.yml`
+- `workflow_dispatch`
+- push to `main` for:
+  - `ansible/**`
+  - `.github/workflows/cicd-ansible.yml`
 
-`validate-ansible.yml`
+Runs on the self-hosted runner. It parses Ansible YAML, checks inventory, runs playbook syntax checks, applies `ansible/playbooks/deploy_infra.yml`, and verifies:
 
-- runs on GitHub-hosted runner
-- checks inventory parsing
-- runs `ansible-playbook --syntax-check` for bootstrap/deploy/runner playbooks
-- checks that expected systemd/env templates exist
-- triggers on `ansible/**`, deploy workflow changes, and manual dispatch
+- `mlsystem-web.service`
+- `mlsystem-executor.service`
+- `http://127.0.0.1:8010/api/state`
+- `http://127.0.0.1:5000`
+- `http://127.0.0.1:9000/minio/health/live`
 
-`deploy.yml`
+## cicd-code.yml
 
-- runs on self-hosted runner
-- triggers on `workflow_dispatch`
-- also triggers on push to `main` when `mlsystem/`, `ansible/`, or deploy workflow files change
-- runs Ansible deploy locally on `roskadastr-ml`
-- performs preflight Python compile and Ansible syntax check before deploying
-- checks:
-  - `systemctl is-active mlsystem-web.service`
-  - `systemctl is-active mlsystem-executor.service`
-  - `curl http://127.0.0.1:8010/api/state`
-  - MLflow endpoint
-  - MinIO health endpoint
-- writes a small deploy summary in the workflow workspace and step summary
+Purpose: deploy application code under `mlsystem/`.
 
-`enqueue-jobs.yml`
+Triggers:
 
-- runs on self-hosted runner
-- validates `jobs/pending/**/*.yml`
-- triggers only on `jobs/pending/**/*.yml` pushes or manual dispatch
-- enqueues jobs through the deployed server CLI:
+- `workflow_dispatch`
+- push to `main` for:
+  - `mlsystem/**`
+  - `configs/**`
+  - `.github/workflows/cicd-code.yml`
+
+Runs on the self-hosted runner. It compiles Python, validates configs, scans for obvious secrets, syntax-checks `ansible/playbooks/deploy_code.yml`, deploys code through Ansible, restarts the MLSystem services, and verifies the web API.
+
+## cicd-queue.yml
+
+Purpose: enqueue experiment jobs.
+
+Triggers:
+
+- `workflow_dispatch`
+- push to `main` for:
+  - `jobs/pending/**/*.yml`
+  - `jobs/pending/**/*.yaml`
+  - `.github/workflows/cicd-queue.yml`
+
+Runs on the self-hosted runner. It validates only pending job YAML files and enqueues them through the deployed server CLI:
 
 ```bash
 cd /home/worker/mlsystem
 /home/worker/ml-training/.venv/bin/python -m src.cli enqueue <job.yml>
 ```
 
-It does not configure services and does not run train/predict directly.
+It does not deploy code, modify infrastructure, or start training directly.
 
-`sync-results.yml`
+## sync-results.yml
 
-- runs on self-hosted runner
-- reads only small `run_summary.json` and `codex_summary.json`
-- writes normalized JSON files to `results/summaries/`
-- does not copy MLflow artifacts, TIFF, checkpoints, probability maps, GeoJSON/GPKG, or caches
+Purpose: sync lightweight result summaries back to Git.
 
-## Reproducibility boundary
+Triggers:
 
-Covered by Ansible:
+- `workflow_dispatch`
+- schedule
 
-- `/home/worker/mlsystem`
-- configs under `/home/worker/mlsystem/configs`
-- lightweight storage directories
-- `/home/worker/mlsystem/logs`
-- `/etc/mlsystem/mlsystem.env`
-- `mlsystem-web.service`
-- `mlsystem-executor.service`
-- service restart and health checks
+It reads only small `run_summary.json` and `codex_summary.json` files from the server, writes normalized JSON files to `results/summaries/`, and commits with `[skip ci]`.
 
-Manual exception:
+No workflow triggers on `results/**`, so result sync commits do not start code, infrastructure, or queue workflows.
 
-- GitHub runner registration, because it requires a short-lived GitHub registration token.
-- `ansible/playbooks/runner.yml` audits runner state only; it does not register or reconfigure the runner.
+## Ansible playbooks
 
-Not managed here:
+- `bootstrap.yml`: first-time server checks and directory bootstrap.
+- `deploy_infra.yml`: infrastructure and services only.
+- `deploy_code.yml`: application code only.
+- `deploy.yml`: manual wrapper for full deploy.
+- `runner.yml`: audit-only runner status check.
 
-- Geoalert
-- DVC
-- MinIO/MLflow platform containers
-- heavy training data and artifacts
+The GitHub runner registration is the only manual exception because GitHub uses a short-lived registration token. Do not store that token in Git, docs, configs, logs, or Ansible vars.

@@ -1,6 +1,6 @@
-# Server setup
+# Server Setup
 
-Целевой сервер:
+Target server:
 
 - SSH alias: `mlserver`
 - hostname: `roskadastr-ml`
@@ -9,24 +9,24 @@
 - application root: `/home/worker/mlsystem`
 - MLflow: `http://127.0.0.1:5000`
 - MinIO/S3: `http://127.0.0.1:9000`
-- режим: CPU-only, `max_gpu_train_jobs: 0`
+- current mode: CPU-only, `max_gpu_train_jobs: 0`
 
-## Правило управления
+## Management Rule
 
-GitHub self-hosted runner устанавливается и регистрируется один раз вручную, потому что GitHub выдает временный registration token. Этот token нельзя хранить в репозитории, README, changelog, workflow logs или Ansible vars.
+GitHub self-hosted runner registration is the only manual exception. It requires a short-lived GitHub registration token, so the token must not be stored in Git, docs, configs, logs, or Ansible vars.
 
-Все остальное должно быть воспроизводимо через Ansible:
+Everything else is managed through Ansible:
 
-- создание `/home/worker/mlsystem`
-- деплой легкого кода из `mlsystem/`
-- создание `storage/` и `logs/`
-- установка non-secret env-файла `/etc/mlsystem/mlsystem.env`
-- установка systemd unit files
-- `systemctl daemon-reload`
-- enable/start/restart services
-- health checks MLflow, MinIO и MLSystem web API
+- `/home/worker/mlsystem`
+- lightweight `storage/` folders
+- `/home/worker/mlsystem/logs`
+- non-secret env file `/etc/mlsystem/mlsystem.env`
+- `mlsystem-web.service`
+- `mlsystem-executor.service`
+- systemd reload and service restart
+- MLflow, MinIO, and web API health checks
 
-## Локальные команды
+## Local Commands
 
 Bootstrap:
 
@@ -34,23 +34,35 @@ Bootstrap:
 ansible-playbook -i ansible/inventory/hosts.ini ansible/playbooks/bootstrap.yml
 ```
 
-Deploy:
+Deploy infrastructure:
+
+```bash
+ansible-playbook -i ansible/inventory/hosts.ini ansible/playbooks/deploy_infra.yml
+```
+
+Deploy application code:
+
+```bash
+ansible-playbook -i ansible/inventory/hosts.ini ansible/playbooks/deploy_code.yml
+```
+
+Full deploy wrapper:
 
 ```bash
 ansible-playbook -i ansible/inventory/hosts.ini ansible/playbooks/deploy.yml \
   -e mlsystem_manage_services=true
 ```
 
-Deploy на самом сервере, как это делает GitHub Actions runner:
+On the server, GitHub Actions uses local inventory:
 
 ```bash
-ansible-playbook -i 'localhost,' -c local ansible/playbooks/deploy.yml \
-  -e mlsystem_manage_services=true
+ansible-playbook -i 'localhost,' -c local ansible/playbooks/deploy_code.yml
+ansible-playbook -i 'localhost,' -c local ansible/playbooks/deploy_infra.yml
 ```
 
 ## Services
 
-Ansible создает и управляет:
+Ansible creates and manages:
 
 - `mlsystem-web.service`
 - `mlsystem-executor.service`
@@ -67,7 +79,7 @@ Logs:
 - service logs: `journalctl -u mlsystem-web.service -u mlsystem-executor.service`
 - runner logs: `/home/worker/actions-runner/_diag/`
 
-## Проверка состояния
+## Status Checks
 
 ```bash
 systemctl is-active mlsystem-web.service
@@ -78,8 +90,6 @@ source /home/worker/ml-training/.venv/bin/activate
 python -m src.cli status
 ```
 
-## Runner
+## Runner Audit
 
-Runner registration remains the only manual exception. Use a fresh token from GitHub UI and do not persist it.
-
-The repository contains `ansible/playbooks/runner.yml` only as an audit playbook. It checks whether the runner exists and is active. It does not register the runner and does not accept a token.
+`ansible/playbooks/runner.yml` is audit-only. It checks whether the runner directory, runner config marker, and runner service exist. It does not register or reconfigure the runner.

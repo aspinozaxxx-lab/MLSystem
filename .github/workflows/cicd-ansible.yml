@@ -1,0 +1,62 @@
+name: cicd-ansible
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "ansible/**"
+      - ".github/workflows/cicd-ansible.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mlsystem-cicd-ansible
+  cancel-in-progress: false
+
+jobs:
+  infra:
+    runs-on: [self-hosted, linux]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ensure Ansible is available
+        run: |
+          if command -v ansible-playbook >/dev/null 2>&1; then
+            ansible-playbook --version
+          else
+            /home/worker/ml-training/.venv/bin/python -m pip install ansible-core
+            echo "/home/worker/ml-training/.venv/bin" >> "$GITHUB_PATH"
+          fi
+
+      - name: Parse Ansible YAML
+        run: |
+          /home/worker/ml-training/.venv/bin/python - <<'PY'
+          from pathlib import Path
+          import yaml
+          for path in list(Path("ansible").rglob("*.yml")) + list(Path("ansible").rglob("*.yaml")):
+              yaml.safe_load(path.read_text(encoding="utf-8"))
+              print(f"ok yaml {path}")
+          PY
+
+      - name: Check Ansible inventory and syntax
+        run: |
+          ansible-inventory -i ansible/inventory/hosts.ini --list >/dev/null
+          ansible-playbook -i 'localhost,' -c local ansible/playbooks/bootstrap.yml --syntax-check
+          ansible-playbook -i 'localhost,' -c local ansible/playbooks/deploy_infra.yml --syntax-check
+          ansible-playbook -i 'localhost,' -c local ansible/playbooks/deploy_code.yml --syntax-check
+          ansible-playbook -i 'localhost,' -c local ansible/playbooks/deploy.yml --syntax-check
+          ansible-playbook -i 'localhost,' -c local ansible/playbooks/runner.yml --syntax-check
+
+      - name: Deploy infrastructure
+        run: |
+          ansible-playbook -i 'localhost,' -c local ansible/playbooks/deploy_infra.yml
+
+      - name: Validate services and endpoints
+        run: |
+          systemctl is-active mlsystem-web.service
+          systemctl is-active mlsystem-executor.service
+          curl -fsS http://127.0.0.1:8010/api/state | /home/worker/ml-training/.venv/bin/python -m json.tool
+          curl -fsS http://127.0.0.1:5000 >/dev/null
+          curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null

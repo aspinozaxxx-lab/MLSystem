@@ -25,12 +25,14 @@
     group: root
     mode: "0755"
   become: true
+  when: mlsystem_deploy_infra | bool
 
 - name: Copy lightweight MLSystem project
   ansible.builtin.copy:
     src: "{{ playbook_dir }}/../../mlsystem/"
     dest: "{{ mlsystem_root }}/"
     mode: preserve
+  when: mlsystem_deploy_code | bool
 
 - name: Install non-secret runtime environment file
   ansible.builtin.template:
@@ -40,6 +42,7 @@
     group: root
     mode: "0644"
   become: true
+  when: mlsystem_deploy_infra | bool
 
 - name: Check training venv exists
   ansible.builtin.stat:
@@ -71,6 +74,7 @@
     dest: /etc/systemd/system/mlsystem-executor.service
     mode: "0644"
   become: true
+  when: mlsystem_deploy_infra | bool
 
 - name: Install systemd unit for web API
   ansible.builtin.template:
@@ -78,11 +82,13 @@
     dest: /etc/systemd/system/mlsystem-web.service
     mode: "0644"
   become: true
+  when: mlsystem_deploy_infra | bool
 
 - name: Reload systemd
   ansible.builtin.systemd_service:
     daemon_reload: true
   become: true
+  when: mlsystem_deploy_infra | bool
 
 - name: Restart managed MLSystem services when enabled
   ansible.builtin.systemd_service:
