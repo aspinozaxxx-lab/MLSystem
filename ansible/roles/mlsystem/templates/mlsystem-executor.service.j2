@@ -7,7 +7,7 @@ Type=simple
 User=worker
 Group=worker
 WorkingDirectory=/home/worker/mlsystem
-Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/etc/mlsystem/mlsystem.env
 ExecStart=/home/worker/ml-training/.venv/bin/python -m src.cli run-forever --interval 10
 Restart=always
 RestartSec=10

@@ -45,15 +45,7 @@ jobs:
             echo "No pending job files to enqueue"
             exit 0
           fi
-          queue_dir=/home/worker/mlsystem/storage/jobs/pending
-          if [ -d /home/worker/mlsystem ]; then
-            mkdir -p "$queue_dir"
-            for file in "${files[@]}"; do
-              cp "$file" "$queue_dir/$(basename "$file")"
-            done
-          else
-            ssh mlserver 'mkdir -p /home/worker/mlsystem/storage/jobs/pending'
-            for file in "${files[@]}"; do
-              scp "$file" "mlserver:/home/worker/mlsystem/storage/jobs/pending/$(basename "$file")"
-            done
-          fi
+          cd /home/worker/mlsystem
+          for file in "${files[@]}"; do
+            /home/worker/ml-training/.venv/bin/python -m src.cli enqueue "$GITHUB_WORKSPACE/$file"
+          done

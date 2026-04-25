@@ -17,11 +17,53 @@
     - "{{ mlsystem_root }}/storage/experiments"
     - "{{ mlsystem_root }}/storage/system"
 
+- name: Ensure MLSystem system config directory exists
+  ansible.builtin.file:
+    path: /etc/mlsystem
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
 - name: Copy lightweight MLSystem project
   ansible.builtin.copy:
     src: "{{ playbook_dir }}/../../mlsystem/"
     dest: "{{ mlsystem_root }}/"
     mode: preserve
+
+- name: Install non-secret runtime environment file
+  ansible.builtin.template:
+    src: mlsystem.env.j2
+    dest: /etc/mlsystem/mlsystem.env
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+
+- name: Check training venv exists
+  ansible.builtin.stat:
+    path: "{{ mlsystem_venv }}/bin/python"
+  register: mlsystem_venv_python
+
+- name: Stop if expected training venv is missing
+  ansible.builtin.fail:
+    msg: "Expected Python venv is missing: {{ mlsystem_venv }}"
+  when: not mlsystem_venv_python.stat.exists
+
+- name: Check local lightweight storage size
+  ansible.builtin.shell: |
+    set -e
+    du -sm "{{ mlsystem_root }}/storage/images" "{{ mlsystem_root }}/storage/layouts" "{{ mlsystem_root }}/storage/cache" | awk '{sum += $1} END {print sum + 0}'
+  register: mlsystem_local_storage_du
+  changed_when: false
+
+- name: Assert local heavy storage folders remain lightweight
+  ansible.builtin.assert:
+    that:
+      - (mlsystem_local_storage_du.stdout | int) <= mlsystem_local_heavy_storage_max_mb
+    fail_msg: "Local images/layouts/cache exceed {{ mlsystem_local_heavy_storage_max_mb }} MB. Heavy data must stay in S3/MinIO, not root disk."
+    success_msg: "Local images/layouts/cache are lightweight."
 
 - name: Install systemd unit for executor
   ansible.builtin.template:
@@ -52,3 +94,44 @@
     - mlsystem-executor.service
   when: mlsystem_manage_services | bool
   become: true
+
+- name: Check MLflow endpoint
+  ansible.builtin.uri:
+    url: "{{ mlsystem_mlflow_uri }}"
+    method: GET
+    status_code: [200, 302, 404]
+    timeout: 5
+  register: mlsystem_mlflow_check
+  when: mlsystem_run_health_checks | bool
+
+- name: Check MinIO endpoint
+  ansible.builtin.uri:
+    url: "{{ mlsystem_minio_health_uri }}"
+    method: GET
+    status_code: [200, 403]
+    timeout: 5
+  register: mlsystem_minio_check
+  when: mlsystem_run_health_checks | bool
+
+- name: Check MLSystem web API state endpoint
+  ansible.builtin.uri:
+    url: "{{ mlsystem_web_state_uri }}"
+    method: GET
+    status_code: 200
+    return_content: true
+    timeout: 10
+  register: mlsystem_web_check
+  retries: 6
+  delay: 2
+  until: mlsystem_web_check.status == 200
+  when:
+    - mlsystem_run_health_checks | bool
+    - mlsystem_manage_services | bool
+
+- name: Report MLSystem health checks
+  ansible.builtin.debug:
+    msg:
+      mlflow_status: "{{ mlsystem_mlflow_check.status | default('skipped') }}"
+      minio_status: "{{ mlsystem_minio_check.status | default('skipped') }}"
+      web_state: "{{ mlsystem_web_check.json | default('skipped') }}"
+  when: mlsystem_run_health_checks | bool

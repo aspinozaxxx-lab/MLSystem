@@ -1,15 +1,32 @@
 # Server setup
 
-Target server:
+Целевой сервер:
 
 - SSH alias: `mlserver`
-- Hostname: `roskadastr-ml`
+- hostname: `roskadastr-ml`
 - OS: Ubuntu 22.04.5
-- Runtime venv: `/home/worker/ml-training/.venv`
-- App root: `/home/worker/mlsystem`
+- runtime venv: `/home/worker/ml-training/.venv`
+- application root: `/home/worker/mlsystem`
 - MLflow: `http://127.0.0.1:5000`
 - MinIO/S3: `http://127.0.0.1:9000`
-- Current mode: CPU-only, `max_gpu_train_jobs: 0`
+- режим: CPU-only, `max_gpu_train_jobs: 0`
+
+## Правило управления
+
+GitHub self-hosted runner устанавливается и регистрируется один раз вручную, потому что GitHub выдает временный registration token. Этот token нельзя хранить в репозитории, README, changelog, workflow logs или Ansible vars.
+
+Все остальное должно быть воспроизводимо через Ansible:
+
+- создание `/home/worker/mlsystem`
+- деплой легкого кода из `mlsystem/`
+- создание `storage/` и `logs/`
+- установка non-secret env-файла `/etc/mlsystem/mlsystem.env`
+- установка systemd unit files
+- `systemctl daemon-reload`
+- enable/start/restart services
+- health checks MLflow, MinIO и MLSystem web API
+
+## Локальные команды
 
 Bootstrap:
 
@@ -20,25 +37,49 @@ ansible-playbook -i ansible/inventory/hosts.ini ansible/playbooks/bootstrap.yml
 Deploy:
 
 ```bash
-ansible-playbook -i ansible/inventory/hosts.ini ansible/playbooks/deploy.yml
+ansible-playbook -i ansible/inventory/hosts.ini ansible/playbooks/deploy.yml \
+  -e mlsystem_manage_services=true
 ```
 
-Self-hosted runner:
-
-1. In GitHub, open repository settings, Actions, Runners, New self-hosted runner.
-2. Generate a fresh registration token.
-3. Do not paste the token into repository files, README, changelog, or logs.
-4. Run `ansible/playbooks/runner.yml` only with the token supplied through a temporary environment variable or interactive shell.
-
-Example pattern:
+Deploy на самом сервере, как это делает GitHub Actions runner:
 
 ```bash
-export RUNNER_TOKEN='<fresh-token-from-github-ui>'
-ansible-playbook -i ansible/inventory/hosts.ini ansible/playbooks/runner.yml \
-  -e install_runner_archive=true \
-  -e configure_runner=true \
-  -e runner_registration_token="$RUNNER_TOKEN"
-unset RUNNER_TOKEN
+ansible-playbook -i 'localhost,' -c local ansible/playbooks/deploy.yml \
+  -e mlsystem_manage_services=true
 ```
 
-For untrusted fork pull requests, do not run repository code on the self-hosted runner. CI uses GitHub-hosted runners; deploy/enqueue/sync are restricted to `main`, manual, or schedule triggers.
+## Services
+
+Ansible создает и управляет:
+
+- `mlsystem-web.service`
+- `mlsystem-executor.service`
+
+Templates:
+
+- `ansible/roles/mlsystem/templates/mlsystem-web.service.j2`
+- `ansible/roles/mlsystem/templates/mlsystem-executor.service.j2`
+- `ansible/roles/mlsystem/templates/mlsystem.env.j2`
+
+Logs:
+
+- application logs directory: `/home/worker/mlsystem/logs`
+- service logs: `journalctl -u mlsystem-web.service -u mlsystem-executor.service`
+- runner logs: `/home/worker/actions-runner/_diag/`
+
+## Проверка состояния
+
+```bash
+systemctl is-active mlsystem-web.service
+systemctl is-active mlsystem-executor.service
+curl -fsS http://127.0.0.1:8010/api/state
+cd /home/worker/mlsystem
+source /home/worker/ml-training/.venv/bin/activate
+python -m src.cli status
+```
+
+## Runner
+
+Runner registration remains the only manual exception. Use a fresh token from GitHub UI and do not persist it.
+
+The repository contains `ansible/playbooks/runner.yml` as documentation and optional helper for runner installation, but runner registration must still receive the temporary token only at execution time.

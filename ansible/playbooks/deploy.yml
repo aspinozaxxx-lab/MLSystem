@@ -5,5 +5,6 @@
   vars:
     mlsystem_root: /home/worker/mlsystem
     mlsystem_manage_services: false
+    mlsystem_run_health_checks: true
   roles:
     - role: mlsystem

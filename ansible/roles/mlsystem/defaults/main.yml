@@ -1,0 +1,9 @@
+---
+mlsystem_root: /home/worker/mlsystem
+mlsystem_venv: /home/worker/ml-training/.venv
+mlsystem_manage_services: false
+mlsystem_run_health_checks: true
+mlsystem_mlflow_uri: http://127.0.0.1:5000
+mlsystem_minio_health_uri: http://127.0.0.1:9000/minio/health/live
+mlsystem_web_state_uri: http://127.0.0.1:8010/api/state
+mlsystem_local_heavy_storage_max_mb: 1024

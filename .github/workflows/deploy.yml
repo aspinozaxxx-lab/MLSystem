@@ -36,10 +36,18 @@ jobs:
           ansible-playbook -i 'localhost,' -c local ansible/playbooks/deploy.yml \
             -e mlsystem_manage_services=true
 
+      - name: Validate deployed services
+        run: |
+          systemctl is-active mlsystem-web.service
+          systemctl is-active mlsystem-executor.service
+          curl -fsS http://127.0.0.1:8010/api/state | /home/worker/ml-training/.venv/bin/python -m json.tool
+          curl -fsS http://127.0.0.1:5000 >/dev/null
+          curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null
+
       - name: Write deploy summary
         run: |
           mkdir -p results/summaries
-          python3 - <<'PY'
+          /home/worker/ml-training/.venv/bin/python - <<'PY' | tee results/summaries/deploy-summary.json
           import json, os, socket
           from datetime import datetime, timezone
           payload = {
@@ -53,3 +61,11 @@ jobs:
           }
           print(json.dumps(payload, ensure_ascii=False, indent=2))
           PY
+          {
+            echo "## MLSystem deploy"
+            echo
+            echo "- Server: roskadastr-ml"
+            echo "- Source SHA: ${GITHUB_SHA}"
+            echo "- Web API: http://127.0.0.1:8010/api/state"
+            echo "- Services: mlsystem-web.service, mlsystem-executor.service"
+          } >> "$GITHUB_STEP_SUMMARY"
