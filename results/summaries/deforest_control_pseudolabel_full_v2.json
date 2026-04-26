@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "job_id": "deforest_control_pseudolabel_full_v2",
+  "status": "done",
+  "task": "predict",
+  "mode": "debug_pseudolabel",
+  "server": "roskadastr-ml",
+  "started_at": "2026-04-26T10:48:38.842999+00:00",
+  "finished_at": "2026-04-26T11:07:42.895883+00:00",
+  "duration_sec": 1143.741,
+  "train_duration_sec": 0,
+  "pseudolabel_duration_sec": 1137.049,
+  "checkpoint": {
+    "used_existing": true,
+    "model_name": "unet_resnet34",
+    "path": "/data/mlsystem/storage/experiments/deforest_exp04_r34_t512__20260425T202857249530Z/unet_resnet34.pt",
+    "source_job_id": "deforest_exp04_r34_t512",
+    "selection_reason": "Best available prior summary by best_val_iou: 0.44836788483030987."
+  },
+  "mlflow": {
+    "experiment_name": "mlsystem-deforest",
+    "experiment_id": "1",
+    "run_id": "23757081db134064873d93e46b5d900b",
+    "run_name": "CTRL-pseudo-v2",
+    "run_url_external": "http://172.26.12.169:5000/#/experiments/1/runs/23757081db134064873d93e46b5d900b"
+  },
+  "scene_matching": {
+    "scenes_entries": 24,
+    "available_tif_images": 61,
+    "matched_scenes_count": 7,
+    "ambiguous_scenes_count": 0,
+    "missing_scenes_count": 17,
+    "missing_are_real_absent_files": 17,
+    "missing_due_to_matcher": 0,
+    "best_missing_candidate_score_range": [0.680851, 0.757895],
+    "matching_report_artifact": "scene_matching_report.json"
+  },
+  "inference_parallel": {
+    "enabled": true,
+    "strategy": "scene",
+    "max_workers": 2,
+    "torch_threads_per_worker": 4,
+    "baseline_sequential_duration_sec": 1075.356,
+    "parallel_duration_sec": 1137.049,
+    "speedup_vs_baseline": 0.946622,
+    "observed_cpu_percent_process": "about 480-550% during active inference",
+    "result": "safe but not faster on this CPU/GDAL/S3 setup"
+  },
+  "coverage": {
+    "scenes_processed": 7,
+    "scenes_failed": 0,
+    "total_expected_windows": 252,
+    "total_predicted_windows": 248,
+    "total_skipped_windows": 4,
+    "mean_coverage_fraction": 0.9841723198541119,
+    "min_coverage_fraction": 0.9722403142377605
+  },
+  "postprocess": {
+    "threshold": 0.55,
+    "min_area_m2": 2000.0,
+    "simplify_tolerance_m": 10.0,
+    "objects_before_filter": 35237,
+    "objects_after_filter": 10319,
+    "objects_after_top500": 500,
+    "accepted_objects_total": 500,
+    "top500_applied": true,
+    "accepted_geojson_mb": 4.760601043701172,
+    "accepted_geojson_gz_mb": 1.454808235168457,
+    "accepted_gpkg_mb": 2.3671875,
+    "within_geojson_limit": true
+  },
+  "artifacts": {
+    "mlflow": [
+      "job.yml",
+      "scene_matching_report.json",
+      "coverage_report.json",
+      "inference_timing_report.json",
+      "tiling_debug.json",
+      "windows_preview.geojson",
+      "postprocess_debug.json",
+      "pseudolabel_summary.json",
+      "accepted.geojson",
+      "accepted.geojson.gz",
+      "accepted.gpkg",
+      "run_summary.json",
+      "codex_summary.json"
+    ],
+    "local_experiment_dir": "/data/mlsystem/storage/experiments/deforest_control_pseudolabel_full_v2__20260426T104827090979Z"
+  },
+  "warnings": [
+    "17 scenes from scenes.txt are not present in S3 images",
+    "Threaded scene parallelism increased CPU utilization but did not improve wall-clock time",
+    "4 windows were skipped as all-zero/nodata"
+  ],
+  "errors": []
+}
