@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "job_id": "debug_pseudolabel_tiling",
+  "status": "done",
+  "task": "predict",
+  "mode": "debug_pseudolabel",
+  "server": "roskadastr-ml",
+  "started_at": "2026-04-26T09:58:37.745800+00:00",
+  "finished_at": "2026-04-26T09:59:30.883712+00:00",
+  "duration_sec": 52.837,
+  "model_name": "tiny_unet_4ch",
+  "device": "cpu",
+  "checkpoint_path": "/data/mlsystem/storage/experiments/deforest_exp09_tiny_t1024__20260425T202940527033Z/tiny_unet_4ch.pt",
+  "mlflow": {
+    "experiment_name": "mlsystem-deforest",
+    "experiment_id": "1",
+    "run_id": "897edd79e6514cbca315dd205d85630f",
+    "run_name": "DBG-pseudo-tiling",
+    "run_url_external": "http://172.26.12.169:5000/#/experiments/1/runs/897edd79e6514cbca315dd205d85630f"
+  },
+  "tiling_debug": {
+    "scene_id": "KV3_30861_31739-00_KANOPUS_20230826_035108_20.L2.PMS.SCN07.tif",
+    "image_uri": "s3://mlsystems/images/incoming/irkutsk/KV3_30861_31739-00_KANOPUS_20230826_035108_20.L2.PMS.SCN07.tif",
+    "width": 11697,
+    "height": 12152,
+    "crs": "EPSG:3857",
+    "tile_size": 1024,
+    "stride": 1024,
+    "expected_window_count": 144,
+    "actual_window_count": 144,
+    "actual_predicted_window_count": 115,
+    "skipped_window_count": 29,
+    "skip_reasons": {
+      "all_zero": 29
+    },
+    "coverage_fraction": 0.8221640756510267,
+    "nonzero_probability_area_fraction": 0.8221640756510267,
+    "nonzero_probability_bbox_pixels": [0, 0, 11697, 12152],
+    "image_area_bbox_pixels": [0, 0, 11697, 12152],
+    "vector_area_fraction_of_image_bbox": 0.9434592367752657
+  },
+  "before_fix_from_code": {
+    "bug": "pseudolabel used random max_windows_per_scene windows instead of full-scene tiling",
+    "configured_max_windows_per_scene": 2,
+    "expected_window_count_for_debug_scene": 144,
+    "predicted_window_count_limit": 2,
+    "estimated_max_pixel_coverage_fraction_without_overlap": 0.014765977256933906
+  },
+  "postprocess_debug": {
+    "threshold": 0.5,
+    "min_area_m2": 500.0,
+    "simplify_tolerance": 5.0,
+    "objects_before_filter": 14261,
+    "objects_after_filter": 5747,
+    "objects_after_top500": 500,
+    "vertices_before": 873900,
+    "vertices_after": 143341,
+    "geojson_size_mb": 3.4350099563598633,
+    "max_geojson_mb": 20.0,
+    "max_objects": 500,
+    "warning": null
+  },
+  "artifacts": {
+    "mlflow": [
+      "tiling_debug.json",
+      "windows_preview.geojson",
+      "probability_preview_kv3308613173900kanopus2023082603510820l2pmsscn07.png",
+      "accepted_debug.geojson",
+      "accepted.geojson",
+      "accepted.geojson.gz",
+      "accepted.gpkg",
+      "postprocess_debug.json",
+      "pseudolabel_summary.json",
+      "run_summary.json",
+      "codex_summary.json",
+      "job.yml"
+    ],
+    "local_experiment_dir": "/data/mlsystem/storage/experiments/debug_pseudolabel_tiling__20260426T095824170649Z"
+  },
+  "warnings": [
+    "CPU-only debug inference",
+    "17 scenes from scenes.txt were not matched in current S3 image set",
+    "29 windows were skipped because they were all-zero/nodata"
+  ],
+  "errors": []
+}
