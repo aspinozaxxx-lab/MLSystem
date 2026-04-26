@@ -65,6 +65,7 @@ jobs:
             exit 0
           fi
           cd /home/worker/mlsystem
+          /home/worker/ml-training/.venv/bin/python -m src.cli mlflow-setup-experiment --experiment mlsystem-deforest
           for file in "${files[@]}"; do
             /home/worker/ml-training/.venv/bin/python -m src.cli enqueue "$GITHUB_WORKSPACE/$file"
           done
