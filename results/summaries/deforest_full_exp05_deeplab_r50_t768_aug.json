@@ -1,0 +1,13 @@
+{
+  "claim_id": null,
+  "errors": [],
+  "job_id": "deforest_full_exp05_deeplab_r50_t768_aug",
+  "job_status": "queued",
+  "metrics": {},
+  "mlflow_run_url": "http://172.26.12.169:5000/#/experiments/1/runs/212528ad2aed42729dd2d56aa7b261d5",
+  "schema_version": 1,
+  "server": "roskadastr-ml",
+  "status": "queued",
+  "task": "train",
+  "warnings": []
+}

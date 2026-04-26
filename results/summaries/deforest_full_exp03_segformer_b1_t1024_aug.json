@@ -1,0 +1,13 @@
+{
+  "claim_id": null,
+  "errors": [],
+  "job_id": "deforest_full_exp03_segformer_b1_t1024_aug",
+  "job_status": "queued",
+  "metrics": {},
+  "mlflow_run_url": "http://172.26.12.169:5000/#/experiments/1/runs/0f91e16edd7947ee9e819a8442b14985",
+  "schema_version": 1,
+  "server": "roskadastr-ml",
+  "status": "queued",
+  "task": "train",
+  "warnings": []
+}
