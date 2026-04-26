@@ -1,96 +1,119 @@
 {
-  "schema_version": 1,
-  "job_id": "deforest_control_pseudolabel_full_v2",
-  "status": "done",
-  "task": "predict",
-  "mode": "debug_pseudolabel",
-  "server": "roskadastr-ml",
-  "started_at": "2026-04-26T10:48:38.842999+00:00",
-  "finished_at": "2026-04-26T11:07:42.895883+00:00",
+  "ambiguous_scenes": [],
+  "best_epoch": null,
+  "claim_id": "deforest_control_pseudolabel_full_v2__20260426T104827090979Z",
   "duration_sec": 1143.741,
-  "train_duration_sec": 0,
-  "pseudolabel_duration_sec": 1137.049,
-  "checkpoint": {
-    "used_existing": true,
-    "model_name": "unet_resnet34",
-    "path": "/data/mlsystem/storage/experiments/deforest_exp04_r34_t512__20260425T202857249530Z/unet_resnet34.pt",
-    "source_job_id": "deforest_exp04_r34_t512",
-    "selection_reason": "Best available prior summary by best_val_iou: 0.44836788483030987."
-  },
-  "mlflow": {
-    "experiment_name": "mlsystem-deforest",
-    "experiment_id": "1",
-    "run_id": "23757081db134064873d93e46b5d900b",
-    "run_name": "CTRL-pseudo-v2",
-    "run_url_external": "http://172.26.12.169:5000/#/experiments/1/runs/23757081db134064873d93e46b5d900b"
-  },
-  "scene_matching": {
-    "scenes_entries": 24,
-    "available_tif_images": 61,
-    "matched_scenes_count": 7,
-    "ambiguous_scenes_count": 0,
-    "missing_scenes_count": 17,
-    "missing_are_real_absent_files": 17,
-    "missing_due_to_matcher": 0,
-    "best_missing_candidate_score_range": [0.680851, 0.757895],
-    "matching_report_artifact": "scene_matching_report.json"
-  },
-  "inference_parallel": {
-    "enabled": true,
-    "strategy": "scene",
-    "max_workers": 2,
-    "torch_threads_per_worker": 4,
-    "baseline_sequential_duration_sec": 1075.356,
-    "parallel_duration_sec": 1137.049,
-    "speedup_vs_baseline": 0.946622,
-    "observed_cpu_percent_process": "about 480-550% during active inference",
-    "result": "safe but not faster on this CPU/GDAL/S3 setup"
-  },
-  "coverage": {
+  "epochs_completed": null,
+  "errors": [],
+  "eval_duration_sec": null,
+  "finished_at": "2026-04-26T11:07:42.895883+00:00",
+  "job_id": "deforest_control_pseudolabel_full_v2",
+  "matched_scenes_count": 7,
+  "metrics": {
+    "accepted_geojson_gz_mb": 1.454808235168457,
+    "accepted_geojson_mb": 4.760601043701172,
+    "accepted_gpkg_mb": 2.3671875,
+    "accepted_objects": 500,
+    "accepted_objects_total": 500,
+    "actual_predicted_window_count": 248,
+    "coverage_fraction": 0.9841723198541119,
+    "expected_window_count": 252,
+    "inference_duration_sec": 1133.729,
+    "inference_max_workers": 2,
+    "inference_parallel_enabled": 1.0,
+    "matched_scene_count": 7,
+    "mean_coverage_fraction": 0.9841723198541119,
+    "min_coverage_fraction": 0.9722403142377605,
+    "min_object_area_m2_used": 2000.0,
+    "postprocess_sec": 1135.941,
+    "pseudolabel_enabled": true,
     "scenes_processed": 7,
-    "scenes_failed": 0,
+    "simplify_tolerance_m_used": 10.0,
+    "threshold_used": 0.55,
+    "torch_threads_per_worker": 4,
+    "total_area_m2": 735363330.1171455,
     "total_expected_windows": 252,
     "total_predicted_windows": 248,
-    "total_skipped_windows": 4,
-    "mean_coverage_fraction": 0.9841723198541119,
-    "min_coverage_fraction": 0.9722403142377605
+    "total_vertices": 79065
   },
-  "postprocess": {
-    "threshold": 0.55,
-    "min_area_m2": 2000.0,
-    "simplify_tolerance_m": 10.0,
-    "objects_before_filter": 35237,
-    "objects_after_filter": 10319,
-    "objects_after_top500": 500,
-    "accepted_objects_total": 500,
-    "top500_applied": true,
-    "accepted_geojson_mb": 4.760601043701172,
-    "accepted_geojson_gz_mb": 1.454808235168457,
-    "accepted_gpkg_mb": 2.3671875,
-    "within_geojson_limit": true
-  },
-  "artifacts": {
-    "mlflow": [
-      "job.yml",
-      "scene_matching_report.json",
-      "coverage_report.json",
-      "inference_timing_report.json",
-      "tiling_debug.json",
-      "windows_preview.geojson",
-      "postprocess_debug.json",
-      "pseudolabel_summary.json",
-      "accepted.geojson",
-      "accepted.geojson.gz",
-      "accepted.gpkg",
-      "run_summary.json",
-      "codex_summary.json"
-    ],
-    "local_experiment_dir": "/data/mlsystem/storage/experiments/deforest_control_pseudolabel_full_v2__20260426T104827090979Z"
-  },
-  "warnings": [
-    "17 scenes from scenes.txt are not present in S3 images",
-    "Threaded scene parallelism increased CPU utilization but did not improve wall-clock time",
-    "4 windows were skipped as all-zero/nodata"
+  "missing_scenes": [
+    "KV4_18254_14029-01_KANOPUS_20210518_080116_20.L2.PMS.SCN03",
+    "KV4_18254_14029-01_KANOPUS_20210518_080116_20.L2.PMS.SCN02",
+    "KV4_18254_14029-01_KANOPUS_20210518_080116_20.L2.PMS.SCN01",
+    "KV5_13775_10997-01_KANOPUS_20210621_075153_83.L2.PMS.SCN03",
+    "KV5_13775_10997-01_KANOPUS_20210621_075153_83.L2.PMS.SCN02",
+    "KV5_13775_10997-01_KANOPUS_20210621_075153_83.L2.PMS.SCN01",
+    "KV5_24775_25670-02_KANOPUS_20230615_075909_7.L2.PMS.SCN03",
+    "KV5_24775_25670-02_KANOPUS_20230615_075909_7.L2.PMS.SCN02",
+    "KV5_24775_25670-02_KANOPUS_20230615_075909_7.L2.PMS.SCN01",
+    "KV6_25931_26639-01_KANOPUS_20230830_075057_8.L2.PMS.SCN02",
+    "KV6_25931_26639-01_KANOPUS_20230830_075057_8.L2.PMS.SCN01",
+    "KV6_29676_31877-02_KANOPUS_20240502_075932_8.L2.PMS.SCN03",
+    "KV6_29676_31877-02_KANOPUS_20240502_075932_8.L2.PMS.SCN02",
+    "KV6_29676_31877-02_KANOPUS_20240502_075932_8.L2.PMS.SCN01",
+    "KV5_31621_35243-01_KANOPUS_20240907_075653_8.L2.PMS.SCN03",
+    "KV5_31621_35243-01_KANOPUS_20240907_075653_8.L2.PMS.SCN02",
+    "KV5_31621_35243-01_KANOPUS_20240907_075653_8.L2.PMS.SCN01"
   ],
-  "errors": []
+  "mlflow_artifacts": {
+    "accepted_geojson": "accepted.geojson",
+    "accepted_geojson_gz": "accepted.geojson.gz",
+    "accepted_gpkg": "accepted.gpkg",
+    "pseudolabel_summary": "pseudolabel_summary.json",
+    "scenes_match_report": "scenes_match_report.json",
+    "train_dataset_report": null
+  },
+  "mlflow_run_url": "http://172.26.12.169:5000/#/experiments/1/runs/23757081db134064873d93e46b5d900b",
+  "postprocess_duration_sec": 1137.049,
+  "pseudolabel": {
+    "accepted_geojson_mb": 4.760601043701172,
+    "accepted_objects": 500,
+    "mlflow_artifacts": {
+      "accepted_debug_geojson": "accepted_debug.geojson",
+      "accepted_geojson": "accepted.geojson",
+      "accepted_geojson_gz": "accepted.geojson.gz",
+      "accepted_gpkg": "accepted.gpkg",
+      "coverage_report": "coverage_report.json",
+      "inference_timing_report": "inference_timing_report.json",
+      "postprocess_debug": "postprocess_debug.json",
+      "pseudolabel_summary": "pseudolabel_summary.json",
+      "tiling_debug": "tiling_debug.json",
+      "windows_preview": "windows_preview.geojson"
+    },
+    "s3_uris": {
+      "accepted_geojson": null,
+      "accepted_geojson_gz": null,
+      "accepted_gpkg": null
+    },
+    "selected_postprocess_params": {
+      "max_objects": 500,
+      "min_object_area_m2": 2000.0,
+      "simplify_tolerance_m": 10.0,
+      "threshold": 0.55
+    },
+    "status": "done",
+    "total_area_m2": 735363330.1171455,
+    "total_vertices": 79065
+  },
+  "pseudolabel_duration_sec": 1137.049,
+  "s3_artifacts": {
+    "accepted_geojson": null,
+    "accepted_geojson_gz": null,
+    "accepted_gpkg": null,
+    "report_html": null
+  },
+  "schema_version": 1,
+  "server": "roskadastr-ml",
+  "started_at": "2026-04-26T10:48:38.842999+00:00",
+  "status": "done",
+  "task": "predict",
+  "train_duration_sec": 0,
+  "train_scene_count": null,
+  "train_tile_count": null,
+  "val_scene_count": null,
+  "val_tile_count": null,
+  "warnings": [
+    "GPU backend is disabled/not available; running CPU-only",
+    "17 scenes from scenes.txt were not matched"
+  ]
 }
