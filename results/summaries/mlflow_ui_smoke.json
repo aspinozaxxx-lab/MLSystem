@@ -1,0 +1,60 @@
+{
+  "ambiguous_scenes": [],
+  "best_epoch": null,
+  "claim_id": "mlflow_ui_smoke__20260426T081555192076Z",
+  "duration_sec": 10.032,
+  "epochs_completed": null,
+  "errors": [],
+  "eval_duration_sec": null,
+  "finished_at": "2026-04-26T08:16:17.899767+00:00",
+  "job_id": "mlflow_ui_smoke",
+  "matched_scenes_count": null,
+  "metrics": {
+    "accepted_geojson_mb": null,
+    "accepted_objects": null,
+    "epoch": 3.0,
+    "epoch_duration_sec": 2.002132,
+    "learning_rate": 0.0006,
+    "train/dice": 0.63,
+    "train/iou": 0.48,
+    "train/loss": 0.68,
+    "val/dice": 0.55,
+    "val/f1": 0.59,
+    "val/iou": 0.41,
+    "val/loss": 0.82,
+    "val/precision": 0.62,
+    "val/recall": 0.56
+  },
+  "missing_scenes": [],
+  "mlflow_artifacts": {
+    "accepted_geojson": null,
+    "accepted_geojson_gz": null,
+    "accepted_gpkg": null,
+    "pseudolabel_summary": null,
+    "scenes_match_report": null,
+    "train_dataset_report": null
+  },
+  "mlflow_run_url": "http://172.26.12.169:5000/#/experiments/1/runs/a159eb305a2841e19ac8a624b151fcbf",
+  "postprocess_duration_sec": null,
+  "pseudolabel": {},
+  "pseudolabel_duration_sec": null,
+  "s3_artifacts": {
+    "accepted_geojson": null,
+    "accepted_geojson_gz": null,
+    "accepted_gpkg": null,
+    "report_html": null
+  },
+  "schema_version": 1,
+  "server": "roskadastr-ml",
+  "started_at": "2026-04-26T08:16:07.566012+00:00",
+  "status": "done",
+  "task": "train",
+  "train_duration_sec": null,
+  "train_scene_count": null,
+  "train_tile_count": null,
+  "val_scene_count": null,
+  "val_tile_count": null,
+  "warnings": [
+    "GPU backend is disabled/not available; running CPU-only"
+  ]
+}
