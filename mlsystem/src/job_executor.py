@@ -13,10 +13,10 @@ from .job_schema import JobSpec
 from .mlflow_adapter import MLFLOW_NOTE_TAG, MLflowJobRun, build_run_note, compact_run_label, set_run_tags, start_job_run
 from .pipeline_config import PipelineConfig, ensure_storage_layout
 from .preprocess_inventory import build_preprocess_inventory
-from .real_train import run_real_train
+from .real_train import run_debug_pseudolabel, run_real_train
 from .resource_manager import collect_status
 
-IMPLEMENTED_TASKS = {"noop", "status_check", "inventory", "train"}
+IMPLEMENTED_TASKS = {"noop", "status_check", "inventory", "train", "predict"}
 
 def _log(path: Path, message: str) -> None:
     append_text(path, f"{utc_now()} {message}\n")
@@ -47,6 +47,10 @@ def _inventory(config: PipelineConfig) -> dict[str, Any]:
 
 def _is_smoke_train(job: JobSpec) -> bool:
     return bool(job.params.get("smoke") or job.params.get("smoke_train") or job.train.get("smoke"))
+
+def _is_debug_pseudolabel(job: JobSpec) -> bool:
+    pseudolabel_cfg = job.predict.get("pseudolabel") or job.params.get("pseudolabel") or {}
+    return bool(job.params.get("debug_pseudolabel") or pseudolabel_cfg.get("debug"))
 
 def _write_history(experiment_dir: Path, history: list[dict[str, float]]) -> list[Path]:
     json_path = experiment_dir / "history.json"
@@ -134,6 +138,8 @@ def _execute(config: PipelineConfig, job: JobSpec, experiment_dir: Path, mlflow_
         return _smoke_train(job, experiment_dir, mlflow_run, job_log)
     if job.task == "train":
         return run_real_train(config, job, experiment_dir, mlflow_run, job_log, _log)
+    if job.task == "predict" and _is_debug_pseudolabel(job):
+        return run_debug_pseudolabel(config, job, experiment_dir, mlflow_run, job_log, _log)
     return {"status": "not_implemented", "message": f"Task {job.task} is validated but not implemented in MVP executor"}
 
 def _job_params(job: JobSpec) -> dict[str, Any]:

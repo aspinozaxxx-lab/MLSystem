@@ -441,61 +441,183 @@ def _write_pseudolabel_outputs(
     simplify_candidates = post_cfg.get("simplify_tolerance_m_candidates") or [5]
     min_area = float(min_area_candidates[0])
     simplify_tolerance = float(simplify_candidates[0])
-    max_windows_per_scene = int(pseudolabel_cfg.get("max_windows_per_scene") or 2)
-    rng = random.Random(seed + 5000)
+    full_scene = bool(pseudolabel_cfg.get("full_scene", True))
+    max_windows_per_scene = pseudolabel_cfg.get("max_windows_per_scene")
+    max_debug_scenes = pseudolabel_cfg.get("max_debug_scenes")
+    if max_debug_scenes is not None:
+        matches = matches[: max(1, int(max_debug_scenes))]
+    debug_mode = bool(pseudolabel_cfg.get("debug", False))
     features: list[dict[str, Any]] = []
+    windows_preview_features: list[dict[str, Any]] = []
+    tiling_debug_rows: list[dict[str, Any]] = []
+    raw_feature_count = 0
+    vertices_before = 0
+    vertices_after = 0
     aws = _aws_session(config)
     model.eval()
     started = time.time()
+
+    def origins(length: int, tile: int, stride: int) -> list[int]:
+        if length <= tile:
+            return [0]
+        values = list(range(0, max(1, length - tile + 1), max(1, stride)))
+        edge = length - tile
+        if values[-1] != edge:
+            values.append(edge)
+        return sorted(set(max(0, int(value)) for value in values))
+
+    def window_grid(width: int, height: int, tile: int, stride: int) -> list[tuple[int, int]]:
+        return [(x, y) for y in origins(height, tile, stride) for x in origins(width, tile, stride)]
+
+    def vertex_count(geom_mapping: dict[str, Any]) -> int:
+        coords = geom_mapping.get("coordinates") or []
+        if geom_mapping.get("type") == "Polygon":
+            return sum(len(ring) for ring in coords)
+        if geom_mapping.get("type") == "MultiPolygon":
+            return sum(len(ring) for poly in coords for ring in poly)
+        return 0
+
+    def maybe_write_preview(prob_map: np.ndarray, scene_name: str) -> Path | None:
+        if list(experiment_dir.glob("probability_preview_*.png")):
+            return None
+        try:
+            from PIL import Image
+        except Exception:
+            return None
+        scale = max(1, int(max(prob_map.shape) / 1024))
+        png = np.clip(prob_map[::scale, ::scale] * 255, 0, 255).astype("uint8")
+        path = experiment_dir / f"probability_preview_{_norm_scene_name(scene_name)[:48]}.png"
+        Image.fromarray(png).save(path)
+        return path
+
     with rasterio.Env(aws, AWS_HTTPS="NO", AWS_VIRTUAL_HOSTING="FALSE"):
         for match in matches:
             path = f"/vsis3/{config.storage.s3_bucket}/{match.key}"
             with rasterio.open(path) as ds:
-                if ds.width < patch_size or ds.height < patch_size:
-                    windows = [(0, 0)]
+                stride = int(job.preprocess.get("stride") or patch_size)
+                all_windows = window_grid(ds.width, ds.height, patch_size, stride)
+                if full_scene:
+                    windows = all_windows
                 else:
-                    windows = [
-                        (rng.randint(0, ds.width - patch_size), rng.randint(0, ds.height - patch_size))
-                        for _ in range(max_windows_per_scene)
-                    ]
+                    windows = all_windows[: max(1, int(max_windows_per_scene or len(all_windows)))]
+                prob_sum = np.zeros((ds.height, ds.width), dtype="float32")
+                prob_count = np.zeros((ds.height, ds.width), dtype="uint16")
+                skipped_reasons: dict[str, int] = {}
+                predicted_count = 0
                 for x, y in windows:
                     window = Window(x, y, patch_size, patch_size)
+                    actual_w = min(patch_size, ds.width - x)
+                    actual_h = min(patch_size, ds.height - y)
+                    props = {
+                        "scene": match.name,
+                        "tile_index": len(windows_preview_features),
+                        "x": int(x),
+                        "y": int(y),
+                        "width": int(actual_w),
+                        "height": int(actual_h),
+                        "predicted": False,
+                        "skipped_reason": "",
+                    }
                     arr = ds.read(input_bands, window=window, boundless=True, fill_value=0)
                     if np.count_nonzero(arr) == 0:
+                        skipped_reasons["all_zero"] = skipped_reasons.get("all_zero", 0) + 1
+                        props["skipped_reason"] = "all_zero"
+                        windows_preview_features.append({"type": "Feature", "properties": props, "geometry": mapping(box(*ds.window_bounds(window)))})
                         continue
                     sample = torch.from_numpy(_normalize_image(arr)[None, ...]).to(device)
                     with torch.no_grad():
                         prob = torch.sigmoid(model(sample))[0, 0].detach().cpu().numpy()
-                    mask = (prob >= threshold_used).astype("uint8")
-                    if not mask.any():
+                    prob_crop = prob[:actual_h, :actual_w]
+                    prob_sum[y : y + actual_h, x : x + actual_w] += prob_crop
+                    prob_count[y : y + actual_h, x : x + actual_w] += 1
+                    predicted_count += 1
+                    props["predicted"] = True
+                    windows_preview_features.append({"type": "Feature", "properties": props, "geometry": mapping(box(*ds.window_bounds(window)))})
+
+                coverage_mask = prob_count > 0
+                prob_map = np.zeros_like(prob_sum, dtype="float32")
+                prob_map[coverage_mask] = prob_sum[coverage_mask] / prob_count[coverage_mask]
+                mask = (prob_map >= threshold_used).astype("uint8")
+                scene_before = 0
+                scene_after_filter = 0
+                for geom, value in raster_shapes(mask, mask=mask.astype(bool), transform=ds.transform):
+                    if value != 1:
                         continue
-                    transform = ds.window_transform(window)
-                    for geom, value in raster_shapes(mask, mask=mask.astype(bool), transform=transform):
-                        if value != 1:
-                            continue
-                        poly = shape(geom)
-                        if poly.is_empty:
-                            continue
-                        area = float(poly.area)
-                        if area < min_area:
-                            continue
-                        if simplify_tolerance > 0:
-                            poly = poly.simplify(simplify_tolerance, preserve_topology=True)
-                        features.append(
-                            {
-                                "type": "Feature",
-                                "properties": {
-                                    "scene": match.name,
-                                    "threshold": threshold_used,
-                                    "area_m2": float(poly.area),
-                                },
-                                "geometry": mapping(poly),
-                            }
-                        )
+                    poly = shape(geom)
+                    if poly.is_empty:
+                        continue
+                    scene_before += 1
+                    raw_feature_count += 1
+                    vertices_before += vertex_count(mapping(poly))
+                    if float(poly.area) < min_area:
+                        continue
+                    scene_after_filter += 1
+                    if simplify_tolerance > 0:
+                        poly = poly.simplify(simplify_tolerance, preserve_topology=True)
+                    mapped = mapping(poly)
+                    vertices_after += vertex_count(mapped)
+                    features.append(
+                        {
+                            "type": "Feature",
+                            "properties": {"scene": match.name, "threshold": threshold_used, "area_m2": float(poly.area)},
+                            "geometry": mapped,
+                        }
+                    )
+
+                nz = np.argwhere(prob_map > 1e-6)
+                nonzero_bbox = None
+                if nz.size:
+                    y0, x0 = nz.min(axis=0)
+                    y1, x1 = nz.max(axis=0)
+                    nonzero_bbox = [int(x0), int(y0), int(x1) + 1, int(y1) + 1]
+                scene_geoms = [shape(item["geometry"]) for item in features if item["properties"].get("scene") == match.name]
+                vector_bounds = None
+                if scene_geoms:
+                    vector_bounds = [
+                        min(g.bounds[0] for g in scene_geoms),
+                        min(g.bounds[1] for g in scene_geoms),
+                        max(g.bounds[2] for g in scene_geoms),
+                        max(g.bounds[3] for g in scene_geoms),
+                    ]
+                image_bounds = list(ds.bounds)
+                vector_area_fraction = None
+                if vector_bounds:
+                    image_area = max(1e-9, (image_bounds[2] - image_bounds[0]) * (image_bounds[3] - image_bounds[1]))
+                    vector_area_fraction = ((vector_bounds[2] - vector_bounds[0]) * (vector_bounds[3] - vector_bounds[1])) / image_area
+                tiling_debug_rows.append(
+                    {
+                        "scene_id": match.name,
+                        "image_uri": f"s3://{config.storage.s3_bucket}/{match.key}",
+                        "width": ds.width,
+                        "height": ds.height,
+                        "crs": str(ds.crs),
+                        "transform": list(ds.transform)[:6],
+                        "tile_size": patch_size,
+                        "stride": stride,
+                        "expected_window_count": len(all_windows),
+                        "actual_window_count": len(windows),
+                        "actual_predicted_window_count": predicted_count,
+                        "skipped_window_count": len(windows) - predicted_count,
+                        "skip_reasons": skipped_reasons,
+                        "probability_map_shape": [int(ds.height), int(ds.width)],
+                        "nonzero_probability_bbox_pixels": nonzero_bbox,
+                        "nonzero_probability_area_fraction": float(np.count_nonzero(prob_map > 1e-6) / max(1, ds.width * ds.height)),
+                        "image_area_bbox_pixels": [0, 0, int(ds.width), int(ds.height)],
+                        "coverage_fraction": float(np.count_nonzero(coverage_mask) / max(1, ds.width * ds.height)),
+                        "vector_bounds": vector_bounds,
+                        "image_bounds": image_bounds,
+                        "vector_area_fraction_of_image_bbox": vector_area_fraction,
+                        "objects_before_filter": scene_before,
+                        "objects_after_filter": scene_after_filter,
+                    }
+                )
+                maybe_write_preview(prob_map, match.name)
 
     features.sort(key=lambda item: float(item["properties"].get("area_m2") or 0), reverse=True)
+    objects_after_filter = len(features)
     if len(features) > max_objects:
         features = features[:max_objects]
+    objects_after_top = len(features)
     payload = {
         "type": "FeatureCollection",
         "name": f"{job.job_id}_accepted",
@@ -504,10 +626,21 @@ def _write_pseudolabel_outputs(
     }
     geojson_path = experiment_dir / "accepted.geojson"
     geojson_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    debug_geojson_path: Path | None = None
+    if debug_mode:
+        debug_payload = {**payload, "name": f"{job.job_id}_accepted_debug"}
+        debug_geojson_path = experiment_dir / "accepted_debug.geojson"
+        debug_geojson_path.write_text(json.dumps(debug_payload, ensure_ascii=False), encoding="utf-8")
     gz_path = experiment_dir / "accepted.geojson.gz"
     with gzip.open(gz_path, "wt", encoding="utf-8") as fh:
         json.dump(payload, fh, ensure_ascii=False)
-    artifacts = [geojson_path, gz_path]
+    windows_preview_path = experiment_dir / "windows_preview.geojson"
+    write_json(windows_preview_path, {"type": "FeatureCollection", "name": f"{job.job_id}_windows_preview", "features": windows_preview_features})
+    tiling_debug_path = experiment_dir / "tiling_debug.json"
+    write_json(tiling_debug_path, {"schema_version": 1, "full_scene": full_scene, "scenes": tiling_debug_rows})
+    artifacts = [geojson_path, gz_path, windows_preview_path, tiling_debug_path]
+    if debug_geojson_path:
+        artifacts.append(debug_geojson_path)
     gpkg_path = experiment_dir / "accepted.gpkg"
     try:
         if features:
@@ -521,6 +654,24 @@ def _write_pseudolabel_outputs(
         artifacts.append(experiment_dir / "pseudolabel_gpkg_error.txt")
 
     geojson_mb = geojson_path.stat().st_size / (1024 * 1024)
+    postprocess_debug = {
+        "threshold": threshold_used,
+        "min_area_m2": min_area,
+        "simplify_tolerance": simplify_tolerance,
+        "objects_before_filter": raw_feature_count,
+        "objects_after_filter": objects_after_filter,
+        "objects_after_top500": objects_after_top,
+        "vertices_before": vertices_before,
+        "vertices_after": vertices_after,
+        "geojson_size_mb": geojson_mb,
+        "max_geojson_mb": float(post_cfg.get("max_geojson_mb") or 20),
+        "max_objects": max_objects,
+        "warning": "geojson_size_exceeds_limit" if geojson_mb > float(post_cfg.get("max_geojson_mb") or 20) else None,
+    }
+    postprocess_debug_path = experiment_dir / "postprocess_debug.json"
+    write_json(postprocess_debug_path, postprocess_debug)
+    artifacts.append(postprocess_debug_path)
+    artifacts.extend(sorted(experiment_dir.glob("probability_preview_*.png"))[:2])
     metrics = {
         "pseudolabel_enabled": True,
         "accepted_objects": len(features),
@@ -532,10 +683,165 @@ def _write_pseudolabel_outputs(
         "simplify_tolerance_m_used": simplify_tolerance,
         "postprocess_sec": round(time.time() - started, 3),
     }
+    if tiling_debug_rows:
+        metrics["expected_window_count"] = int(sum(row["expected_window_count"] for row in tiling_debug_rows))
+        metrics["actual_predicted_window_count"] = int(sum(row["actual_predicted_window_count"] for row in tiling_debug_rows))
+        metrics["coverage_fraction"] = float(np.mean([row["coverage_fraction"] for row in tiling_debug_rows]))
     summary_path = experiment_dir / "pseudolabel_summary.json"
-    write_json(summary_path, {"metrics": metrics, "artifacts": [str(path) for path in artifacts]})
+    write_json(summary_path, {"metrics": metrics, "artifacts": [str(path) for path in artifacts], "postprocess_debug": postprocess_debug})
     artifacts.append(summary_path)
     return metrics, artifacts
+
+
+def run_debug_pseudolabel(
+    config: PipelineConfig,
+    job: JobSpec,
+    experiment_dir: Path,
+    mlflow_run: MLflowJobRun,
+    job_log: Path,
+    log_fn: Any,
+) -> dict[str, Any]:
+    data = job.data or {}
+    model_cfg = (job.params.get("model") if isinstance(job.params.get("model"), dict) else {}) or {}
+    model_cfg = {**model_cfg, **(job.predict.get("model") or {})}
+    images_uri = data.get("images_uri") or config.s3_paths.images
+    layout_uri = data.get("layout_uri") or f"{config.s3_paths.layouts.rstrip('/')}/{job.class_name or 'deforest'}/"
+    scenes_file = data.get("scenes_file") or "scenes.txt"
+    annotation_file = data.get("annotation_file") or "auto"
+    seed = int(job.predict.get("seed") or job.params.get("seed") or 42)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+    prepare_started = time.time()
+    images = _list_s3_objects(config, images_uri, suffixes=(".tif", ".tiff"))
+    annotation_uri, scenes_uri = _find_layout_files(config, layout_uri, scenes_file, annotation_file)
+    entries = [
+        line.strip()
+        for line in _read_s3_text(config, scenes_uri).splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    matches, ambiguous, missing = _match_scenes(entries, images)
+    if not matches:
+        raise RuntimeError("No scenes from scenes.txt matched available images")
+
+    pseudolabel_cfg = job.predict.get("pseudolabel") or job.params.get("pseudolabel") or {}
+    max_debug_scenes = int(pseudolabel_cfg.get("max_debug_scenes") or job.predict.get("max_debug_scenes") or 1)
+    matches = matches[: max(1, max_debug_scenes)]
+    scene_report = {
+        "images_uri": images_uri,
+        "layout_uri": layout_uri,
+        "annotation_uri": annotation_uri,
+        "scenes_uri": scenes_uri,
+        "total_images_available": len(images),
+        "scenes_entries": len(entries),
+        "matched_count": len(matches),
+        "ambiguous_count": len(ambiguous),
+        "missing_count": len(missing),
+        "matched": [match.__dict__ for match in matches],
+        "ambiguous": ambiguous,
+        "missing": missing,
+    }
+    scenes_report_path = experiment_dir / "scenes_match_report.json"
+    write_json(scenes_report_path, scene_report)
+    mlflow_run.log_artifacts([scenes_report_path])
+    mlflow_run.log_params(
+        {
+            "scene_count": len(matches),
+            "scene_missing_count": len(missing),
+            "scene_ambiguous_count": len(ambiguous),
+            "annotation_uri": annotation_uri,
+            "scenes_uri": scenes_uri,
+            "debug_pseudolabel": True,
+        }
+    )
+    log_fn(job_log, f"debug_pseudolabel matched={len(matches)} missing={len(missing)} ambiguous={len(ambiguous)}")
+
+    input_bands = job.params.get("input_bands") or model_cfg.get("input_bands") or [1, 2, 3, 4]
+    input_bands = [int(band) for band in input_bands]
+    patch_size = int(job.preprocess.get("tile_size") or job.train.get("patch_size") or 1024)
+    device = torch.device("cuda" if torch.cuda.is_available() and not config.cpu_only else "cpu")
+    model_name = str(model_cfg.get("name") or job.predict.get("model_name") or "tiny_unet_4ch")
+    base_channels = int(model_cfg.get("base_channels") or job.train.get("base_channels") or 8)
+    model = _build_model(model_name, len(input_bands), int(model_cfg.get("out_channels") or 1), base_channels).to(device)
+    checkpoint_path = pseudolabel_cfg.get("checkpoint_path") or job.predict.get("checkpoint_path") or job.params.get("checkpoint_path")
+    if not checkpoint_path:
+        raise RuntimeError("Debug pseudolabel job requires predict.pseudolabel.checkpoint_path")
+    checkpoint = torch.load(str(checkpoint_path), map_location=device)
+    state = checkpoint.get("model_state_dict") if isinstance(checkpoint, dict) else checkpoint
+    if not isinstance(state, dict):
+        raise RuntimeError(f"Unsupported checkpoint payload at {checkpoint_path}")
+    model.load_state_dict(state)
+    prepare_duration_sec = round(time.time() - prepare_started, 3)
+
+    postprocess_started = time.time()
+    postprocess_metrics, artifacts = _write_pseudolabel_outputs(
+        config,
+        job,
+        experiment_dir,
+        model,
+        device,
+        matches,
+        input_bands,
+        patch_size,
+        float((job.postprocess.get("thresholds") or [0.5])[0]),
+        seed,
+    )
+    numeric_metrics = {key: value for key, value in postprocess_metrics.items() if isinstance(value, (int, float, bool))}
+    if numeric_metrics:
+        mlflow_run.log_metrics(numeric_metrics)
+    mlflow_run.log_artifacts(artifacts)
+
+    postprocess_duration_sec = round(time.time() - postprocess_started, 3)
+    selected_postprocess_params = {
+        "threshold": postprocess_metrics.get("threshold_used"),
+        "min_object_area_m2": postprocess_metrics.get("min_object_area_m2_used"),
+        "simplify_tolerance_m": postprocess_metrics.get("simplify_tolerance_m_used"),
+        "max_objects": job.postprocess.get("max_objects"),
+    }
+    return {
+        "status": "done",
+        "mode": "debug_pseudolabel",
+        "model_name": model_name,
+        "device": str(device),
+        "checkpoint_path": str(checkpoint_path),
+        "timing": {
+            "prepare_duration_sec": prepare_duration_sec,
+            "train_duration_sec": 0,
+            "eval_duration_sec": None,
+            "pseudolabel_duration_sec": postprocess_duration_sec,
+            "postprocess_duration_sec": postprocess_duration_sec,
+        },
+        "postprocess_metrics": postprocess_metrics,
+        "pseudolabel": {
+            "status": "done" if postprocess_metrics.get("pseudolabel_enabled") else "skipped",
+            "accepted_objects": postprocess_metrics.get("accepted_objects"),
+            "accepted_geojson_mb": postprocess_metrics.get("accepted_geojson_mb"),
+            "total_vertices": postprocess_metrics.get("total_vertices"),
+            "total_area_m2": postprocess_metrics.get("total_area_m2"),
+            "selected_postprocess_params": selected_postprocess_params,
+            "mlflow_artifacts": {
+                "accepted_geojson": "accepted.geojson",
+                "accepted_debug_geojson": "accepted_debug.geojson",
+                "accepted_geojson_gz": "accepted.geojson.gz",
+                "accepted_gpkg": "accepted.gpkg",
+                "tiling_debug": "tiling_debug.json",
+                "windows_preview": "windows_preview.geojson",
+                "postprocess_debug": "postprocess_debug.json",
+                "pseudolabel_summary": "pseudolabel_summary.json",
+            },
+            "s3_uris": {
+                "accepted_geojson": None,
+                "accepted_geojson_gz": None,
+                "accepted_gpkg": None,
+            },
+        },
+        "matched_scenes_count": len(matches),
+        "missing_scenes": missing,
+        "ambiguous_scenes": ambiguous,
+        "scenes_match_report": str(scenes_report_path),
+        "warnings": [f"{len(missing)} scenes from scenes.txt were not matched"] if missing else [],
+    }
 
 
 def run_real_train(
