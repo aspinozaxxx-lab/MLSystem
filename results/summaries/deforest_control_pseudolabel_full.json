@@ -1,119 +1,114 @@
 {
-  "schema_version": 1,
-  "job_id": "deforest_control_pseudolabel_full",
-  "status": "done",
-  "task": "predict",
-  "mode": "debug_pseudolabel",
-  "server": "roskadastr-ml",
-  "started_at": "2026-04-26T10:13:58.584917+00:00",
-  "finished_at": "2026-04-26T10:32:00.679795+00:00",
+  "ambiguous_scenes": [],
+  "best_epoch": null,
+  "claim_id": "deforest_control_pseudolabel_full__20260426T101354039192Z",
   "duration_sec": 1081.795,
-  "train_duration_sec": 0,
-  "pseudolabel_duration_sec": 1075.356,
-  "checkpoint": {
-    "used_existing": true,
-    "model_name": "unet_resnet34",
-    "path": "/data/mlsystem/storage/experiments/deforest_exp04_r34_t512__20260425T202857249530Z/unet_resnet34.pt",
-    "source_job_id": "deforest_exp04_r34_t512",
-    "selection_reason": "Best available prior summary by best_val_iou: 0.44836788483030987."
-  },
-  "mlflow": {
-    "experiment_name": "mlsystem-deforest",
-    "experiment_id": "1",
-    "run_id": "4616080884d040219bfa9a771482bb15",
-    "run_name": "CTRL-pseudo-full",
-    "run_url_external": "http://172.26.12.169:5000/#/experiments/1/runs/4616080884d040219bfa9a771482bb15"
-  },
-  "scene_matching": {
-    "scenes_entries": 24,
-    "matched_scenes_count": 7,
-    "ambiguous_scenes_count": 0,
-    "missing_scenes_count": 17,
-    "matched_scenes": [
-      "KV3_30861_31739-00_KANOPUS_20230826_035108_20.L2.PMS.SCN07.tif",
-      "KV3_30861_31739-00_KANOPUS_20230826_035108_20.L2.PMS.SCN04.tif",
-      "KV3_30861_31739-00_KANOPUS_20230826_035108_20.L2.PMS.SCN03.tif",
-      "KVI_33499_32578-00_KANOPUS_20230729_035151_12.L2.PMS.SCN06.tif",
-      "KVI_33499_32578-00_KANOPUS_20230729_035151_12.L2.PMS.SCN05.tif",
-      "KVI_33499_32578-00_KANOPUS_20230729_035151_12.L2.PMS.SCN04.tif",
-      "KVI_33499_32578-00_KANOPUS_20230729_035151_12.L2.PMS.SCN03.tif"
-    ],
-    "missing_scenes": [
-      "KV4_18254_14029-01_KANOPUS_20210518_080116_20.L2.PMS.SCN03",
-      "KV4_18254_14029-01_KANOPUS_20210518_080116_20.L2.PMS.SCN02",
-      "KV4_18254_14029-01_KANOPUS_20210518_080116_20.L2.PMS.SCN01",
-      "KV5_13775_10997-01_KANOPUS_20210621_075153_83.L2.PMS.SCN03",
-      "KV5_13775_10997-01_KANOPUS_20210621_075153_83.L2.PMS.SCN02",
-      "KV5_13775_10997-01_KANOPUS_20210621_075153_83.L2.PMS.SCN01",
-      "KV5_24775_25670-02_KANOPUS_20230615_075909_7.L2.PMS.SCN03",
-      "KV5_24775_25670-02_KANOPUS_20230615_075909_7.L2.PMS.SCN02",
-      "KV5_24775_25670-02_KANOPUS_20230615_075909_7.L2.PMS.SCN01",
-      "KV6_25931_26639-01_KANOPUS_20230830_075057_8.L2.PMS.SCN02",
-      "KV6_25931_26639-01_KANOPUS_20230830_075057_8.L2.PMS.SCN01",
-      "KV6_29676_31877-02_KANOPUS_20240502_075932_8.L2.PMS.SCN03",
-      "KV6_29676_31877-02_KANOPUS_20240502_075932_8.L2.PMS.SCN02",
-      "KV6_29676_31877-02_KANOPUS_20240502_075932_8.L2.PMS.SCN01",
-      "KV5_31621_35243-01_KANOPUS_20240907_075653_8.L2.PMS.SCN03",
-      "KV5_31621_35243-01_KANOPUS_20240907_075653_8.L2.PMS.SCN02",
-      "KV5_31621_35243-01_KANOPUS_20240907_075653_8.L2.PMS.SCN01"
-    ]
-  },
-  "coverage": {
-    "scenes_processed": 7,
-    "scenes_failed": 0,
-    "total_expected_windows": 252,
-    "total_predicted_windows": 248,
-    "total_skipped_windows": 4,
+  "epochs_completed": null,
+  "errors": [],
+  "eval_duration_sec": null,
+  "finished_at": "2026-04-26T10:32:00.679795+00:00",
+  "job_id": "deforest_control_pseudolabel_full",
+  "matched_scenes_count": 7,
+  "metrics": {
+    "accepted_geojson_gz_mb": 1.4548053741455078,
+    "accepted_geojson_mb": 4.760598182678223,
+    "accepted_gpkg_mb": 2.3671875,
+    "accepted_objects": 500,
+    "accepted_objects_total": 500,
+    "actual_predicted_window_count": 248,
+    "coverage_fraction": 0.9841723198541119,
+    "expected_window_count": 252,
+    "matched_scene_count": 7,
     "mean_coverage_fraction": 0.9841723198541119,
     "min_coverage_fraction": 0.9722403142377605,
-    "per_scene": [
-      {"scene_id": "KV3_30861_31739-00_KANOPUS_20230826_035108_20.L2.PMS.SCN07.tif", "expected_window_count": 36, "actual_predicted_window_count": 36, "skipped_window_count": 0, "coverage_fraction": 1.0, "objects_before_filter": 3363, "objects_after_filter": 1117},
-      {"scene_id": "KV3_30861_31739-00_KANOPUS_20230826_035108_20.L2.PMS.SCN04.tif", "expected_window_count": 36, "actual_predicted_window_count": 36, "skipped_window_count": 0, "coverage_fraction": 1.0, "objects_before_filter": 6461, "objects_after_filter": 2063},
-      {"scene_id": "KV3_30861_31739-00_KANOPUS_20230826_035108_20.L2.PMS.SCN03.tif", "expected_window_count": 36, "actual_predicted_window_count": 36, "skipped_window_count": 0, "coverage_fraction": 1.0, "objects_before_filter": 3197, "objects_after_filter": 993},
-      {"scene_id": "KVI_33499_32578-00_KANOPUS_20230729_035151_12.L2.PMS.SCN06.tif", "expected_window_count": 36, "actual_predicted_window_count": 35, "skipped_window_count": 1, "coverage_fraction": 0.9722403142377605, "objects_before_filter": 4082, "objects_after_filter": 1105},
-      {"scene_id": "KVI_33499_32578-00_KANOPUS_20230729_035151_12.L2.PMS.SCN05.tif", "expected_window_count": 36, "actual_predicted_window_count": 35, "skipped_window_count": 1, "coverage_fraction": 0.9722868761023583, "objects_before_filter": 4022, "objects_after_filter": 1150},
-      {"scene_id": "KVI_33499_32578-00_KANOPUS_20230729_035151_12.L2.PMS.SCN04.tif", "expected_window_count": 36, "actual_predicted_window_count": 35, "skipped_window_count": 1, "coverage_fraction": 0.9723211637880792, "objects_before_filter": 5392, "objects_after_filter": 1593},
-      {"scene_id": "KVI_33499_32578-00_KANOPUS_20230729_035151_12.L2.PMS.SCN03.tif", "expected_window_count": 36, "actual_predicted_window_count": 35, "skipped_window_count": 1, "coverage_fraction": 0.972357884850585, "objects_before_filter": 8720, "objects_after_filter": 2298}
-    ]
+    "min_object_area_m2_used": 2000.0,
+    "postprocess_sec": 1074.226,
+    "pseudolabel_enabled": true,
+    "scenes_processed": 7,
+    "simplify_tolerance_m_used": 10.0,
+    "threshold_used": 0.55,
+    "total_area_m2": 735363330.1171455,
+    "total_expected_windows": 252,
+    "total_predicted_windows": 248,
+    "total_vertices": 79065
   },
-  "postprocess": {
-    "threshold": 0.55,
-    "min_area_m2": 2000.0,
-    "simplify_tolerance_m": 10.0,
-    "objects_before_filter": 35237,
-    "objects_after_filter": 10319,
-    "objects_after_top500": 500,
-    "accepted_objects_total": 500,
-    "top500_applied": true,
-    "vertices_before": 3119646,
-    "vertices_after": 260663,
-    "accepted_geojson_mb": 4.760598182678223,
-    "accepted_geojson_gz_mb": 1.4548053741455078,
-    "accepted_gpkg_mb": 2.3671875,
-    "max_geojson_mb": 20.0,
-    "within_geojson_limit": true
-  },
-  "artifacts": {
-    "mlflow": [
-      "job.yml",
-      "scenes_match_report.json",
-      "coverage_report.json",
-      "tiling_debug.json",
-      "windows_preview.geojson",
-      "postprocess_debug.json",
-      "pseudolabel_summary.json",
-      "accepted.geojson",
-      "accepted.geojson.gz",
-      "accepted.gpkg",
-      "run_summary.json",
-      "codex_summary.json"
-    ],
-    "local_experiment_dir": "/data/mlsystem/storage/experiments/deforest_control_pseudolabel_full__20260426T101354039192Z"
-  },
-  "warnings": [
-    "17 scenes from scenes.txt were not matched in current S3 image set",
-    "CPU-only inference took 1081.795 seconds",
-    "4 windows were skipped as all-zero/nodata"
+  "missing_scenes": [
+    "KV4_18254_14029-01_KANOPUS_20210518_080116_20.L2.PMS.SCN03",
+    "KV4_18254_14029-01_KANOPUS_20210518_080116_20.L2.PMS.SCN02",
+    "KV4_18254_14029-01_KANOPUS_20210518_080116_20.L2.PMS.SCN01",
+    "KV5_13775_10997-01_KANOPUS_20210621_075153_83.L2.PMS.SCN03",
+    "KV5_13775_10997-01_KANOPUS_20210621_075153_83.L2.PMS.SCN02",
+    "KV5_13775_10997-01_KANOPUS_20210621_075153_83.L2.PMS.SCN01",
+    "KV5_24775_25670-02_KANOPUS_20230615_075909_7.L2.PMS.SCN03",
+    "KV5_24775_25670-02_KANOPUS_20230615_075909_7.L2.PMS.SCN02",
+    "KV5_24775_25670-02_KANOPUS_20230615_075909_7.L2.PMS.SCN01",
+    "KV6_25931_26639-01_KANOPUS_20230830_075057_8.L2.PMS.SCN02",
+    "KV6_25931_26639-01_KANOPUS_20230830_075057_8.L2.PMS.SCN01",
+    "KV6_29676_31877-02_KANOPUS_20240502_075932_8.L2.PMS.SCN03",
+    "KV6_29676_31877-02_KANOPUS_20240502_075932_8.L2.PMS.SCN02",
+    "KV6_29676_31877-02_KANOPUS_20240502_075932_8.L2.PMS.SCN01",
+    "KV5_31621_35243-01_KANOPUS_20240907_075653_8.L2.PMS.SCN03",
+    "KV5_31621_35243-01_KANOPUS_20240907_075653_8.L2.PMS.SCN02",
+    "KV5_31621_35243-01_KANOPUS_20240907_075653_8.L2.PMS.SCN01"
   ],
-  "errors": []
+  "mlflow_artifacts": {
+    "accepted_geojson": "accepted.geojson",
+    "accepted_geojson_gz": "accepted.geojson.gz",
+    "accepted_gpkg": "accepted.gpkg",
+    "pseudolabel_summary": "pseudolabel_summary.json",
+    "scenes_match_report": "scenes_match_report.json",
+    "train_dataset_report": null
+  },
+  "mlflow_run_url": "http://172.26.12.169:5000/#/experiments/1/runs/4616080884d040219bfa9a771482bb15",
+  "postprocess_duration_sec": 1075.356,
+  "pseudolabel": {
+    "accepted_geojson_mb": 4.760598182678223,
+    "accepted_objects": 500,
+    "mlflow_artifacts": {
+      "accepted_debug_geojson": "accepted_debug.geojson",
+      "accepted_geojson": "accepted.geojson",
+      "accepted_geojson_gz": "accepted.geojson.gz",
+      "accepted_gpkg": "accepted.gpkg",
+      "coverage_report": "coverage_report.json",
+      "postprocess_debug": "postprocess_debug.json",
+      "pseudolabel_summary": "pseudolabel_summary.json",
+      "tiling_debug": "tiling_debug.json",
+      "windows_preview": "windows_preview.geojson"
+    },
+    "s3_uris": {
+      "accepted_geojson": null,
+      "accepted_geojson_gz": null,
+      "accepted_gpkg": null
+    },
+    "selected_postprocess_params": {
+      "max_objects": 500,
+      "min_object_area_m2": 2000.0,
+      "simplify_tolerance_m": 10.0,
+      "threshold": 0.55
+    },
+    "status": "done",
+    "total_area_m2": 735363330.1171455,
+    "total_vertices": 79065
+  },
+  "pseudolabel_duration_sec": 1075.356,
+  "s3_artifacts": {
+    "accepted_geojson": null,
+    "accepted_geojson_gz": null,
+    "accepted_gpkg": null,
+    "report_html": null
+  },
+  "schema_version": 1,
+  "server": "roskadastr-ml",
+  "started_at": "2026-04-26T10:13:58.584917+00:00",
+  "status": "done",
+  "task": "predict",
+  "train_duration_sec": 0,
+  "train_scene_count": null,
+  "train_tile_count": null,
+  "val_scene_count": null,
+  "val_tile_count": null,
+  "warnings": [
+    "GPU backend is disabled/not available; running CPU-only",
+    "17 scenes from scenes.txt were not matched"
+  ]
 }
