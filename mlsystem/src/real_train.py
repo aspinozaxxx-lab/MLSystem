@@ -378,7 +378,49 @@ def _build_model(model_name: str, in_channels: int, out_channels: int, base_chan
             classes=out_channels,
             activation=None,
         )
-    raise ValueError(f"Unsupported model_name={model_name}. Supported: tiny_unet_4ch, unet_resnet18, unet_resnet34, unet_resnet50")
+    segformer_encoders = {
+        "segformer_b0": "mit_b0",
+        "segformer_b1": "mit_b1",
+    }
+    if normalized in segformer_encoders:
+        import segmentation_models_pytorch as smp
+
+        return smp.Segformer(
+            encoder_name=segformer_encoders[normalized],
+            encoder_weights=None,
+            in_channels=in_channels,
+            classes=out_channels,
+            activation=None,
+        )
+    deeplab_encoders = {
+        "deeplabv3plus_resnet34": "resnet34",
+        "deeplabv3plus_resnet50": "resnet50",
+        "deeplab_r34": "resnet34",
+        "deeplab_r50": "resnet50",
+    }
+    if normalized in deeplab_encoders:
+        import segmentation_models_pytorch as smp
+
+        return smp.DeepLabV3Plus(
+            encoder_name=deeplab_encoders[normalized],
+            encoder_weights=None,
+            in_channels=in_channels,
+            classes=out_channels,
+            activation=None,
+        )
+    supported = ", ".join(
+        [
+            "tiny_unet_4ch",
+            "unet_resnet18",
+            "unet_resnet34",
+            "unet_resnet50",
+            "segformer_b0",
+            "segformer_b1",
+            "deeplabv3plus_resnet34",
+            "deeplabv3plus_resnet50",
+        ]
+    )
+    raise ValueError(f"Unsupported model_name={model_name}. Supported: {supported}")
 
 
 def _normalize_image(arr: np.ndarray) -> np.ndarray:
@@ -482,6 +524,11 @@ def _read_samples(
                 break
             path = f"/vsis3/{config.storage.s3_bucket}/{match.key}"
             with rasterio.open(path) as ds:
+                scene_bounds = box(*ds.bounds)
+                positive_scene = any(
+                    geom.is_valid and (not geom.is_empty) and geom.intersects(scene_bounds)
+                    for geom in shapes
+                )
                 usable_bands = [band for band in input_bands if band <= ds.count]
                 if len(usable_bands) != len(input_bands):
                     raise RuntimeError(f"{match.name} has {ds.count} bands, expected {input_bands}")
@@ -522,8 +569,10 @@ def _read_samples(
                         "height": ds.height,
                         "bands": ds.count,
                         "crs": str(ds.crs),
+                        "positive_scene": bool(positive_scene),
                         "samples": scene_samples,
                         "positive_tiles": positive_tiles,
+                        "negative_tiles": max(0, scene_samples - positive_tiles),
                     }
                 )
     return samples, report
@@ -970,6 +1019,12 @@ def run_debug_pseudolabel(
     matches = [SceneMatch(**item) for item in matching_report["matched"]]
     ambiguous = matching_report["ambiguous"]
     missing = matching_report["missing"]
+    strict_matching = str(data.get("scene_name_matching") or "").lower() == "strict_after_fuzzy_validation"
+    if strict_matching and (missing or ambiguous or len(matches) != len(entries)):
+        raise RuntimeError(
+            "Scene matching is not complete: "
+            f"total={len(entries)} matched={len(matches)} missing={len(missing)} ambiguous={len(ambiguous)}"
+        )
     if not matches:
         raise RuntimeError("No scenes from scenes.txt matched available images")
 
@@ -1127,6 +1182,12 @@ def run_real_train(
     matches = [SceneMatch(**item) for item in matching_report["matched"]]
     ambiguous = matching_report["ambiguous"]
     missing = matching_report["missing"]
+    strict_matching = str(data.get("scene_name_matching") or "").lower() == "strict_after_fuzzy_validation"
+    if strict_matching and (missing or ambiguous or len(matches) != len(entries)):
+        raise RuntimeError(
+            "Scene matching is not complete: "
+            f"total={len(entries)} matched={len(matches)} missing={len(missing)} ambiguous={len(ambiguous)}"
+        )
     if not matches:
         raise RuntimeError("No scenes from scenes.txt matched available images")
 
@@ -1191,19 +1252,45 @@ def run_real_train(
     if not train_samples or not val_samples:
         raise RuntimeError(f"Not enough samples: train={len(train_samples)} val={len(val_samples)}")
 
+    train_positive_scene_count = sum(1 for row in train_report if row.get("positive_scene"))
+    val_positive_scene_count = sum(1 for row in val_report if row.get("positive_scene"))
+    train_negative_scene_count = max(0, len(train_report) - train_positive_scene_count)
+    val_negative_scene_count = max(0, len(val_report) - val_positive_scene_count)
+    train_positive_tiles = sum(int(mask.sum() > 0) for _, mask in train_samples)
+    val_positive_tiles = sum(int(mask.sum() > 0) for _, mask in val_samples)
+    train_negative_tiles = sum(int(mask.sum() == 0) for _, mask in train_samples)
+    val_negative_tiles = sum(int(mask.sum() == 0) for _, mask in val_samples)
     dataset_report = {
         "train_scene_count": len(train_matches),
         "val_scene_count": len(val_matches),
+        "positive_scene_count": train_positive_scene_count + val_positive_scene_count,
+        "negative_scene_count": train_negative_scene_count + val_negative_scene_count,
+        "train_positive_scene_count": train_positive_scene_count,
+        "train_negative_scene_count": train_negative_scene_count,
+        "val_positive_scene_count": val_positive_scene_count,
+        "val_negative_scene_count": val_negative_scene_count,
         "train_tile_count": len(train_samples),
         "val_tile_count": len(val_samples),
-        "train_positive_tiles": sum(int(mask.sum() > 0) for _, mask in train_samples),
-        "val_positive_tiles": sum(int(mask.sum() > 0) for _, mask in val_samples),
+        "train_positive_tiles": train_positive_tiles,
+        "val_positive_tiles": val_positive_tiles,
+        "train_negative_tiles": train_negative_tiles,
+        "val_negative_tiles": val_negative_tiles,
+        "positive_tile_count": train_positive_tiles + val_positive_tiles,
+        "negative_tile_count": train_negative_tiles + val_negative_tiles,
         "patch_size": patch_size,
         "train_scenes": train_report,
         "val_scenes": val_report,
     }
     dataset_report_path = experiment_dir / "train_dataset_report.json"
     write_json(dataset_report_path, dataset_report)
+    mlflow_run.log_params(
+        {
+            "positive_scene_count": dataset_report["positive_scene_count"],
+            "negative_scene_count": dataset_report["negative_scene_count"],
+            "positive_tile_count": dataset_report["positive_tile_count"],
+            "negative_tile_count": dataset_report["negative_tile_count"],
+        }
+    )
     prepare_duration_sec = round(time.time() - prepare_started, 3)
 
     device = torch.device("cuda" if torch.cuda.is_available() and not config.cpu_only else "cpu")
@@ -1377,6 +1464,12 @@ def run_real_train(
         "val_tile_count": len(val_samples),
         "train_positive_tiles": dataset_report["train_positive_tiles"],
         "val_positive_tiles": dataset_report["val_positive_tiles"],
+        "train_negative_tiles": dataset_report["train_negative_tiles"],
+        "val_negative_tiles": dataset_report["val_negative_tiles"],
+        "positive_scene_count": dataset_report["positive_scene_count"],
+        "negative_scene_count": dataset_report["negative_scene_count"],
+        "positive_tile_count": dataset_report["positive_tile_count"],
+        "negative_tile_count": dataset_report["negative_tile_count"],
         "scenes_match_report": str(scenes_report_path),
         "train_dataset_report": str(dataset_report_path),
         "history_path": str(experiment_dir / "history.json"),
