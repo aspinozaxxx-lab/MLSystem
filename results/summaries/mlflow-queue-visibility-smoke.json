@@ -2,7 +2,11 @@
   "ambiguous_scenes": [],
   "best_epoch": null,
   "claim_id": "mlflow-queue-visibility-smoke__20260425T135045312748Z",
+  "duration_sec": 1.289,
+  "epochs_completed": null,
   "errors": [],
+  "eval_duration_sec": null,
+  "finished_at": "2026-04-25T13:50:49.523722+00:00",
   "job_id": "mlflow-queue-visibility-smoke",
   "matched_scenes_count": null,
   "metrics": {
@@ -10,15 +14,30 @@
     "accepted_objects": null
   },
   "missing_scenes": [],
+  "mlflow_artifacts": {
+    "accepted_geojson": null,
+    "accepted_geojson_gz": null,
+    "accepted_gpkg": null,
+    "pseudolabel_summary": null,
+    "scenes_match_report": null,
+    "train_dataset_report": null
+  },
   "mlflow_run_url": "http://172.26.12.169:5000/#/experiments/7/runs/5599cb8c280c4346b5d2fb929ea37711",
+  "postprocess_duration_sec": null,
+  "pseudolabel": {},
+  "pseudolabel_duration_sec": null,
   "s3_artifacts": {
     "accepted_geojson": null,
+    "accepted_geojson_gz": null,
+    "accepted_gpkg": null,
     "report_html": null
   },
   "schema_version": 1,
   "server": "roskadastr-ml",
+  "started_at": "2026-04-25T13:50:48.113713+00:00",
   "status": "done",
   "task": "status_check",
+  "train_duration_sec": null,
   "train_scene_count": null,
   "train_tile_count": null,
   "val_scene_count": null,

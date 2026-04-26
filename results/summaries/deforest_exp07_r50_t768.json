@@ -2,7 +2,11 @@
   "ambiguous_scenes": [],
   "best_epoch": 9,
   "claim_id": "deforest_exp07_r50_t768__20260425T202923115693Z",
+  "duration_sec": 4566.474,
+  "epochs_completed": 17,
   "errors": [],
+  "eval_duration_sec": null,
+  "finished_at": "2026-04-25T23:43:03.584057+00:00",
   "job_id": "deforest_exp07_r50_t768",
   "matched_scenes_count": 7,
   "metrics": {
@@ -48,15 +52,30 @@
     "KV5_31621_35243-01_KANOPUS_20240907_075653_8.L2.PMS.SCN02",
     "KV5_31621_35243-01_KANOPUS_20240907_075653_8.L2.PMS.SCN01"
   ],
+  "mlflow_artifacts": {
+    "accepted_geojson": "accepted.geojson",
+    "accepted_geojson_gz": "accepted.geojson.gz",
+    "accepted_gpkg": "accepted.gpkg",
+    "pseudolabel_summary": "pseudolabel_summary.json",
+    "scenes_match_report": "scenes_match_report.json",
+    "train_dataset_report": "train_dataset_report.json"
+  },
   "mlflow_run_url": "http://172.26.12.169:5000/#/experiments/7/runs/3ed07cec48b44a2fa3d22b7fc9bf2dfd",
+  "postprocess_duration_sec": null,
+  "pseudolabel": {},
+  "pseudolabel_duration_sec": null,
   "s3_artifacts": {
     "accepted_geojson": null,
+    "accepted_geojson_gz": null,
+    "accepted_gpkg": null,
     "report_html": null
   },
   "schema_version": 1,
   "server": "roskadastr-ml",
+  "started_at": "2026-04-25T22:26:57.025464+00:00",
   "status": "done",
   "task": "train",
+  "train_duration_sec": null,
   "train_scene_count": 6,
   "train_tile_count": 80,
   "val_scene_count": 1,
