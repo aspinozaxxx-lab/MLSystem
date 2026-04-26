@@ -672,10 +672,43 @@ def _write_pseudolabel_outputs(
     write_json(postprocess_debug_path, postprocess_debug)
     artifacts.append(postprocess_debug_path)
     artifacts.extend(sorted(experiment_dir.glob("probability_preview_*.png"))[:2])
+    gz_mb = gz_path.stat().st_size / (1024 * 1024)
+    gpkg_mb = gpkg_path.stat().st_size / (1024 * 1024) if gpkg_path.exists() else None
+    coverage_values = [float(row["coverage_fraction"]) for row in tiling_debug_rows]
+    coverage_report = {
+        "schema_version": 1,
+        "job_id": job.job_id,
+        "scenes_processed": len(tiling_debug_rows),
+        "scenes_failed": 0,
+        "total_expected_windows": int(sum(row["expected_window_count"] for row in tiling_debug_rows)),
+        "total_predicted_windows": int(sum(row["actual_predicted_window_count"] for row in tiling_debug_rows)),
+        "total_skipped_windows": int(sum(row["skipped_window_count"] for row in tiling_debug_rows)),
+        "mean_coverage_fraction": float(np.mean(coverage_values)) if coverage_values else None,
+        "min_coverage_fraction": float(np.min(coverage_values)) if coverage_values else None,
+        "accepted_objects_total": len(features),
+        "accepted_geojson_mb": geojson_mb,
+        "accepted_geojson_gz_mb": gz_mb,
+        "accepted_gpkg_mb": gpkg_mb,
+        "top500_applied": objects_after_filter > max_objects,
+        "max_objects": max_objects,
+        "max_geojson_mb": float(post_cfg.get("max_geojson_mb") or 20),
+        "scenes": tiling_debug_rows,
+        "warnings": [
+            f"low_coverage:{row['scene_id']}:{row['coverage_fraction']:.4f}"
+            for row in tiling_debug_rows
+            if float(row["coverage_fraction"]) < 0.5
+        ],
+    }
+    coverage_report_path = experiment_dir / "coverage_report.json"
+    write_json(coverage_report_path, coverage_report)
+    artifacts.append(coverage_report_path)
     metrics = {
         "pseudolabel_enabled": True,
         "accepted_objects": len(features),
+        "accepted_objects_total": len(features),
         "accepted_geojson_mb": geojson_mb,
+        "accepted_geojson_gz_mb": gz_mb,
+        "accepted_gpkg_mb": gpkg_mb,
         "total_area_m2": float(sum(float(item["properties"].get("area_m2") or 0) for item in features)),
         "total_vertices": int(sum(len(item["geometry"].get("coordinates", [[]])[0]) if item["geometry"].get("type") == "Polygon" else 0 for item in features)),
         "threshold_used": threshold_used,
@@ -687,8 +720,14 @@ def _write_pseudolabel_outputs(
         metrics["expected_window_count"] = int(sum(row["expected_window_count"] for row in tiling_debug_rows))
         metrics["actual_predicted_window_count"] = int(sum(row["actual_predicted_window_count"] for row in tiling_debug_rows))
         metrics["coverage_fraction"] = float(np.mean([row["coverage_fraction"] for row in tiling_debug_rows]))
+        metrics["matched_scene_count"] = len(tiling_debug_rows)
+        metrics["scenes_processed"] = len(tiling_debug_rows)
+        metrics["total_expected_windows"] = coverage_report["total_expected_windows"]
+        metrics["total_predicted_windows"] = coverage_report["total_predicted_windows"]
+        metrics["mean_coverage_fraction"] = coverage_report["mean_coverage_fraction"]
+        metrics["min_coverage_fraction"] = coverage_report["min_coverage_fraction"]
     summary_path = experiment_dir / "pseudolabel_summary.json"
-    write_json(summary_path, {"metrics": metrics, "artifacts": [str(path) for path in artifacts], "postprocess_debug": postprocess_debug})
+    write_json(summary_path, {"metrics": metrics, "artifacts": [str(path) for path in artifacts], "postprocess_debug": postprocess_debug, "coverage_report": coverage_report})
     artifacts.append(summary_path)
     return metrics, artifacts
 
@@ -726,8 +765,10 @@ def run_debug_pseudolabel(
         raise RuntimeError("No scenes from scenes.txt matched available images")
 
     pseudolabel_cfg = job.predict.get("pseudolabel") or job.params.get("pseudolabel") or {}
-    max_debug_scenes = int(pseudolabel_cfg.get("max_debug_scenes") or job.predict.get("max_debug_scenes") or 1)
-    matches = matches[: max(1, max_debug_scenes)]
+    total_matched_count = len(matches)
+    max_debug_scenes = pseudolabel_cfg.get("max_debug_scenes", job.predict.get("max_debug_scenes"))
+    if max_debug_scenes is not None:
+        matches = matches[: max(1, int(max_debug_scenes))]
     scene_report = {
         "images_uri": images_uri,
         "layout_uri": layout_uri,
@@ -735,7 +776,8 @@ def run_debug_pseudolabel(
         "scenes_uri": scenes_uri,
         "total_images_available": len(images),
         "scenes_entries": len(entries),
-        "matched_count": len(matches),
+        "matched_count": total_matched_count,
+        "selected_matched_count": len(matches),
         "ambiguous_count": len(ambiguous),
         "missing_count": len(missing),
         "matched": [match.__dict__ for match in matches],
@@ -825,6 +867,7 @@ def run_debug_pseudolabel(
                 "accepted_debug_geojson": "accepted_debug.geojson",
                 "accepted_geojson_gz": "accepted.geojson.gz",
                 "accepted_gpkg": "accepted.gpkg",
+                "coverage_report": "coverage_report.json",
                 "tiling_debug": "tiling_debug.json",
                 "windows_preview": "windows_preview.geojson",
                 "postprocess_debug": "postprocess_debug.json",
@@ -837,6 +880,7 @@ def run_debug_pseudolabel(
             },
         },
         "matched_scenes_count": len(matches),
+        "total_matched_scenes_count": total_matched_count,
         "missing_scenes": missing,
         "ambiguous_scenes": ambiguous,
         "scenes_match_report": str(scenes_report_path),
