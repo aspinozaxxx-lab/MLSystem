@@ -7,6 +7,8 @@ import math
 import random
 import re
 import time
+import difflib
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -157,7 +159,132 @@ def _find_layout_files(config: PipelineConfig, layout_uri: str, scenes_file: str
     return f"s3://{bucket}/{annotation_key}", f"s3://{bucket}/{scenes_key}"
 
 
+def _norm_scene_name(value: str) -> str:
+    name = PurePosixPath(value.strip()).name.lower()
+    name = re.sub(r"\.aux\.xml$", "", name)
+    name = re.sub(r"\.(tif|tiff)$", "", name)
+    name = re.sub(r"[_\-. ]?cog$", "", name)
+    return re.sub(r"[^a-z0-9]+", "", name)
+
+
+def _scene_signature(normalized: str) -> str | None:
+    match = re.search(r"kanopus(\d{8})(\d{6}).*?scn(\d{1,2})", normalized)
+    if not match:
+        return None
+    date, tm, scn = match.groups()
+    return f"kanopus:{date}:{tm}:scn{int(scn):02d}"
+
+
+def _scene_score(needle: str, candidate: str) -> tuple[float, str]:
+    if not needle or not candidate:
+        return 0.0, "empty"
+    if needle == candidate:
+        return 1.0, "normalized_exact"
+    needle_sig = _scene_signature(needle)
+    candidate_sig = _scene_signature(candidate)
+    if needle_sig and candidate_sig and needle_sig == candidate_sig:
+        return 0.995, "kanopus_datetime_scn_signature"
+    if len(needle) >= 16 and (needle in candidate or candidate in needle):
+        return 0.98, "normalized_substring"
+    return difflib.SequenceMatcher(None, needle, candidate).ratio(), "sequence_ratio"
+
+
+def build_scene_matching_report(
+    entries: list[str],
+    images: list[dict[str, Any]],
+    *,
+    accept_threshold: float = 0.92,
+    ambiguous_margin: float = 0.015,
+) -> dict[str, Any]:
+    normalized_images = [(item, _norm_scene_name(item["name"])) for item in images]
+    matched: list[SceneMatch] = []
+    ambiguous: list[dict[str, Any]] = []
+    missing: list[str] = []
+    rows: list[dict[str, Any]] = []
+
+    for entry in entries:
+        needle = _norm_scene_name(entry)
+        scored: list[dict[str, Any]] = []
+        for image, image_norm in normalized_images:
+            score, score_reason = _scene_score(needle, image_norm)
+            scored.append({"image": image, "normalized_image": image_norm, "score": round(float(score), 6), "reason": score_reason})
+        scored.sort(key=lambda item: item["score"], reverse=True)
+        best = scored[0] if scored else None
+        second = scored[1] if len(scored) > 1 else None
+        decision = "missing"
+        reason = "no_reliable_candidate"
+        if best and best["score"] >= accept_threshold:
+            if second and second["score"] >= accept_threshold and (best["score"] - second["score"]) <= ambiguous_margin:
+                decision = "ambiguous"
+                reason = "multiple_close_candidates"
+                ambiguous.append(
+                    {
+                        "entry": entry,
+                        "normalized_scene_line": needle,
+                        "candidates": [
+                            {
+                                "name": item["image"]["name"],
+                                "key": item["image"]["key"],
+                                "score": item["score"],
+                                "reason": item["reason"],
+                            }
+                            for item in scored[:10]
+                            if item["score"] >= accept_threshold
+                        ],
+                    }
+                )
+            else:
+                decision = "matched"
+                reason = str(best["reason"])
+                image = best["image"]
+                matched.append(SceneMatch(entry=entry, key=image["key"], name=image["name"], score=round(float(best["score"]), 4)))
+        else:
+            if best and best["score"] >= 0.85:
+                decision = "likely_missing_file"
+                reason = "best_candidate_below_accept_threshold"
+            missing.append(entry)
+        rows.append(
+            {
+                "original_scene_line": entry,
+                "normalized_scene_line": needle,
+                "scene_signature": _scene_signature(needle),
+                "exact_match": bool(best and best["score"] == 1.0),
+                "best_candidate_1": best["image"]["name"] if best else None,
+                "best_candidate_1_key": best["image"]["key"] if best else None,
+                "best_candidate_1_normalized": best["normalized_image"] if best else None,
+                "best_candidate_1_score": best["score"] if best else None,
+                "best_candidate_1_reason": best["reason"] if best else None,
+                "best_candidate_2": second["image"]["name"] if second else None,
+                "best_candidate_2_key": second["image"]["key"] if second else None,
+                "best_candidate_2_score": second["score"] if second else None,
+                "best_candidate_2_reason": second["reason"] if second else None,
+                "decision": decision,
+                "reason": reason,
+            }
+        )
+    return {
+        "schema_version": 1,
+        "total_scenes_in_scenes_txt": len(entries),
+        "total_images_available": len(images),
+        "total_tif_images_available": len([item for item in images if item["name"].lower().endswith((".tif", ".tiff"))]),
+        "matched_count": len(matched),
+        "missing_count": len(missing),
+        "ambiguous_count": len(ambiguous),
+        "accept_threshold": accept_threshold,
+        "ambiguous_margin": ambiguous_margin,
+        "matched": [match.__dict__ for match in matched],
+        "missing": missing,
+        "ambiguous": ambiguous,
+        "rows": rows,
+    }
+
+
 def _match_scenes(entries: list[str], images: list[dict[str, Any]]) -> tuple[list[SceneMatch], list[dict[str, Any]], list[str]]:
+    report = build_scene_matching_report(entries, images)
+    return [SceneMatch(**item) for item in report["matched"]], report["ambiguous"], report["missing"]
+
+
+def _match_scenes_legacy(entries: list[str], images: list[dict[str, Any]]) -> tuple[list[SceneMatch], list[dict[str, Any]], list[str]]:
     normalized_images = [(item, _norm_scene_name(item["name"])) for item in images]
     matched: list[SceneMatch] = []
     ambiguous: list[dict[str, Any]] = []
@@ -453,9 +580,16 @@ def _write_pseudolabel_outputs(
     raw_feature_count = 0
     vertices_before = 0
     vertices_after = 0
-    aws = _aws_session(config)
     model.eval()
     started = time.time()
+    parallel_cfg = ((job.predict.get("inference") or {}).get("parallel") or (job.params.get("inference") or {}).get("parallel") or {})
+    parallel_enabled = bool(parallel_cfg.get("enabled", False))
+    max_workers = max(1, int(parallel_cfg.get("max_workers") or 1))
+    if not parallel_enabled:
+        max_workers = 1
+    torch_threads_per_worker = max(1, int(parallel_cfg.get("torch_threads_per_worker") or max(1, torch.get_num_threads() // max_workers)))
+    previous_torch_threads = torch.get_num_threads()
+    torch.set_num_threads(torch_threads_per_worker)
 
     def origins(length: int, tile: int, stride: int) -> list[int]:
         if length <= tile:
@@ -490,8 +624,16 @@ def _write_pseudolabel_outputs(
         Image.fromarray(png).save(path)
         return path
 
-    with rasterio.Env(aws, AWS_HTTPS="NO", AWS_VIRTUAL_HOSTING="FALSE"):
-        for match in matches:
+    def process_scene(scene_idx: int, match: SceneMatch) -> dict[str, Any]:
+        scene_started = time.time()
+        local_features: list[dict[str, Any]] = []
+        local_windows_preview_features: list[dict[str, Any]] = []
+        local_raw_feature_count = 0
+        local_vertices_before = 0
+        local_vertices_after = 0
+        local_preview_path: Path | None = None
+        aws = _aws_session(config)
+        with rasterio.Env(aws, AWS_HTTPS="NO", AWS_VIRTUAL_HOSTING="FALSE"):
             path = f"/vsis3/{config.storage.s3_bucket}/{match.key}"
             with rasterio.open(path) as ds:
                 stride = int(job.preprocess.get("stride") or patch_size)
@@ -510,7 +652,7 @@ def _write_pseudolabel_outputs(
                     actual_h = min(patch_size, ds.height - y)
                     props = {
                         "scene": match.name,
-                        "tile_index": len(windows_preview_features),
+                        "tile_index": len(local_windows_preview_features),
                         "x": int(x),
                         "y": int(y),
                         "width": int(actual_w),
@@ -522,7 +664,7 @@ def _write_pseudolabel_outputs(
                     if np.count_nonzero(arr) == 0:
                         skipped_reasons["all_zero"] = skipped_reasons.get("all_zero", 0) + 1
                         props["skipped_reason"] = "all_zero"
-                        windows_preview_features.append({"type": "Feature", "properties": props, "geometry": mapping(box(*ds.window_bounds(window)))})
+                        local_windows_preview_features.append({"type": "Feature", "properties": props, "geometry": mapping(box(*ds.window_bounds(window)))})
                         continue
                     sample = torch.from_numpy(_normalize_image(arr)[None, ...]).to(device)
                     with torch.no_grad():
@@ -532,7 +674,7 @@ def _write_pseudolabel_outputs(
                     prob_count[y : y + actual_h, x : x + actual_w] += 1
                     predicted_count += 1
                     props["predicted"] = True
-                    windows_preview_features.append({"type": "Feature", "properties": props, "geometry": mapping(box(*ds.window_bounds(window)))})
+                    local_windows_preview_features.append({"type": "Feature", "properties": props, "geometry": mapping(box(*ds.window_bounds(window)))})
 
                 coverage_mask = prob_count > 0
                 prob_map = np.zeros_like(prob_sum, dtype="float32")
@@ -547,16 +689,16 @@ def _write_pseudolabel_outputs(
                     if poly.is_empty:
                         continue
                     scene_before += 1
-                    raw_feature_count += 1
-                    vertices_before += vertex_count(mapping(poly))
+                    local_raw_feature_count += 1
+                    local_vertices_before += vertex_count(mapping(poly))
                     if float(poly.area) < min_area:
                         continue
                     scene_after_filter += 1
                     if simplify_tolerance > 0:
                         poly = poly.simplify(simplify_tolerance, preserve_topology=True)
                     mapped = mapping(poly)
-                    vertices_after += vertex_count(mapped)
-                    features.append(
+                    local_vertices_after += vertex_count(mapped)
+                    local_features.append(
                         {
                             "type": "Feature",
                             "properties": {"scene": match.name, "threshold": threshold_used, "area_m2": float(poly.area)},
@@ -570,7 +712,7 @@ def _write_pseudolabel_outputs(
                     y0, x0 = nz.min(axis=0)
                     y1, x1 = nz.max(axis=0)
                     nonzero_bbox = [int(x0), int(y0), int(x1) + 1, int(y1) + 1]
-                scene_geoms = [shape(item["geometry"]) for item in features if item["properties"].get("scene") == match.name]
+                scene_geoms = [shape(item["geometry"]) for item in local_features]
                 vector_bounds = None
                 if scene_geoms:
                     vector_bounds = [
@@ -584,34 +726,66 @@ def _write_pseudolabel_outputs(
                 if vector_bounds:
                     image_area = max(1e-9, (image_bounds[2] - image_bounds[0]) * (image_bounds[3] - image_bounds[1]))
                     vector_area_fraction = ((vector_bounds[2] - vector_bounds[0]) * (vector_bounds[3] - vector_bounds[1])) / image_area
-                tiling_debug_rows.append(
-                    {
-                        "scene_id": match.name,
-                        "image_uri": f"s3://{config.storage.s3_bucket}/{match.key}",
-                        "width": ds.width,
-                        "height": ds.height,
-                        "crs": str(ds.crs),
-                        "transform": list(ds.transform)[:6],
-                        "tile_size": patch_size,
-                        "stride": stride,
-                        "expected_window_count": len(all_windows),
-                        "actual_window_count": len(windows),
-                        "actual_predicted_window_count": predicted_count,
-                        "skipped_window_count": len(windows) - predicted_count,
-                        "skip_reasons": skipped_reasons,
-                        "probability_map_shape": [int(ds.height), int(ds.width)],
-                        "nonzero_probability_bbox_pixels": nonzero_bbox,
-                        "nonzero_probability_area_fraction": float(np.count_nonzero(prob_map > 1e-6) / max(1, ds.width * ds.height)),
-                        "image_area_bbox_pixels": [0, 0, int(ds.width), int(ds.height)],
-                        "coverage_fraction": float(np.count_nonzero(coverage_mask) / max(1, ds.width * ds.height)),
-                        "vector_bounds": vector_bounds,
-                        "image_bounds": image_bounds,
-                        "vector_area_fraction_of_image_bbox": vector_area_fraction,
-                        "objects_before_filter": scene_before,
-                        "objects_after_filter": scene_after_filter,
-                    }
-                )
-                maybe_write_preview(prob_map, match.name)
+                debug_row = {
+                    "scene_id": match.name,
+                    "image_uri": f"s3://{config.storage.s3_bucket}/{match.key}",
+                    "width": ds.width,
+                    "height": ds.height,
+                    "crs": str(ds.crs),
+                    "transform": list(ds.transform)[:6],
+                    "tile_size": patch_size,
+                    "stride": stride,
+                    "expected_window_count": len(all_windows),
+                    "actual_window_count": len(windows),
+                    "actual_predicted_window_count": predicted_count,
+                    "skipped_window_count": len(windows) - predicted_count,
+                    "skip_reasons": skipped_reasons,
+                    "probability_map_shape": [int(ds.height), int(ds.width)],
+                    "nonzero_probability_bbox_pixels": nonzero_bbox,
+                    "nonzero_probability_area_fraction": float(np.count_nonzero(prob_map > 1e-6) / max(1, ds.width * ds.height)),
+                    "image_area_bbox_pixels": [0, 0, int(ds.width), int(ds.height)],
+                    "coverage_fraction": float(np.count_nonzero(coverage_mask) / max(1, ds.width * ds.height)),
+                    "vector_bounds": vector_bounds,
+                    "image_bounds": image_bounds,
+                    "vector_area_fraction_of_image_bbox": vector_area_fraction,
+                    "objects_before_filter": scene_before,
+                    "objects_after_filter": scene_after_filter,
+                    "scene_duration_sec": round(time.time() - scene_started, 3),
+                }
+                if scene_idx == 0:
+                    local_preview_path = maybe_write_preview(prob_map, match.name)
+        return {
+            "scene_index": scene_idx,
+            "features": local_features,
+            "windows_preview_features": local_windows_preview_features,
+            "raw_feature_count": local_raw_feature_count,
+            "vertices_before": local_vertices_before,
+            "vertices_after": local_vertices_after,
+            "preview_path": str(local_preview_path) if local_preview_path else None,
+            "scene_duration_sec": round(time.time() - scene_started, 3),
+            "debug_row": debug_row,
+        }
+
+    scene_results: list[dict[str, Any]] = []
+    try:
+        if max_workers > 1 and len(matches) > 1:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [executor.submit(process_scene, idx, match) for idx, match in enumerate(matches)]
+                for future in as_completed(futures):
+                    scene_results.append(future.result())
+        else:
+            scene_results = [process_scene(idx, match) for idx, match in enumerate(matches)]
+    finally:
+        torch.set_num_threads(previous_torch_threads)
+
+    for result in sorted(scene_results, key=lambda item: item["scene_index"]):
+        features.extend(result["features"])
+        windows_preview_features.extend(result["windows_preview_features"])
+        tiling_debug_rows.append(result["debug_row"])
+        raw_feature_count += int(result["raw_feature_count"])
+        vertices_before += int(result["vertices_before"])
+        vertices_after += int(result["vertices_after"])
+    inference_duration_sec = round(time.time() - started, 3)
 
     features.sort(key=lambda item: float(item["properties"].get("area_m2") or 0), reverse=True)
     objects_after_filter = len(features)
@@ -692,6 +866,10 @@ def _write_pseudolabel_outputs(
         "top500_applied": objects_after_filter > max_objects,
         "max_objects": max_objects,
         "max_geojson_mb": float(post_cfg.get("max_geojson_mb") or 20),
+        "inference_parallel_enabled": parallel_enabled,
+        "inference_max_workers": max_workers,
+        "torch_threads_per_worker": torch_threads_per_worker,
+        "inference_duration_sec": inference_duration_sec,
         "scenes": tiling_debug_rows,
         "warnings": [
             f"low_coverage:{row['scene_id']}:{row['coverage_fraction']:.4f}"
@@ -702,6 +880,30 @@ def _write_pseudolabel_outputs(
     coverage_report_path = experiment_dir / "coverage_report.json"
     write_json(coverage_report_path, coverage_report)
     artifacts.append(coverage_report_path)
+    inference_timing_report = {
+        "schema_version": 1,
+        "job_id": job.job_id,
+        "parallel": {
+            "enabled": parallel_enabled,
+            "strategy": "scene" if parallel_enabled else "sequential",
+            "max_workers": max_workers,
+            "torch_threads_per_worker": torch_threads_per_worker,
+        },
+        "total_inference_duration_sec": inference_duration_sec,
+        "per_scene": [
+            {
+                "scene_id": row["scene_id"],
+                "expected_window_count": row["expected_window_count"],
+                "actual_predicted_window_count": row["actual_predicted_window_count"],
+                "scene_duration_sec": row.get("scene_duration_sec"),
+                "coverage_fraction": row["coverage_fraction"],
+            }
+            for row in tiling_debug_rows
+        ],
+    }
+    inference_timing_path = experiment_dir / "inference_timing_report.json"
+    write_json(inference_timing_path, inference_timing_report)
+    artifacts.append(inference_timing_path)
     metrics = {
         "pseudolabel_enabled": True,
         "accepted_objects": len(features),
@@ -715,6 +917,10 @@ def _write_pseudolabel_outputs(
         "min_object_area_m2_used": min_area,
         "simplify_tolerance_m_used": simplify_tolerance,
         "postprocess_sec": round(time.time() - started, 3),
+        "inference_duration_sec": inference_duration_sec,
+        "inference_parallel_enabled": float(parallel_enabled),
+        "inference_max_workers": max_workers,
+        "torch_threads_per_worker": torch_threads_per_worker,
     }
     if tiling_debug_rows:
         metrics["expected_window_count"] = int(sum(row["expected_window_count"] for row in tiling_debug_rows))
@@ -760,7 +966,10 @@ def run_debug_pseudolabel(
         for line in _read_s3_text(config, scenes_uri).splitlines()
         if line.strip() and not line.strip().startswith("#")
     ]
-    matches, ambiguous, missing = _match_scenes(entries, images)
+    matching_report = build_scene_matching_report(entries, images)
+    matches = [SceneMatch(**item) for item in matching_report["matched"]]
+    ambiguous = matching_report["ambiguous"]
+    missing = matching_report["missing"]
     if not matches:
         raise RuntimeError("No scenes from scenes.txt matched available images")
 
@@ -770,23 +979,20 @@ def run_debug_pseudolabel(
     if max_debug_scenes is not None:
         matches = matches[: max(1, int(max_debug_scenes))]
     scene_report = {
+        **matching_report,
         "images_uri": images_uri,
         "layout_uri": layout_uri,
         "annotation_uri": annotation_uri,
         "scenes_uri": scenes_uri,
-        "total_images_available": len(images),
-        "scenes_entries": len(entries),
         "matched_count": total_matched_count,
         "selected_matched_count": len(matches),
-        "ambiguous_count": len(ambiguous),
-        "missing_count": len(missing),
         "matched": [match.__dict__ for match in matches],
-        "ambiguous": ambiguous,
-        "missing": missing,
     }
     scenes_report_path = experiment_dir / "scenes_match_report.json"
+    matching_report_path = experiment_dir / "scene_matching_report.json"
     write_json(scenes_report_path, scene_report)
-    mlflow_run.log_artifacts([scenes_report_path])
+    write_json(matching_report_path, scene_report)
+    mlflow_run.log_artifacts([scenes_report_path, matching_report_path])
     mlflow_run.log_params(
         {
             "scene_count": len(matches),
@@ -868,6 +1074,7 @@ def run_debug_pseudolabel(
                 "accepted_geojson_gz": "accepted.geojson.gz",
                 "accepted_gpkg": "accepted.gpkg",
                 "coverage_report": "coverage_report.json",
+                "inference_timing_report": "inference_timing_report.json",
                 "tiling_debug": "tiling_debug.json",
                 "windows_preview": "windows_preview.geojson",
                 "postprocess_debug": "postprocess_debug.json",
@@ -916,27 +1123,26 @@ def run_real_train(
         for line in _read_s3_text(config, scenes_uri).splitlines()
         if line.strip() and not line.strip().startswith("#")
     ]
-    matches, ambiguous, missing = _match_scenes(entries, images)
+    matching_report = build_scene_matching_report(entries, images)
+    matches = [SceneMatch(**item) for item in matching_report["matched"]]
+    ambiguous = matching_report["ambiguous"]
+    missing = matching_report["missing"]
     if not matches:
         raise RuntimeError("No scenes from scenes.txt matched available images")
 
     scene_report = {
+        **matching_report,
         "images_uri": images_uri,
         "layout_uri": layout_uri,
         "annotation_uri": annotation_uri,
         "scenes_uri": scenes_uri,
-        "total_images_available": len(images),
-        "scenes_entries": len(entries),
-        "matched_count": len(matches),
-        "ambiguous_count": len(ambiguous),
-        "missing_count": len(missing),
         "matched": [match.__dict__ for match in matches],
-        "ambiguous": ambiguous,
-        "missing": missing,
     }
     scenes_report_path = experiment_dir / "scenes_match_report.json"
+    matching_report_path = experiment_dir / "scene_matching_report.json"
     write_json(scenes_report_path, scene_report)
-    mlflow_run.log_artifacts([scenes_report_path])
+    write_json(matching_report_path, scene_report)
+    mlflow_run.log_artifacts([scenes_report_path, matching_report_path])
     mlflow_run.log_params(
         {
             "scene_count": len(matches),

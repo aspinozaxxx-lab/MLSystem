@@ -7,6 +7,7 @@ from .job_queue import enqueue, list_queue
 from .mlflow_adapter import check_mlflow, setup_deforest_experiment
 from .pipeline_config import load_config, ensure_storage_layout
 from .preprocess_inventory import build_preprocess_inventory, run_preprocess_forever
+from .real_train import _find_layout_files, _list_s3_objects, _read_s3_text, build_scene_matching_report
 from .resource_manager import collect_status
 from .s3_adapter import build_s3_layout_status, check_s3
 
@@ -29,6 +30,13 @@ def main() -> None:
     p_enqueue.add_argument("job_yaml")
     p_mlflow_setup = sub.add_parser("mlflow-setup-experiment")
     p_mlflow_setup.add_argument("--experiment", default="mlsystem-deforest")
+    p_match = sub.add_parser("match-scenes")
+    p_match.add_argument("--class-name", default="deforest")
+    p_match.add_argument("--images-uri", default=None)
+    p_match.add_argument("--layout-uri", default=None)
+    p_match.add_argument("--scenes-file", default="scenes.txt")
+    p_match.add_argument("--annotation-file", default="auto")
+    p_match.add_argument("--output", default=None)
     args = parser.parse_args()
     config = load_config(args.config)
     ensure_storage_layout(config)
@@ -47,6 +55,27 @@ def main() -> None:
         print_json(enqueue(config, Path(args.job_yaml)))
     elif args.command == "mlflow-setup-experiment":
         print_json(setup_deforest_experiment(config, args.experiment))
+    elif args.command == "match-scenes":
+        images_uri = args.images_uri or config.s3_paths.images
+        layout_uri = args.layout_uri or f"{config.s3_paths.layouts.rstrip('/')}/{args.class_name}/"
+        images = _list_s3_objects(config, images_uri, suffixes=(".tif", ".tiff"))
+        annotation_uri, scenes_uri = _find_layout_files(config, layout_uri, args.scenes_file, args.annotation_file)
+        entries = [
+            line.strip()
+            for line in _read_s3_text(config, scenes_uri).splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        ]
+        report = {
+            **build_scene_matching_report(entries, images),
+            "images_uri": images_uri,
+            "layout_uri": layout_uri,
+            "annotation_uri": annotation_uri,
+            "scenes_uri": scenes_uri,
+        }
+        output = Path(args.output) if args.output else config.system_root / f"scene_matching_{args.class_name}.json"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        print_json({**report, "output": str(output)})
     elif args.command == "run-once":
         print_json(run_once(config))
     elif args.command == "run-forever":
