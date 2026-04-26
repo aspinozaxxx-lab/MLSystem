@@ -27,10 +27,10 @@ jobs:
           mkdir -p .tmp/mlsystem-results .tmp/mlsystem-queue/pending .tmp/mlsystem-queue/running results/summaries
           src=/home/worker/mlsystem/storage/experiments
           if [ -d "$src" ]; then
-            (cd "$src" && find . -maxdepth 2 -type f \( -name run_summary.json -o -name codex_summary.json \) -print0 | tar --null -T - -cf -) \
+            (cd "$src" && find . -maxdepth 2 -type f \( -name run_summary.json -o -name codex_summary.json -o -name pseudolabel_summary.json -o -name scenes_match_report.json -o -name train_dataset_report.json \) -print0 | tar --null -T - -cf -) \
               | tar -xf - -C .tmp/mlsystem-results || true
           else
-            ssh mlserver 'cd /home/worker/mlsystem/storage/experiments && find . -maxdepth 2 -type f \( -name run_summary.json -o -name codex_summary.json \) -print0 | tar --null -T - -cf -' \
+            ssh mlserver 'cd /home/worker/mlsystem/storage/experiments && find . -maxdepth 2 -type f \( -name run_summary.json -o -name codex_summary.json -o -name pseudolabel_summary.json -o -name scenes_match_report.json -o -name train_dataset_report.json \) -print0 | tar --null -T - -cf -' \
               | tar -xf - -C .tmp/mlsystem-results || true
           fi
           queue=/home/worker/mlsystem/storage/jobs
@@ -54,6 +54,8 @@ jobs:
               run = json.loads(run_path.read_text(encoding="utf-8"))
               codex_path = run_path.parent / "codex_summary.json"
               codex = json.loads(codex_path.read_text(encoding="utf-8")) if codex_path.exists() else {}
+              pseudolabel_path = run_path.parent / "pseudolabel_summary.json"
+              pseudolabel = json.loads(pseudolabel_path.read_text(encoding="utf-8")) if pseudolabel_path.exists() else {}
               mlflow = run.get("mlflow") or {}
               result = run.get("result") or {}
               metrics = dict(result.get("last_epoch_metrics") or {})
@@ -69,10 +71,24 @@ jobs:
                   "status": run.get("status", result.get("status")),
                   "task": run.get("task"),
                   "server": "roskadastr-ml",
+                  "started_at": run.get("started_at"),
+                  "finished_at": run.get("finished_at"),
+                  "duration_sec": run.get("duration_sec"),
+                  "epochs_completed": result.get("epochs_completed"),
                   "mlflow_run_url": mlflow.get("run_url_external") or mlflow.get("external_run_url") or mlflow.get("run_url") or mlflow.get("url"),
                   "s3_artifacts": {
                       "accepted_geojson": None,
+                      "accepted_geojson_gz": None,
+                      "accepted_gpkg": None,
                       "report_html": None,
+                  },
+                  "mlflow_artifacts": {
+                      "accepted_geojson": "accepted.geojson" if (run_path.parent / "pseudolabel_summary.json").exists() else None,
+                      "accepted_geojson_gz": "accepted.geojson.gz" if (run_path.parent / "pseudolabel_summary.json").exists() else None,
+                      "accepted_gpkg": "accepted.gpkg" if (run_path.parent / "pseudolabel_summary.json").exists() else None,
+                      "pseudolabel_summary": "pseudolabel_summary.json" if pseudolabel else None,
+                      "scenes_match_report": "scenes_match_report.json" if (run_path.parent / "scenes_match_report.json").exists() else None,
+                      "train_dataset_report": "train_dataset_report.json" if (run_path.parent / "train_dataset_report.json").exists() else None,
                   },
                   "metrics": metrics,
                   "matched_scenes_count": result.get("matched_scenes_count"),
