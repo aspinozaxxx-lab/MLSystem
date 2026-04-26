@@ -70,3 +70,5 @@ MLTraner/
 !results/summaries/
 !results/summaries/**/*.json
 !results/summaries/**/*.md
+!results/reports/
+!results/reports/**/*.md
