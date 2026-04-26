@@ -58,6 +58,9 @@ jobs:
               pseudolabel = json.loads(pseudolabel_path.read_text(encoding="utf-8")) if pseudolabel_path.exists() else {}
               mlflow = run.get("mlflow") or {}
               result = run.get("result") or {}
+              timing = result.get("timing") or {}
+              pseudolabel_result = result.get("pseudolabel") or {}
+              pseudolabel_s3 = pseudolabel_result.get("s3_uris") or {}
               metrics = dict(result.get("last_epoch_metrics") or {})
               metrics.update(result.get("postprocess_metrics") or {})
               if result.get("best_val_iou") is not None:
@@ -74,12 +77,16 @@ jobs:
                   "started_at": run.get("started_at"),
                   "finished_at": run.get("finished_at"),
                   "duration_sec": run.get("duration_sec"),
+                  "train_duration_sec": timing.get("train_duration_sec"),
+                  "eval_duration_sec": timing.get("eval_duration_sec"),
+                  "pseudolabel_duration_sec": timing.get("pseudolabel_duration_sec"),
+                  "postprocess_duration_sec": timing.get("postprocess_duration_sec"),
                   "epochs_completed": result.get("epochs_completed"),
                   "mlflow_run_url": mlflow.get("run_url_external") or mlflow.get("external_run_url") or mlflow.get("run_url") or mlflow.get("url"),
                   "s3_artifacts": {
-                      "accepted_geojson": None,
-                      "accepted_geojson_gz": None,
-                      "accepted_gpkg": None,
+                      "accepted_geojson": pseudolabel_s3.get("accepted_geojson"),
+                      "accepted_geojson_gz": pseudolabel_s3.get("accepted_geojson_gz"),
+                      "accepted_gpkg": pseudolabel_s3.get("accepted_gpkg"),
                       "report_html": None,
                   },
                   "mlflow_artifacts": {
@@ -99,6 +106,7 @@ jobs:
                   "train_tile_count": result.get("train_tile_count"),
                   "val_tile_count": result.get("val_tile_count"),
                   "best_epoch": result.get("best_epoch"),
+                  "pseudolabel": pseudolabel_result,
                   "warnings": (codex.get("warnings", []) or []) + (result.get("warnings", []) or []),
                   "errors": [] if run.get("status") != "failed" else [result.get("error")],
               }

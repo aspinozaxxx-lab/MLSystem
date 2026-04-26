@@ -558,6 +558,7 @@ def run_real_train(
     np.random.seed(seed)
     torch.manual_seed(seed)
 
+    prepare_started = time.time()
     images = _list_s3_objects(config, images_uri, suffixes=(".tif", ".tiff"))
     annotation_uri, scenes_uri = _find_layout_files(config, layout_uri, scenes_file, annotation_file)
     entries = [
@@ -647,6 +648,7 @@ def run_real_train(
     }
     dataset_report_path = experiment_dir / "train_dataset_report.json"
     write_json(dataset_report_path, dataset_report)
+    prepare_duration_sec = round(time.time() - prepare_started, 3)
 
     device = torch.device("cuda" if torch.cuda.is_available() and not config.cpu_only else "cpu")
     model_name = str(model_cfg.get("name") or job.train.get("model_name") or "tiny_unet_4ch")
@@ -661,7 +663,8 @@ def run_real_train(
     early_cfg = job.train.get("early_stopping") or {}
     early_enabled = bool(early_cfg.get("enabled", job.train.get("early_stopping_enabled", False)))
     early_patience = int(early_cfg.get("patience") or job.train.get("early_stopping_patience") or 10)
-    started = time.time()
+    train_started = time.time()
+    started = train_started
     history: list[dict[str, float]] = []
 
     def make_batches(samples: list[tuple[np.ndarray, np.ndarray]], shuffle: bool) -> list[list[tuple[np.ndarray, np.ndarray]]]:
@@ -734,6 +737,7 @@ def run_real_train(
         if time.time() - started > time_limit_sec:
             break
 
+    train_duration_sec = round(time.time() - train_started, 3)
     artifacts = _write_history(experiment_dir, history)
     checkpoint_path = experiment_dir / "tiny_unet_4ch.pt"
     checkpoint_path = experiment_dir / f"{model_name}.pt"
@@ -763,17 +767,51 @@ def run_real_train(
     mlflow_run.log_artifacts(artifacts)
 
     last = history[-1] if history else {}
+    postprocess_duration_sec = postprocess_metrics.get("postprocess_sec")
+    pseudolabel_status = "done" if postprocess_metrics.get("pseudolabel_enabled") else "skipped"
+    selected_postprocess_params = {
+        "threshold": postprocess_metrics.get("threshold_used"),
+        "min_object_area_m2": postprocess_metrics.get("min_object_area_m2_used"),
+        "simplify_tolerance_m": postprocess_metrics.get("simplify_tolerance_m_used"),
+        "max_objects": job.postprocess.get("max_objects"),
+    }
     return {
         "status": "done",
         "mode": "real_train",
         "model_name": model_name,
         "device": str(device),
+        "timing": {
+            "prepare_duration_sec": prepare_duration_sec,
+            "train_duration_sec": train_duration_sec,
+            "eval_duration_sec": None,
+            "pseudolabel_duration_sec": postprocess_duration_sec,
+            "postprocess_duration_sec": postprocess_duration_sec,
+        },
         "epochs_completed": len(history),
         "time_limit_sec": time_limit_sec,
         "best_epoch": best_epoch,
         "best_val_iou": best_val_iou,
         "last_epoch_metrics": last,
         "postprocess_metrics": postprocess_metrics,
+        "pseudolabel": {
+            "status": pseudolabel_status,
+            "accepted_objects": postprocess_metrics.get("accepted_objects"),
+            "accepted_geojson_mb": postprocess_metrics.get("accepted_geojson_mb"),
+            "total_vertices": postprocess_metrics.get("total_vertices"),
+            "total_area_m2": postprocess_metrics.get("total_area_m2"),
+            "selected_postprocess_params": selected_postprocess_params,
+            "mlflow_artifacts": {
+                "accepted_geojson": "accepted.geojson",
+                "accepted_geojson_gz": "accepted.geojson.gz",
+                "accepted_gpkg": "accepted.gpkg",
+                "pseudolabel_summary": "pseudolabel_summary.json",
+            },
+            "s3_uris": {
+                "accepted_geojson": None,
+                "accepted_geojson_gz": None,
+                "accepted_gpkg": None,
+            },
+        },
         "matched_scenes_count": len(matches),
         "missing_scenes": missing,
         "ambiguous_scenes": ambiguous,
