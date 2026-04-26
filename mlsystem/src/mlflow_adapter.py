@@ -8,6 +8,89 @@ from typing import Any
 from .pipeline_config import PipelineConfig
 
 MAX_ARTIFACT_BYTES = 20_000_000
+MLFLOW_NOTE_TAG = "mlflow.note.content"
+
+def compact_run_label(job_id: str, model_name: str | None = None, tile_size: int | str | None = None) -> str:
+    """Return a short MLflow run label that stays useful when UI columns are narrow."""
+    lower = job_id.lower()
+    exp_no = None
+    if "exp" in lower:
+        suffix = lower.split("exp", 1)[1]
+        digits = "".join(ch for ch in suffix[:3] if ch.isdigit())
+        if digits:
+            exp_no = f"E{int(digits):02d}"
+    elif "smoke" in lower or "smk" in lower:
+        exp_no = "SMK"
+    prefix = exp_no or job_id[:12]
+    model = (model_name or "").lower()
+    if "resnet18" in model or "_r18" in lower or "r18" in lower:
+        model_part = "r18"
+    elif "resnet34" in model or "_r34" in lower or "r34" in lower:
+        model_part = "r34"
+    elif "resnet50" in model or "_r50" in lower or "r50" in lower:
+        model_part = "r50"
+    elif "tiny" in model or "tiny" in lower:
+        model_part = "tiny"
+    else:
+        model_part = model.replace("unet_", "").replace("resnet", "r")[:8] or "run"
+    tile = str(tile_size or "")
+    if not tile:
+        for token in lower.replace("-", "_").split("_"):
+            if token.startswith("t") and token[1:].isdigit():
+                tile = token[1:]
+                break
+    return f"{prefix}-{model_part}-t{tile}" if tile else f"{prefix}-{model_part}"
+
+def build_run_note(
+    *,
+    job_id: str,
+    run_label: str,
+    model_name: str | None,
+    tile_size: int | str | None,
+    stride: int | str | None,
+    data_uri: str | None = None,
+    layout_uri: str | None = None,
+    metrics: dict[str, Any] | None = None,
+    artifacts: dict[str, Any] | None = None,
+    warnings: list[str] | None = None,
+) -> str:
+    metrics = metrics or {}
+    artifacts = artifacts or {}
+    warnings = warnings or []
+    lines = [
+        f"# {run_label}",
+        "",
+        f"- job_id: `{job_id}`",
+        f"- model: `{model_name or 'unknown'}`",
+        f"- tile/stride: `{tile_size or 'n/a'}` / `{stride or 'n/a'}`",
+    ]
+    if data_uri:
+        lines.append(f"- images: `{data_uri}`")
+    if layout_uri:
+        lines.append(f"- layout: `{layout_uri}`")
+    metric_keys = [
+        "best_val_iou",
+        "val/iou",
+        "val/dice",
+        "val/f1",
+        "accepted_objects",
+        "accepted_geojson_mb",
+    ]
+    visible_metrics = {key: metrics.get(key) for key in metric_keys if metrics.get(key) is not None}
+    if visible_metrics:
+        lines.extend(["", "## Metrics"])
+        for key, value in visible_metrics.items():
+            lines.append(f"- `{key}`: `{value}`")
+    if artifacts:
+        lines.extend(["", "## Artifacts"])
+        for key, value in artifacts.items():
+            if value:
+                lines.append(f"- `{key}`: `{value}`")
+    if warnings:
+        lines.extend(["", "## Warnings"])
+        for item in warnings[:10]:
+            lines.append(f"- {item}")
+    return "\n".join(lines)
 
 def _run_url(base_uri: str, experiment_id: str, run_id: str) -> str:
     return f"{base_uri.rstrip('/')}/#/experiments/{experiment_id}/runs/{run_id}"
@@ -53,6 +136,53 @@ def check_mlflow(config: PipelineConfig) -> dict[str, Any]:
             "error": f"{type(exc).__name__}: {exc}",
         }
 
+def setup_deforest_experiment(config: PipelineConfig, experiment_name: str = "mlsystem-deforest") -> dict[str, Any]:
+    import mlflow
+    from mlflow.tracking import MlflowClient
+
+    mlflow.set_tracking_uri(config.mlflow_tracking_uri_internal)
+    experiment = mlflow.set_experiment(experiment_name)
+    client = MlflowClient()
+    note = "\n".join(
+        [
+            "# MLSystem deforest experiments",
+            "",
+            "Binary semantic segmentation of forest clear-cuts from 4-channel Kanopus imagery.",
+            "",
+            "- class_name: `deforest`",
+            "- task: `binary semantic segmentation`",
+            "- input_bands: `[1, 2, 3, 4]`",
+            "- preview_bands: `[4, 1, 2]`",
+            "- storage: `s3://mlsystems`",
+            "- images: `s3://mlsystems/images/`",
+            "- layouts: `s3://mlsystems/layouts/deforest/`",
+            "- reports: `results/reports/deforest_experiments_summary.md`",
+            "",
+            "Current notes: layout coverage is incomplete; some `scenes.txt` entries do not yet match uploaded images.",
+        ]
+    )
+    tags = {
+        MLFLOW_NOTE_TAG: note,
+        "class_name": "deforest",
+        "task": "binary semantic segmentation",
+        "input_bands": "[1,2,3,4]",
+        "preview_bands": "[4,1,2]",
+        "storage": "s3://mlsystems",
+        "images_uri": "s3://mlsystems/images/",
+        "layout_uri": "s3://mlsystems/layouts/deforest/",
+        "data_status": "partial_layout_scene_matching",
+        "results_summary": "results/reports/deforest_experiments_summary.md",
+    }
+    for key, value in tags.items():
+        client.set_experiment_tag(experiment.experiment_id, key, value)
+    return {
+        "ok": True,
+        "experiment_name": experiment_name,
+        "experiment_id": experiment.experiment_id,
+        "tracking_uri_internal": config.mlflow_tracking_uri_internal,
+        "tracking_uri_external": config.mlflow_tracking_uri_external,
+    }
+
 class MLflowJobRun:
     def __init__(
         self,
@@ -78,12 +208,27 @@ class MLflowJobRun:
         import mlflow
         self._mlflow = mlflow
         mlflow.set_tracking_uri(self.config.mlflow_tracking_uri_internal)
+        if hasattr(mlflow, "enable_system_metrics_logging"):
+            try:
+                mlflow.enable_system_metrics_logging()
+                if hasattr(mlflow, "set_system_metrics_sampling_interval"):
+                    mlflow.set_system_metrics_sampling_interval(1)
+                if hasattr(mlflow, "set_system_metrics_samples_before_logging"):
+                    mlflow.set_system_metrics_samples_before_logging(1)
+            except Exception:
+                pass
         experiment = mlflow.set_experiment(self.experiment_name)
         self.experiment_id = experiment.experiment_id
-        if self.existing_run_id:
-            self._run = mlflow.start_run(run_id=self.existing_run_id)
-        else:
-            self._run = mlflow.start_run(run_name=self.run_name)
+        try:
+            if self.existing_run_id:
+                self._run = mlflow.start_run(run_id=self.existing_run_id, log_system_metrics=True)
+            else:
+                self._run = mlflow.start_run(run_name=self.run_name, log_system_metrics=True)
+        except TypeError:
+            if self.existing_run_id:
+                self._run = mlflow.start_run(run_id=self.existing_run_id)
+            else:
+                self._run = mlflow.start_run(run_name=self.run_name)
         self.run_id = self._run.info.run_id
         mlflow.set_tags(
             {
@@ -135,6 +280,15 @@ class MLflowJobRun:
         for artifact in artifacts:
             if artifact.exists() and artifact.is_file() and artifact.stat().st_size < MAX_ARTIFACT_BYTES:
                 self._mlflow.log_artifact(str(artifact))
+
+    def log_table(self, data: Any, artifact_file: str) -> bool:
+        if not self._mlflow or not hasattr(self._mlflow, "log_table"):
+            return False
+        try:
+            self._mlflow.log_table(data=data, artifact_file=artifact_file)
+            return True
+        except Exception:
+            return False
 
     def result(self) -> dict[str, Any]:
         if not self.experiment_id or not self.run_id:

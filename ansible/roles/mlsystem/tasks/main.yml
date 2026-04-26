@@ -112,6 +112,14 @@
     fail_msg: "Local images/layouts/cache exceed {{ mlsystem_local_heavy_storage_max_mb }} MB. Heavy data must stay in S3/MinIO, not root disk."
     success_msg: "Local images/layouts/cache are lightweight."
 
+- name: Setup MLflow deforest experiment metadata
+  ansible.builtin.command:
+    cmd: "{{ mlsystem_venv }}/bin/python -m src.cli mlflow-setup-experiment --experiment mlsystem-deforest"
+    chdir: "{{ mlsystem_root }}"
+  register: mlsystem_mlflow_setup_experiment
+  changed_when: false
+  when: mlsystem_deploy_code | bool
+
 - name: Install systemd unit for executor
   ansible.builtin.template:
     src: mlsystem-executor.service.j2

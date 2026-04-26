@@ -1,0 +1,106 @@
+---
+- name: Ensure ml-platform directory exists
+  ansible.builtin.file:
+    path: "{{ mlplatform_root }}"
+    state: directory
+    owner: worker
+    group: worker
+    mode: "0755"
+
+- name: Ensure ml-platform .env exists
+  ansible.builtin.stat:
+    path: "{{ mlplatform_root }}/.env"
+  register: mlplatform_env
+
+- name: Stop when ml-platform .env is missing
+  ansible.builtin.fail:
+    msg: "{{ mlplatform_root }}/.env is required and must contain existing non-repo secrets."
+  when: not mlplatform_env.stat.exists
+
+- name: Ensure MLflow backup directory exists
+  ansible.builtin.file:
+    path: "{{ mlplatform_backup_root }}"
+    state: directory
+    owner: worker
+    group: worker
+    mode: "0750"
+  become: true
+
+- name: Install ml-platform docker compose template
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ mlplatform_compose_file }}"
+    owner: worker
+    group: worker
+    mode: "0644"
+    backup: true
+
+- name: Validate ml-platform docker compose config
+  ansible.builtin.command:
+    cmd: docker compose config
+    chdir: "{{ mlplatform_root }}"
+  changed_when: false
+
+- name: Create lightweight PostgreSQL backup before MLflow upgrade
+  ansible.builtin.shell: |
+    set -euo pipefail
+    ts="$(date -u +%Y%m%dT%H%M%SZ)"
+    docker exec mlplatform-mlflow-db sh -lc 'pg_dump -U "${POSTGRES_USER:-mlflow}" "${POSTGRES_DB:-mlflow}"' > "{{ mlplatform_backup_root }}/mlflow-${ts}.sql"
+    find "{{ mlplatform_backup_root }}" -type f -name 'mlflow-*.sql' -printf '%T@ %p\n' | sort -nr | awk 'NR>5 {print $2}' | xargs -r rm -f
+  args:
+    executable: /bin/bash
+  become: true
+  changed_when: true
+
+- name: Pull MLflow image
+  ansible.builtin.command:
+    cmd: docker compose pull mlflow
+    chdir: "{{ mlplatform_root }}"
+  changed_when: true
+
+- name: Start or update MLflow stack
+  ansible.builtin.command:
+    cmd: docker compose up -d mlflow
+    chdir: "{{ mlplatform_root }}"
+  changed_when: true
+
+- name: Wait for MLflow health
+  ansible.builtin.uri:
+    url: "{{ mlplatform_mlflow_health_uri }}"
+    method: GET
+    status_code: 200
+    timeout: 10
+  register: mlplatform_mlflow_health
+  retries: 18
+  delay: 5
+  until: mlplatform_mlflow_health.status == 200
+
+- name: Check MLflow version
+  ansible.builtin.uri:
+    url: "{{ mlplatform_mlflow_version_uri }}"
+    method: GET
+    status_code: 200
+    return_content: true
+    timeout: 10
+  register: mlplatform_mlflow_version
+
+- name: Assert expected MLflow version
+  ansible.builtin.assert:
+    that:
+      - mlplatform_expected_mlflow_version in mlplatform_mlflow_version.content
+    fail_msg: "MLflow version endpoint returned {{ mlplatform_mlflow_version.content }}, expected {{ mlplatform_expected_mlflow_version }}"
+    success_msg: "MLflow version is {{ mlplatform_mlflow_version.content }}"
+
+- name: Check MinIO health
+  ansible.builtin.uri:
+    url: "{{ mlplatform_minio_health_uri }}"
+    method: GET
+    status_code: 200
+    timeout: 10
+
+- name: Report MLflow platform status
+  ansible.builtin.debug:
+    msg:
+      mlflow_image: "{{ mlplatform_mlflow_image }}"
+      mlflow_version: "{{ mlplatform_mlflow_version.content }}"
+      compose_file: "{{ mlplatform_compose_file }}"

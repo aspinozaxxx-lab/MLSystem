@@ -1,4 +1,10 @@
 ---
+- name: Deploy MLflow platform
+  hosts: all
+  gather_facts: false
+  roles:
+    - role: mlplatform
+
 - name: Deploy MLSystem lightweight code
   hosts: all
   gather_facts: false

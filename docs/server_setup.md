@@ -29,7 +29,7 @@ Everything else is managed through Ansible:
 - `mlsystem-executor.service`
 - `mlsystem-preprocess.service`
 - systemd reload and service restart
-- MLflow, MinIO, and web API health checks
+- MLflow Docker compose/image, MinIO, and web API health checks
 
 ## Disk And /data
 
@@ -59,7 +59,21 @@ After `/data` exists, Ansible manages the application data directories:
 /data/minio/data
 ```
 
-MinIO is managed by `/home/worker/ml-platform/docker-compose.yml`, not by this repository. Its storage was moved from Docker volume `ml-platform_minio-data` to bind mount:
+MinIO and MLflow are managed by `/home/worker/ml-platform/docker-compose.yml`. The compose file is rendered by Ansible from:
+
+```text
+ansible/roles/mlplatform/templates/docker-compose.yml.j2
+```
+
+The template does not contain secrets; it expects the existing server-side `/home/worker/ml-platform/.env`. MLflow image updates are applied through:
+
+```bash
+ansible-playbook -i ansible/inventory/hosts.ini ansible/playbooks/deploy_mlflow.yml
+```
+
+Before updating MLflow, Ansible writes a lightweight PostgreSQL metadata dump to `/data/mlsystem/artifacts/mlflow-backups/`.
+
+MinIO storage was moved from Docker volume `ml-platform_minio-data` to bind mount:
 
 ```yaml
 volumes:
@@ -82,6 +96,12 @@ Deploy infrastructure:
 ansible-playbook -i ansible/inventory/hosts.ini ansible/playbooks/deploy_infra.yml
 ```
 
+Deploy MLflow platform:
+
+```bash
+ansible-playbook -i ansible/inventory/hosts.ini ansible/playbooks/deploy_mlflow.yml
+```
+
 Deploy application code:
 
 ```bash
@@ -99,6 +119,7 @@ On the server, GitHub Actions uses local inventory:
 
 ```bash
 ansible-playbook -i 'localhost,' -c local ansible/playbooks/deploy_code.yml
+ansible-playbook -i 'localhost,' -c local ansible/playbooks/deploy_mlflow.yml
 ansible-playbook -i 'localhost,' -c local ansible/playbooks/deploy_infra.yml
 ```
 
@@ -132,6 +153,7 @@ curl -fsS http://127.0.0.1:8010/api/state
 curl -fsS http://127.0.0.1:8010/api/preprocess
 curl -fsS http://127.0.0.1:9000/minio/health/live
 curl -fsS http://127.0.0.1:5000
+curl -fsS http://127.0.0.1:5000/version
 mc ls mlplatform
 mc ls mlplatform/mlsystems
 cd /home/worker/mlsystem

@@ -4,7 +4,7 @@ The repository uses four GitHub Actions workflows. Each workflow owns one change
 
 ## cicd-ansible.yml
 
-Purpose: infrastructure, systemd units, non-secret runtime env, storage/log directories.
+Purpose: infrastructure, MLflow platform deploy, systemd units, non-secret runtime env, storage/log directories.
 
 Triggers:
 
@@ -13,7 +13,7 @@ Triggers:
   - `ansible/**`
   - `.github/workflows/cicd-ansible.yml`
 
-Runs on the self-hosted runner. It parses Ansible YAML, checks inventory, runs playbook syntax checks, applies `ansible/playbooks/deploy_infra.yml`, and verifies:
+Runs on the self-hosted runner. It parses Ansible YAML, checks inventory, runs playbook syntax checks, applies `ansible/playbooks/deploy_mlflow.yml`, applies `ansible/playbooks/deploy_infra.yml`, and verifies:
 
 - `mlsystem-web.service`
 - `mlsystem-executor.service`
@@ -21,6 +21,7 @@ Runs on the self-hosted runner. It parses Ansible YAML, checks inventory, runs p
 - `http://127.0.0.1:8010/api/state`
 - `http://127.0.0.1:8010/api/preprocess`
 - `http://127.0.0.1:5000`
+- `http://127.0.0.1:5000/version` equals `3.11.1`
 - `http://127.0.0.1:9000/minio/health/live`
 
 ## cicd-code.yml
@@ -49,7 +50,7 @@ Triggers:
   - `jobs/pending/**/*.yaml`
   - `.github/workflows/cicd-queue.yml`
 
-Runs on the self-hosted runner. It validates only pending job YAML files and enqueues them through the deployed server CLI:
+Runs on the self-hosted runner. On push, it validates and enqueues only changed pending job YAML files. On manual `workflow_dispatch`, it processes all pending job YAML files. Enqueue goes through the deployed server CLI:
 
 ```bash
 cd /home/worker/mlsystem
@@ -76,6 +77,7 @@ No workflow triggers on `results/**`, so result sync commits do not start code, 
 - `bootstrap.yml`: first-time server checks and directory bootstrap.
 - `deploy_infra.yml`: infrastructure and services only.
 - `deploy_code.yml`: application code only.
+- `deploy_mlflow.yml`: MLflow Docker image/compose update with a lightweight PostgreSQL metadata backup.
 - `deploy.yml`: manual wrapper for full deploy.
 - `runner.yml`: audit-only runner status check.
 

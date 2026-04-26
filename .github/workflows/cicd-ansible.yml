@@ -46,8 +46,13 @@ jobs:
           ansible-playbook -i 'localhost,' -c local ansible/playbooks/bootstrap.yml --syntax-check
           ansible-playbook -i 'localhost,' -c local ansible/playbooks/deploy_infra.yml --syntax-check
           ansible-playbook -i 'localhost,' -c local ansible/playbooks/deploy_code.yml --syntax-check
+          ansible-playbook -i 'localhost,' -c local ansible/playbooks/deploy_mlflow.yml --syntax-check
           ansible-playbook -i 'localhost,' -c local ansible/playbooks/deploy.yml --syntax-check
           ansible-playbook -i 'localhost,' -c local ansible/playbooks/runner.yml --syntax-check
+
+      - name: Deploy MLflow platform
+        run: |
+          ansible-playbook -i 'localhost,' -c local ansible/playbooks/deploy_mlflow.yml
 
       - name: Deploy infrastructure
         run: |
@@ -61,4 +66,5 @@ jobs:
           curl -fsS http://127.0.0.1:8010/api/state | /home/worker/ml-training/.venv/bin/python -m json.tool
           curl -fsS http://127.0.0.1:8010/api/preprocess | /home/worker/ml-training/.venv/bin/python -m json.tool
           curl -fsS http://127.0.0.1:5000 >/dev/null
+          test "$(curl -fsS http://127.0.0.1:5000/version)" = "3.11.1"
           curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null

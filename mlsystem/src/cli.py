@@ -4,7 +4,7 @@ from pathlib import Path
 from .codex_summary import build_codex_summary
 from .job_executor import run_once
 from .job_queue import enqueue, list_queue
-from .mlflow_adapter import check_mlflow
+from .mlflow_adapter import check_mlflow, setup_deforest_experiment
 from .pipeline_config import load_config, ensure_storage_layout
 from .preprocess_inventory import build_preprocess_inventory, run_preprocess_forever
 from .resource_manager import collect_status
@@ -27,6 +27,8 @@ def main() -> None:
     p_forever.add_argument("--interval", type=float, default=10.0)
     p_enqueue = sub.add_parser("enqueue")
     p_enqueue.add_argument("job_yaml")
+    p_mlflow_setup = sub.add_parser("mlflow-setup-experiment")
+    p_mlflow_setup.add_argument("--experiment", default="mlsystem-deforest")
     args = parser.parse_args()
     config = load_config(args.config)
     ensure_storage_layout(config)
@@ -43,6 +45,8 @@ def main() -> None:
         print_json(list_queue(config))
     elif args.command == "enqueue":
         print_json(enqueue(config, Path(args.job_yaml)))
+    elif args.command == "mlflow-setup-experiment":
+        print_json(setup_deforest_experiment(config, args.experiment))
     elif args.command == "run-once":
         print_json(run_once(config))
     elif args.command == "run-forever":

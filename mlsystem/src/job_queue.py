@@ -7,7 +7,7 @@ import yaml
 from .io_utils import write_json
 from .job_schema import JobSpec
 from .pipeline_config import PipelineConfig, ensure_storage_layout
-from .mlflow_adapter import create_queued_job_run
+from .mlflow_adapter import MLFLOW_NOTE_TAG, build_run_note, compact_run_label, create_queued_job_run
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -27,10 +27,25 @@ def enqueue(config: PipelineConfig, source_yaml: Path) -> dict[str, Any]:
     dest = config.jobs_root / "pending" / f"{job.job_id}__{stamp}.yml"
     queue_position = len(list((config.jobs_root / "pending").glob("*.yml")))
     experiment_name = job.mlflow.experiment or (f"mlsystem-{job.class_name}" if job.class_name else "mlsystem-queue")
+    model_cfg = (job.params.get("model") if isinstance(job.params.get("model"), dict) else {}) or {}
+    model_name = model_cfg.get("name") or job.train.get("model_name")
+    tile_size = job.preprocess.get("tile_size")
+    stride = job.preprocess.get("stride")
+    run_label = job.mlflow.tags.get("run_label") or compact_run_label(job.job_id, model_name, tile_size)
+    run_note = build_run_note(
+        job_id=job.job_id,
+        run_label=run_label,
+        model_name=model_name,
+        tile_size=tile_size,
+        stride=stride,
+        data_uri=job.data.get("images_uri"),
+        layout_uri=job.data.get("layout_uri"),
+        warnings=["queued; training has not started yet"],
+    )
     mlflow_result = create_queued_job_run(
         config,
         experiment_name,
-        f"queued:{job.job_id}",
+        run_label,
         params={
             "job_id": job.job_id,
             "task": job.task,
@@ -51,6 +66,15 @@ def enqueue(config: PipelineConfig, source_yaml: Path) -> dict[str, Any]:
             "class_name": job.class_name or "",
             "priority": job.priority,
             "created_at": utc_now(),
+            "run_label": run_label,
+            "experiment_group": job.class_name or "",
+            "model_name": model_name or "",
+            "tile_size": tile_size or "",
+            "stride": stride or "",
+            "train_time_limit_sec": job.train.get("time_limit_sec") or "",
+            "pseudolabel_enabled": str(bool((job.predict.get("pseudolabel") or {}).get("enabled"))).lower(),
+            "postprocess_profile": "auto_tune" if job.postprocess.get("auto_tune") else "default",
+            MLFLOW_NOTE_TAG: run_note,
             **job.mlflow.tags,
         },
         artifacts=[dest],
