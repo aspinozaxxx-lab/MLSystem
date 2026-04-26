@@ -45,10 +45,11 @@
   ansible.builtin.shell: |
     set -euo pipefail
     ts="$(date -u +%Y%m%dT%H%M%SZ)"
-    docker exec mlplatform-mlflow-db sh -lc 'pg_dump -U "${POSTGRES_USER:-mlflow}" "${POSTGRES_DB:-mlflow}"' > "{{ mlplatform_backup_root }}/mlflow-${ts}.sql"
+    docker compose exec -T mlflow-db sh -lc 'pg_dump -U "${POSTGRES_USER:-mlflow}" "${POSTGRES_DB:-mlflow}"' > "{{ mlplatform_backup_root }}/mlflow-${ts}.sql"
     find "{{ mlplatform_backup_root }}" -type f -name 'mlflow-*.sql' -printf '%T@ %p\n' | sort -nr | awk 'NR>5 {print $2}' | xargs -r rm -f
   args:
     executable: /bin/bash
+    chdir: "{{ mlplatform_root }}"
   become: true
   changed_when: true
 
