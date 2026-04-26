@@ -3,7 +3,7 @@ job_id: mlflow_ui_smoke
 task: train
 class_name: deforest
 priority: 10
-description: "Lightweight MLflow UI integration smoke: compact run name, notes, epoch table, system metrics."
+description: "Lightweight MLflow UI integration smoke: compact run name, notes, epoch table, timeline, system metrics."
 params:
   smoke_train: true
   model:

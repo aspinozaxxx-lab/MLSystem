@@ -33,9 +33,9 @@ jobs:
             before="${{ github.event.before }}"
             after="${{ github.sha }}"
             if git cat-file -e "${before}^{commit}" 2>/dev/null; then
-              git diff --name-only "${before}" "${after}" -- 'jobs/pending/**/*.yml' 'jobs/pending/**/*.yaml' > .tmp/queue_job_files.txt
+              git diff --name-only "${before}" "${after}" | grep -E '^jobs/pending/.*\.ya?ml$' > .tmp/queue_job_files.txt || true
             else
-              git diff-tree --no-commit-id --name-only -r "${after}" -- 'jobs/pending/**/*.yml' 'jobs/pending/**/*.yaml' > .tmp/queue_job_files.txt
+              git diff-tree --no-commit-id --name-only -r "${after}" | grep -E '^jobs/pending/.*\.ya?ml$' > .tmp/queue_job_files.txt || true
             fi
           else
             find jobs/pending -type f \( -name '*.yml' -o -name '*.yaml' \) | sort > .tmp/queue_job_files.txt
