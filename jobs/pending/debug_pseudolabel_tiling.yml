@@ -1,0 +1,64 @@
+﻿schema_version: 1
+job_id: debug_pseudolabel_tiling
+task: predict
+class_name: deforest
+priority: 200
+description: Debug full-scene pseudolabel tiling coverage without retraining.
+params:
+  debug_pseudolabel: true
+  input_bands: [1, 2, 3, 4]
+  preview_bands: [4, 1, 2]
+  seed: 42
+  model:
+    name: tiny_unet_4ch
+    input_bands: [1, 2, 3, 4]
+    in_channels: 4
+    out_channels: 1
+    base_channels: 8
+data:
+  images_uri: s3://mlsystems/images/
+  layout_uri: s3://mlsystems/layouts/deforest/
+  scenes_file: scenes.txt
+  annotation_file: auto
+  scene_name_matching: fuzzy
+  include_negative_scenes: true
+preprocess:
+  tile_size: 1024
+  stride: 1024
+  max_nodata_fraction: 0.35
+  cache: false
+predict:
+  model_name: tiny_unet_4ch
+  pseudolabel:
+    enabled: true
+    debug: true
+    full_scene: true
+    max_debug_scenes: 1
+    checkpoint_path: /data/mlsystem/storage/experiments/deforest_exp09_tiny_t1024__20260425T202940527033Z/tiny_unet_4ch.pt
+postprocess:
+  enabled: true
+  auto_tune: false
+  max_geojson_mb: 20
+  max_objects: 500
+  min_object_area_m2_candidates: [500]
+  simplify_tolerance_m_candidates: [5]
+  thresholds: [0.5]
+  keep_largest_if_too_many: true
+  export:
+    geojson: true
+    geojson_gz: true
+    gpkg: true
+resources:
+  requires_gpu: false
+  cpu_train_slots: 0
+  cpu_preprocess_slots: 1
+  workers: 0
+mlflow:
+  experiment: mlsystem-deforest
+  tags:
+    run_label: DBG-pseudo-tiling
+    bug_area: pseudolabel_tiling
+    debug: "true"
+    model_name: tiny_unet_4ch
+    tile_size: "1024"
+    stride: "1024"
