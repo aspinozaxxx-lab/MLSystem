@@ -629,8 +629,34 @@ def _write_pseudolabel_outputs(
     if max_debug_scenes is not None:
         matches = matches[: max(1, int(max_debug_scenes))]
     debug_mode = bool(pseudolabel_cfg.get("debug", False))
+    model_cfg = (job.params.get("model") if isinstance(job.params.get("model"), dict) else {}) or {}
+    model_cfg = {**model_cfg, **(job.predict.get("model") or {}), **(job.train.get("model") or {})}
+    model_name = str(model_cfg.get("name") or job.train.get("model_name") or job.predict.get("model_name") or "").lower()
+    center_size_value = (
+        pseudolabel_cfg.get("center_size")
+        or pseudolabel_cfg.get("sample_size")
+        or job.params.get("center_size")
+        or job.params.get("sample_size")
+    )
+    center_size = int(center_size_value) if center_size_value is not None else None
+    context_value = (
+        pseudolabel_cfg.get("context_bounds")
+        or pseudolabel_cfg.get("bounds")
+        or job.params.get("context_bounds")
+        or job.params.get("bounds")
+    )
+    context_bounds = int(context_value) if context_value is not None else None
+    crop_mode = str(pseudolabel_cfg.get("crop_mode") or "").lower()
+    if not crop_mode:
+        crop_mode = "center" if model_name.startswith("segformer") and center_size and center_size < patch_size else "full"
+    if crop_mode == "center" and not center_size:
+        center_size = max(1, patch_size - 2 * int(context_bounds or 0))
+    if crop_mode == "center" and center_size >= patch_size:
+        crop_mode = "full"
     features: list[dict[str, Any]] = []
     windows_preview_features: list[dict[str, Any]] = []
+    tile_insert_features: list[dict[str, Any]] = []
+    tile_insert_debug_rows: list[dict[str, Any]] = []
     tiling_debug_rows: list[dict[str, Any]] = []
     raw_feature_count = 0
     vertices_before = 0
@@ -658,6 +684,45 @@ def _write_pseudolabel_outputs(
     def window_grid(width: int, height: int, tile: int, stride: int) -> list[tuple[int, int]]:
         return [(x, y) for y in origins(height, tile, stride) for x in origins(width, tile, stride)]
 
+    def tile_insert_slices(
+        x: int,
+        y: int,
+        actual_w: int,
+        actual_h: int,
+        scene_width: int,
+        scene_height: int,
+    ) -> dict[str, Any]:
+        if crop_mode != "center":
+            crop_left = crop_top = crop_right = crop_bottom = 0
+        else:
+            margin = int(context_bounds if context_bounds is not None else max(0, (patch_size - int(center_size or patch_size)) // 2))
+            crop_left = margin if x > 0 else 0
+            crop_top = margin if y > 0 else 0
+            crop_right = margin if x + actual_w < scene_width else 0
+            crop_bottom = margin if y + actual_h < scene_height else 0
+            if actual_w - crop_left - crop_right <= 0:
+                crop_left = crop_right = 0
+            if actual_h - crop_top - crop_bottom <= 0:
+                crop_top = crop_bottom = 0
+        crop_x0 = int(crop_left)
+        crop_y0 = int(crop_top)
+        crop_x1 = int(actual_w - crop_right)
+        crop_y1 = int(actual_h - crop_bottom)
+        insert_x = int(x + crop_x0)
+        insert_y = int(y + crop_y0)
+        insert_w = int(crop_x1 - crop_x0)
+        insert_h = int(crop_y1 - crop_y0)
+        return {
+            "crop_x0": crop_x0,
+            "crop_y0": crop_y0,
+            "crop_x1": crop_x1,
+            "crop_y1": crop_y1,
+            "insert_x": insert_x,
+            "insert_y": insert_y,
+            "insert_width": insert_w,
+            "insert_height": insert_h,
+        }
+
     def vertex_count(geom_mapping: dict[str, Any]) -> int:
         coords = geom_mapping.get("coordinates") or []
         if geom_mapping.get("type") == "Polygon":
@@ -679,10 +744,25 @@ def _write_pseudolabel_outputs(
         Image.fromarray(png).save(path)
         return path
 
+    def maybe_write_center_crop_preview(insert_count: np.ndarray, scene_name: str) -> Path | None:
+        if crop_mode != "center" or list(experiment_dir.glob("center_crop_preview_*.png")):
+            return None
+        try:
+            from PIL import Image
+        except Exception:
+            return None
+        scale = max(1, int(max(insert_count.shape) / 1024))
+        normalized = np.clip(insert_count[::scale, ::scale], 0, 8).astype("float32") / 8.0
+        path = experiment_dir / f"center_crop_preview_{_norm_scene_name(scene_name)[:48]}.png"
+        Image.fromarray((normalized * 255).astype("uint8")).save(path)
+        return path
+
     def process_scene(scene_idx: int, match: SceneMatch) -> dict[str, Any]:
         scene_started = time.time()
         local_features: list[dict[str, Any]] = []
         local_windows_preview_features: list[dict[str, Any]] = []
+        local_tile_insert_features: list[dict[str, Any]] = []
+        local_tile_insert_debug_rows: list[dict[str, Any]] = []
         local_raw_feature_count = 0
         local_vertices_before = 0
         local_vertices_after = 0
@@ -723,13 +803,45 @@ def _write_pseudolabel_outputs(
                         continue
                     sample = torch.from_numpy(_normalize_image(arr)[None, ...]).to(device)
                     with torch.no_grad():
-                        prob = torch.sigmoid(model(sample))[0, 0].detach().cpu().numpy()
-                    prob_crop = prob[:actual_h, :actual_w]
-                    prob_sum[y : y + actual_h, x : x + actual_w] += prob_crop
-                    prob_count[y : y + actual_h, x : x + actual_w] += 1
+                        logits = model(sample)
+                        model_output_shape = list(logits.shape)
+                        if tuple(logits.shape[-2:]) != tuple(arr.shape[-2:]):
+                            logits = torch.nn.functional.interpolate(logits, size=arr.shape[-2:], mode="bilinear", align_corners=False)
+                        prob = torch.sigmoid(logits)[0, 0].detach().cpu().numpy()
+                    prob_full = prob[:actual_h, :actual_w]
+                    insert = tile_insert_slices(x, y, actual_w, actual_h, ds.width, ds.height)
+                    prob_insert = prob_full[insert["crop_y0"] : insert["crop_y1"], insert["crop_x0"] : insert["crop_x1"]]
+                    iy = insert["insert_y"]
+                    ix = insert["insert_x"]
+                    ih = insert["insert_height"]
+                    iw = insert["insert_width"]
+                    prob_sum[iy : iy + ih, ix : ix + iw] += prob_insert
+                    prob_count[iy : iy + ih, ix : ix + iw] += 1
                     predicted_count += 1
                     props["predicted"] = True
                     local_windows_preview_features.append({"type": "Feature", "properties": props, "geometry": mapping(box(*ds.window_bounds(window)))})
+                    insert_props = {
+                        **props,
+                        "model_input_shape": list(sample.shape),
+                        "model_output_shape": model_output_shape,
+                        "crop_mode": crop_mode,
+                        "center_size": center_size,
+                        "context_bounds": context_bounds,
+                        "insert_x": ix,
+                        "insert_y": iy,
+                        "insert_width": iw,
+                        "insert_height": ih,
+                        "expected_insert_bounds": [ix, iy, ix + iw, iy + ih],
+                        "actual_insert_bounds": [ix, iy, ix + iw, iy + ih],
+                        "predicted_nonzero_fraction": float(np.count_nonzero(prob_full > threshold_used) / max(1, prob_full.size)),
+                        "inserted_nonzero_fraction": float(np.count_nonzero(prob_insert > threshold_used) / max(1, prob_insert.size)),
+                    }
+                    insert_window = Window(ix, iy, iw, ih)
+                    local_tile_insert_features.append(
+                        {"type": "Feature", "properties": insert_props, "geometry": mapping(box(*ds.window_bounds(insert_window)))}
+                    )
+                    if debug_mode:
+                        local_tile_insert_debug_rows.append(insert_props)
 
                 coverage_mask = prob_count > 0
                 prob_map = np.zeros_like(prob_sum, dtype="float32")
@@ -809,10 +921,15 @@ def _write_pseudolabel_outputs(
                 }
                 if scene_idx == 0:
                     local_preview_path = maybe_write_preview(prob_map, match.name)
+                    center_preview_path = maybe_write_center_crop_preview(prob_count, match.name)
+                    if center_preview_path:
+                        local_preview_path = local_preview_path or center_preview_path
         return {
             "scene_index": scene_idx,
             "features": local_features,
             "windows_preview_features": local_windows_preview_features,
+            "tile_insert_features": local_tile_insert_features,
+            "tile_insert_debug_rows": local_tile_insert_debug_rows,
             "raw_feature_count": local_raw_feature_count,
             "vertices_before": local_vertices_before,
             "vertices_after": local_vertices_after,
@@ -836,6 +953,8 @@ def _write_pseudolabel_outputs(
     for result in sorted(scene_results, key=lambda item: item["scene_index"]):
         features.extend(result["features"])
         windows_preview_features.extend(result["windows_preview_features"])
+        tile_insert_features.extend(result["tile_insert_features"])
+        tile_insert_debug_rows.extend(result["tile_insert_debug_rows"])
         tiling_debug_rows.append(result["debug_row"])
         raw_feature_count += int(result["raw_feature_count"])
         vertices_before += int(result["vertices_before"])
@@ -865,9 +984,33 @@ def _write_pseudolabel_outputs(
         json.dump(payload, fh, ensure_ascii=False)
     windows_preview_path = experiment_dir / "windows_preview.geojson"
     write_json(windows_preview_path, {"type": "FeatureCollection", "name": f"{job.job_id}_windows_preview", "features": windows_preview_features})
+    tile_insert_debug_path = experiment_dir / "tile_insert_debug.geojson"
+    write_json(tile_insert_debug_path, {"type": "FeatureCollection", "name": f"{job.job_id}_tile_insert_debug", "features": tile_insert_features})
     tiling_debug_path = experiment_dir / "tiling_debug.json"
-    write_json(tiling_debug_path, {"schema_version": 1, "full_scene": full_scene, "scenes": tiling_debug_rows})
-    artifacts = [geojson_path, gz_path, windows_preview_path, tiling_debug_path]
+    write_json(
+        tiling_debug_path,
+        {
+            "schema_version": 1,
+            "full_scene": full_scene,
+            "crop_mode": crop_mode,
+            "center_size": center_size,
+            "context_bounds": context_bounds,
+            "scenes": tiling_debug_rows,
+        },
+    )
+    segformer_debug_path = experiment_dir / "segformer_tiling_debug.json"
+    write_json(
+        segformer_debug_path,
+        {
+            "schema_version": 1,
+            "model_name": model_name,
+            "crop_mode": crop_mode,
+            "center_size": center_size,
+            "context_bounds": context_bounds,
+            "tile_inserts": tile_insert_debug_rows[:10000],
+        },
+    )
+    artifacts = [geojson_path, gz_path, windows_preview_path, tile_insert_debug_path, tiling_debug_path, segformer_debug_path]
     if debug_geojson_path:
         artifacts.append(debug_geojson_path)
     gpkg_path = experiment_dir / "accepted.gpkg"
@@ -901,6 +1044,7 @@ def _write_pseudolabel_outputs(
     write_json(postprocess_debug_path, postprocess_debug)
     artifacts.append(postprocess_debug_path)
     artifacts.extend(sorted(experiment_dir.glob("probability_preview_*.png"))[:2])
+    artifacts.extend(sorted(experiment_dir.glob("center_crop_preview_*.png"))[:2])
     gz_mb = gz_path.stat().st_size / (1024 * 1024)
     gpkg_mb = gpkg_path.stat().st_size / (1024 * 1024) if gpkg_path.exists() else None
     coverage_values = [float(row["coverage_fraction"]) for row in tiling_debug_rows]
@@ -925,6 +1069,9 @@ def _write_pseudolabel_outputs(
         "inference_max_workers": max_workers,
         "torch_threads_per_worker": torch_threads_per_worker,
         "inference_duration_sec": inference_duration_sec,
+        "crop_mode": crop_mode,
+        "center_size": center_size,
+        "context_bounds": context_bounds,
         "scenes": tiling_debug_rows,
         "warnings": [
             f"low_coverage:{row['scene_id']}:{row['coverage_fraction']:.4f}"
@@ -1397,13 +1544,20 @@ def run_real_train(
     checkpoint_path = experiment_dir / f"{model_name}.pt"
     torch.save({"model_state_dict": model.state_dict(), "job_id": job.job_id, "model_name": model_name, "best_epoch": best_epoch}, checkpoint_path)
     artifacts.extend([dataset_report_path, checkpoint_path])
+    pseudolabel_cfg = job.predict.get("pseudolabel") or job.params.get("pseudolabel") or {}
+    pseudolabel_matches = matches
+    if str(pseudolabel_cfg.get("run_on") or "").lower() in {"all_available_images", "all_images"}:
+        pseudolabel_matches = [
+            SceneMatch(entry=item["name"], key=item["key"], name=item["name"], score=1.0)
+            for item in sorted(images, key=lambda row: row["key"])
+        ]
     postprocess_metrics, postprocess_artifacts = _write_pseudolabel_outputs(
         config,
         job,
         experiment_dir,
         model,
         device,
-        matches,
+        pseudolabel_matches,
         input_bands,
         patch_size,
         float((job.postprocess.get("thresholds") or [0.5])[0]),

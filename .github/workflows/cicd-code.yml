@@ -89,7 +89,7 @@ jobs:
         run: ansible-playbook -i 'localhost,' -c local ansible/playbooks/deploy_code.yml --syntax-check
 
       - name: Deploy application code
-        run: ansible-playbook -i 'localhost,' -c local ansible/playbooks/deploy_code.yml
+        run: ansible-playbook -i 'localhost,' -c local ansible/playbooks/deploy_code.yml -e mlsystem_manage_services=false
 
       - name: Validate services
         run: |
