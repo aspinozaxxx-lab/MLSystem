@@ -1,0 +1,99 @@
+schema_version: 1
+job_id: deforest_full_exp05_deeplab_r50_t768_aug_v2
+task: train
+class_name: deforest
+priority: 100
+description: "Full deforest dataset experiment 05 v2: DeepLabV3Plus ResNet50, tile 768, BatchNorm frozen."
+params:
+  model:
+    name: deeplabv3plus_resnet50
+    in_channels: 4
+    out_channels: 1
+    input_bands: [1, 2, 3, 4]
+    preview_bands: [4, 1, 2]
+  input_bands: [1, 2, 3, 4]
+  preview_bands: [4, 1, 2]
+  seed: 215
+  use_all_matched_scenes: true
+data:
+  images_uri: s3://mlsystems/images/
+  layout_uri: s3://mlsystems/layouts/deforest/
+  scenes_file: scenes.txt
+  annotation_file: auto
+  scene_name_matching: strict_after_fuzzy_validation
+  include_negative_scenes: true
+split:
+  method: scene_holdout
+  seed: 42
+preprocess:
+  tile_size: 768
+  stride: 576
+  max_nodata_fraction: 0.35
+  max_empty_tile_share: 0.5
+  cache: true
+  heavy_cache_backend: s3
+train:
+  enabled: true
+  time_limit_sec: 7200
+  workers: 0
+  batch_size: auto
+  patch_size: 768
+  epochs: 120
+  max_train_tiles: 384
+  max_val_tiles: 96
+  max_tiles_per_scene: 24
+  learning_rate: 0.0003
+  optimizer: adamw
+  freeze_batchnorm: true
+  early_stopping:
+    enabled: true
+    patience: 8
+  loss: [weighted_bce, dice]
+  augmentations:
+    flips: true
+    rot90: true
+    brightness_contrast: true
+    noise: false
+predict:
+  inference:
+    parallel:
+      enabled: true
+      strategy: scene
+      max_workers: 2
+      torch_threads_per_worker: 4
+      max_ram_gb: 48
+  pseudolabel:
+    enabled: true
+    run_on: dataset_scenes
+    use_best_checkpoint: true
+    full_scene: true
+    max_windows_per_scene: null
+postprocess:
+  enabled: true
+  auto_tune: true
+  max_geojson_mb: 20
+  max_objects: 500
+  keep_largest_if_too_many: true
+  min_object_area_m2_candidates: [500, 1000, 2000, 5000]
+  simplify_tolerance_m_candidates: [2, 5, 10, 20]
+  thresholds: [0.35, 0.45, 0.55, 0.65]
+  export:
+    geojson: true
+    geojson_gz: true
+    gpkg: true
+resources:
+  requires_gpu: false
+  cpu_train_slots: 1
+  workers: 0
+mlflow:
+  experiment: mlsystem-deforest
+  tags:
+    run_label: F05-dlv3-r50-v2
+    model_name: deeplabv3plus_resnet50
+    tile_size: "768"
+    stride: "576"
+    pseudolabel_enabled: "true"
+    experiment_group: deforest_full
+    postprocess_profile: auto_tune_top500_20mb
+    cpu_only_warning: "true"
+    freeze_batchnorm: "true"
