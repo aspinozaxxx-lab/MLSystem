@@ -423,6 +423,12 @@ def _build_model(model_name: str, in_channels: int, out_channels: int, base_chan
     raise ValueError(f"Unsupported model_name={model_name}. Supported: {supported}")
 
 
+def _set_batchnorm_eval(model: torch.nn.Module) -> None:
+    for module in model.modules():
+        if isinstance(module, torch.nn.modules.batchnorm._BatchNorm):
+            module.eval()
+
+
 def _normalize_image(arr: np.ndarray) -> np.ndarray:
     arr = arr.astype("float32", copy=False)
     arr[~np.isfinite(arr)] = 0.0
@@ -1296,6 +1302,9 @@ def run_real_train(
     device = torch.device("cuda" if torch.cuda.is_available() and not config.cpu_only else "cpu")
     model_name = str(model_cfg.get("name") or job.train.get("model_name") or "tiny_unet_4ch")
     model = _build_model(model_name, len(input_bands), 1, int(job.train.get("base_channels") or 8)).to(device)
+    freeze_batchnorm_default = model_name.lower().startswith(("deeplab", "deeplabv3plus"))
+    freeze_batchnorm = bool(job.train.get("freeze_batchnorm", freeze_batchnorm_default))
+    mlflow_run.log_params({"freeze_batchnorm": freeze_batchnorm})
     optimizer = torch.optim.AdamW(model.parameters(), lr=float(job.train.get("learning_rate") or 5e-4))
     batch_size = job.train.get("batch_size") or 2
     if batch_size == "auto":
@@ -1322,6 +1331,8 @@ def run_real_train(
     for epoch in range(1, epochs + 1):
         epoch_started = time.time()
         model.train()
+        if freeze_batchnorm:
+            _set_batchnorm_eval(model)
         train_losses = []
         train_metrics = []
         for batch in make_batches(train_samples, shuffle=True):
