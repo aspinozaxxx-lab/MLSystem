@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "job_id": "segformer_tiling_artifact_debug",
+  "status": "done",
+  "mode": "debug_pseudolabel",
+  "model_name": "segformer_b0",
+  "checkpoint_path": "/data/mlsystem/storage/experiments/deforest_full_exp02_segformer_b0_t1024_aug__20260426T144110695281Z/segformer_b0.pt",
+  "mlflow_run_url": "http://172.26.12.169:5000/#/experiments/1/runs/e8165d57bfcd47eb83100c3abeadc419",
+  "diagnosis": {
+    "previous_behavior": "SegFormer jobs declared sample_size=768 and context_bounds=128, but pseudolabel inference inserted the full 1024x1024 tile prediction into the scene probability map.",
+    "artifact_cause": "Uncropped tile borders from SegFormer predictions were included in stitching. Those border predictions can appear as rectangular tile artifacts after thresholding/vectorization.",
+    "fix": "SegFormer pseudolabel inference now uses center crop insertion by default when sample_size/context_bounds are configured. Interior 1024 tiles insert only the central 768 pixels with +128 offset; edge tiles keep the outer edge area to avoid coverage gaps."
+  },
+  "debug": {
+    "scene_count": 1,
+    "tile_size": 1024,
+    "stride": 768,
+    "crop_mode": "center",
+    "center_size": 768,
+    "context_bounds": 128,
+    "expected_window_count": 240,
+    "predicted_window_count": 202,
+    "mean_coverage_fraction": 0.8397582067682992,
+    "min_coverage_fraction": 0.8397582067682992,
+    "model_input_shape": [1, 4, 1024, 1024],
+    "model_output_shape": [1, 1, 1024, 1024],
+    "tile_insert_debug_rows": 202
+  },
+  "artifacts": {
+    "local_experiment_dir": "/data/mlsystem/storage/experiments/segformer_tiling_artifact_debug__20260427T091137750657Z",
+    "segformer_tiling_debug": "segformer_tiling_debug.json",
+    "tile_insert_debug": "tile_insert_debug.geojson",
+    "windows_preview": "windows_preview.geojson",
+    "probability_preview": "probability_preview_kv3308613173900kanopus2023082603510820l2pmsscn07.png",
+    "center_crop_preview": "center_crop_preview_kv3308613173900kanopus2023082603510820l2pmsscn07.png",
+    "accepted_debug": "accepted_debug.geojson",
+    "coverage_report": "coverage_report.json",
+    "postprocess_debug": "postprocess_debug.json"
+  },
+  "postprocess": {
+    "accepted_objects": 500,
+    "accepted_geojson_mb": 4.257749557495117,
+    "accepted_gpkg_mb": 2.171875,
+    "threshold": 0.35,
+    "min_object_area_m2": 500.0,
+    "simplify_tolerance_m": 2.0,
+    "top500_applied": true
+  },
+  "warnings": [
+    "Debug was run on one scene only to avoid heavy training/inference.",
+    "Existing running DeepLab job was not interrupted; code was deployed without service restart."
+  ],
+  "errors": []
+}
