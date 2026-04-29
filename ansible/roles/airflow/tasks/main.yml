@@ -92,6 +92,11 @@
     - { path: "{{ airflow_postgres_data_root }}" }
   become: true
 
+- name: Remove local Airflow Python cache directories before copy
+  ansible.builtin.command:
+    cmd: find "{{ playbook_dir }}/../../airflow" -type d -name __pycache__ -prune -exec rm -rf {} +
+  changed_when: false
+
 - name: Copy Airflow DAGs
   ansible.builtin.copy:
     src: "{{ playbook_dir }}/../../airflow/dags/"
