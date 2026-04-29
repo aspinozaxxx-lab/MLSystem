@@ -11,11 +11,14 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
+from ..job_schema import JobSpec
+from ..mlflow_adapter import MLFLOW_EXCLUDED_ARTIFACT_NAMES, MLflowJobRun
 from ..pipeline_config import load_config
 from ..s3_adapter import build_s3_layout_status
 from ..storage.local_io import read_json, write_json
 from ..storage.s3 import find_layout_files, list_s3_objects, read_s3_text
 from ..data.scene_matching import build_scene_matching_report
+from .training_pipeline import TrainingPipeline
 
 
 MAIN_DAG_STAGES = [
@@ -154,6 +157,182 @@ class AirflowRunStore:
 
 def _stage_result(status: str = "success", **payload: Any) -> dict[str, Any]:
     return {"status": status, **payload}
+
+
+def _append_log(path: Path, message: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(f"{utc_now()} {message}\n")
+
+
+def _safe_rel(path: Path, root: Path) -> str:
+    try:
+        return path.relative_to(root).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def _existing_artifacts(store: AirflowRunStore) -> dict[str, str]:
+    names = [
+        "train_scenes.txt",
+        "val_scenes.txt",
+        "pseudolabel_scenes.txt",
+        f"{store.experiment_id}.accepted.geojson",
+        "object_metrics.json",
+        "coverage_report.json",
+        "pseudolabel_summary.json",
+        "prediction_examples.html",
+        "run_summary.json",
+        "codex_summary.json",
+        "history.json",
+        "history.csv",
+        "train_dataset_report.json",
+    ]
+    return {name: _safe_rel(store.run_dir / name, store.run_dir) for name in names if (store.run_dir / name).exists()}
+
+
+def _forbidden_logged_artifacts(store: AirflowRunStore) -> list[str]:
+    return sorted(name for name in MLFLOW_EXCLUDED_ARTIFACT_NAMES if (store.run_dir / name).exists())
+
+
+def _read_training_result(store: AirflowRunStore) -> dict[str, Any]:
+    summary = store.read_summary()
+    return summary.get("training_result") or read_json(store.run_dir / "training_result.json", default={}) or {}
+
+
+def _build_airflow_job(conf: AirflowExperimentConfig) -> JobSpec:
+    train_cfg = dict(conf.train or {})
+    preprocess_cfg = dict(conf.preprocess or {})
+    model_cfg = dict(conf.model or {})
+    pseudolabel_cfg = dict(conf.pseudolabel or {})
+    if "tile_size" in preprocess_cfg and "patch_size" not in train_cfg:
+        train_cfg["patch_size"] = preprocess_cfg["tile_size"]
+    if "max_epochs" in train_cfg and "epochs" not in train_cfg:
+        train_cfg["epochs"] = train_cfg["max_epochs"]
+    if "max_train_tiles" in preprocess_cfg and "max_train_tiles" not in train_cfg:
+        train_cfg["max_train_tiles"] = preprocess_cfg["max_train_tiles"]
+    if "max_val_tiles" in preprocess_cfg and "max_val_tiles" not in train_cfg:
+        train_cfg["max_val_tiles"] = preprocess_cfg["max_val_tiles"]
+    train_cfg.setdefault("model", model_cfg)
+    train_cfg.setdefault("model_name", model_cfg.get("name") or "tiny_unet_4ch")
+    return JobSpec(
+        job_id=conf.experiment_id,
+        task=conf.task,
+        class_name=conf.class_name,
+        description="Airflow experiment run",
+        params={
+            "model": model_cfg,
+            "input_bands": model_cfg.get("input_bands") or [1, 2, 3, 4],
+            "pseudolabel": pseudolabel_cfg,
+        },
+        data={
+            "images_uri": conf.images_uri,
+            "layout_uri": conf.layout_uri,
+            "scenes_file": conf.scenes_file,
+            "annotation_file": conf.annotation_file,
+        },
+        preprocess=preprocess_cfg,
+        train=train_cfg,
+        predict={"pseudolabel": pseudolabel_cfg, "model": model_cfg},
+        postprocess=conf.postprocess or {},
+        mlflow={"experiment": conf.mlflow.get("experiment")} if conf.mlflow.get("experiment") else {},
+    )
+
+
+def _run_training_pipeline(conf: AirflowExperimentConfig, store: AirflowRunStore) -> dict[str, Any]:
+    summary = store.read_summary()
+    mlflow_info = summary.get("mlflow") or {}
+    run_id = mlflow_info.get("run_id")
+    pipeline_config = load_config()
+    experiment_name = conf.mlflow.get("experiment") or pipeline_config.mlflow_default_experiment
+    job = _build_airflow_job(conf)
+    job_log = store.run_dir / "airflow_train.log"
+    tags = {
+        "job_id": conf.experiment_id,
+        "airflow_run_id": store.airflow_run_id,
+        "orchestrator": "airflow",
+        "queue_state": "airflow",
+        "task": conf.task,
+        "class_name": conf.class_name or "",
+    }
+    params = {
+        "experiment_id": conf.experiment_id,
+        "task": conf.task,
+        "model.name": conf.model.get("name"),
+        "preprocess.tile_size": conf.preprocess.get("tile_size"),
+        "preprocess.max_scenes": conf.preprocess.get("max_scenes"),
+        "train.epochs": job.train.get("epochs"),
+        "train.time_limit_sec": job.train.get("time_limit_sec"),
+    }
+    with MLflowJobRun(
+        pipeline_config,
+        experiment_name=experiment_name,
+        run_name=conf.experiment_id,
+        params=params,
+        tags=tags,
+        run_id=run_id,
+    ) as mlflow_run:
+        result = TrainingPipeline().run(pipeline_config, job, store.run_dir, mlflow_run, job_log, _append_log)
+        result["mlflow"] = mlflow_run.result()
+        mlflow_run.set_tags({"job_status": "ml_pipeline_completed", "airflow_training_status": "success"})
+    write_json(store.run_dir / "training_result.json", result)
+    store.update_summary(training_result=result, mlflow=result.get("mlflow") or mlflow_info)
+    return result
+
+
+def _write_run_summaries(conf: AirflowExperimentConfig, store: AirflowRunStore) -> tuple[Path, Path]:
+    summary = store.read_summary()
+    result = _read_training_result(store)
+    post_metrics = result.get("postprocess_metrics") or {}
+    artifacts = _existing_artifacts(store)
+    run_summary = {
+        "schema_version": 1,
+        "experiment_id": conf.experiment_id,
+        "airflow_run_id": store.airflow_run_id,
+        "status": summary.get("status", "running"),
+        "mlflow": summary.get("mlflow") or result.get("mlflow"),
+        "training": {
+            "mode": result.get("mode"),
+            "model_name": result.get("model_name"),
+            "device": result.get("device"),
+            "epochs_completed": result.get("epochs_completed"),
+            "best_val_iou": result.get("best_val_iou"),
+            "last_epoch_metrics": result.get("last_epoch_metrics"),
+            "train_scene_count": result.get("train_scene_count"),
+            "val_scene_count": result.get("val_scene_count"),
+            "train_tile_count": result.get("train_tile_count"),
+            "val_tile_count": result.get("val_tile_count"),
+        },
+        "pseudolabel": result.get("pseudolabel"),
+        "object_metrics": {
+            key: value
+            for key, value in post_metrics.items()
+            if key.startswith("val/object_") or key in {"val/tp", "val/fp", "val/fn", "val/gt_count", "val/pred_count"}
+        },
+        "artifacts": artifacts,
+        "excluded_local_artifacts_not_logged": _forbidden_logged_artifacts(store),
+        "updated_at": utc_now(),
+    }
+    codex_summary = {
+        "experiment_id": conf.experiment_id,
+        "airflow_run_id": store.airflow_run_id,
+        "mlflow_run_url": (summary.get("mlflow") or result.get("mlflow") or {}).get("run_url_external")
+        or (summary.get("mlflow") or result.get("mlflow") or {}).get("external_run_url"),
+        "current_stage": summary.get("current_stage"),
+        "epochs_completed": result.get("epochs_completed"),
+        "best_val_iou": result.get("best_val_iou"),
+        "object_f1": post_metrics.get("val/object_f1"),
+        "accepted_objects": post_metrics.get("accepted_objects"),
+        "coverage_fraction": post_metrics.get("coverage_fraction"),
+        "artifacts": artifacts,
+        "warnings": summary.get("warnings") or result.get("warnings") or [],
+        "updated_at": utc_now(),
+    }
+    run_summary_path = store.run_dir / "run_summary.json"
+    codex_summary_path = store.run_dir / "codex_summary.json"
+    write_json(run_summary_path, run_summary)
+    write_json(codex_summary_path, codex_summary)
+    return run_summary_path, codex_summary_path
 
 
 def _smoke_or_skip(conf: AirflowExperimentConfig, stage: str) -> dict[str, Any] | None:
@@ -337,31 +516,202 @@ def run_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: str, sta
     elif stage == "inventory_images":
         result = _stage_result("success", summary="Inventory is represented by S3 scene matching inputs in this Airflow step.")
     elif stage == "prepare_dataset_manifest":
-        manifest = {"experiment_id": conf.experiment_id, "created_at": utc_now(), "source": "airflow", "scene_matching": store.read_summary().get("scene_matching")}
+        matching = store.read_summary().get("scene_matching") or {}
+        matched = matching.get("matched") or []
+        max_scenes = conf.preprocess.get("max_scenes")
+        if max_scenes is not None:
+            matched = matched[: max(1, int(max_scenes))]
+        split_idx = max(1, int(len(matched) * 0.75)) if matched else 0
+        train_scenes = matched[:split_idx]
+        val_scenes = matched[split_idx:] or matched[-1:]
+        manifest = {
+            "experiment_id": conf.experiment_id,
+            "created_at": utc_now(),
+            "source": "airflow",
+            "scene_matching": matching,
+            "selected_scene_count": len(matched),
+            "train_scene_count": len(train_scenes),
+            "val_scene_count": len(val_scenes),
+            "train_scenes": train_scenes,
+            "val_scenes": val_scenes,
+            "limits": {
+                "max_scenes": max_scenes,
+                "max_train_tiles": conf.preprocess.get("max_train_tiles"),
+                "max_val_tiles": conf.preprocess.get("max_val_tiles"),
+            },
+        }
         write_json(store.run_dir / "dataset_manifest.json", manifest)
-        result = _stage_result("success", manifest_path=str(store.run_dir / "dataset_manifest.json"))
+        result = _stage_result(
+            "success",
+            manifest_path=str(store.run_dir / "dataset_manifest.json"),
+            train_scene_count=len(train_scenes),
+            val_scene_count=len(val_scenes),
+        )
     elif stage == "prepare_train_tiles_or_windows":
-        result = _stage_result("success", summary="Window preparation is executed inside MLSystem training/inference modules.")
+        result = _stage_result(
+            "success",
+            summary="Tile/window preparation will be executed by real_train sampling and SceneInferenceRunner.",
+            tile_size=conf.preprocess.get("tile_size"),
+            stride=conf.preprocess.get("stride"),
+            context=conf.preprocess.get("context"),
+        )
     elif stage == "validate_dataset":
-        result = _stage_result("success", summary="Dataset manifest written and validated at orchestration level.")
+        manifest = read_json(store.run_dir / "dataset_manifest.json", default={}) or {}
+        if int(manifest.get("train_scene_count") or 0) <= 0 or int(manifest.get("val_scene_count") or 0) <= 0:
+            result = _stage_result("failed", error="Dataset manifest has no train or validation scenes.")
+        else:
+            result = _stage_result(
+                "success",
+                train_scene_count=manifest.get("train_scene_count"),
+                val_scene_count=manifest.get("val_scene_count"),
+            )
     elif stage == "create_mlflow_run":
         result = _create_mlflow_run(conf, store)
     elif stage == "train_model":
         if not conf.train.get("enabled", True):
             result = _stage_result("skipped", summary="train.enabled=false")
         else:
-            result = _stage_result("success", summary="Training stage placeholder calls MLSystem trainer in non-smoke deployment.")
-    elif stage in {"evaluate_pixel_metrics", "predict_validation_scenes", "vectorize_validation_predictions", "compute_object_f1"}:
-        result = _stage_result("success", summary=f"{stage} completed or skipped according to experiment configuration.")
+            training_result = _run_training_pipeline(conf, store)
+            result = _stage_result(
+                "success",
+                summary="TrainingPipeline completed real MLSystem train/predict/postprocess run.",
+                mode=training_result.get("mode"),
+                epochs_completed=training_result.get("epochs_completed"),
+                best_val_iou=training_result.get("best_val_iou"),
+                pseudolabel_status=(training_result.get("pseudolabel") or {}).get("status"),
+                artifacts=_existing_artifacts(store),
+            )
+    elif stage == "evaluate_pixel_metrics":
+        training_result = _read_training_result(store)
+        last_metrics = training_result.get("last_epoch_metrics") or {}
+        if not last_metrics:
+            result = _stage_result("failed", error="No pixel metrics found in training_result.json.")
+        else:
+            result = _stage_result(
+                "success",
+                train_loss=last_metrics.get("train/loss"),
+                val_pixel_iou=last_metrics.get("val/iou"),
+                val_pixel_dice=last_metrics.get("val/dice"),
+                val_pixel_f1=last_metrics.get("val/pixel_f1"),
+            )
+    elif stage == "predict_validation_scenes":
+        training_result = _read_training_result(store)
+        pseudolabel = training_result.get("pseudolabel") or {}
+        if pseudolabel.get("status") != "done":
+            result = _stage_result("failed", error=f"Pseudolabel inference did not complete: {pseudolabel.get('status')}")
+        else:
+            result = _stage_result(
+                "success",
+                accepted_objects=pseudolabel.get("accepted_objects"),
+                accepted_geojson_mb=pseudolabel.get("accepted_geojson_mb"),
+                scenes=training_result.get("matched_scenes_count"),
+            )
+    elif stage == "vectorize_validation_predictions":
+        summary_path = store.run_dir / "pseudolabel_summary.json"
+        if not summary_path.exists():
+            result = _stage_result("failed", error="pseudolabel_summary.json is missing.")
+        else:
+            summary = read_json(summary_path, default={}) or {}
+            result = _stage_result(
+                "success",
+                accepted_objects=((summary.get("metrics") or {}).get("accepted_objects")),
+                threshold_used=((summary.get("metrics") or {}).get("threshold_used")),
+            )
+    elif stage == "compute_object_f1":
+        training_result = _read_training_result(store)
+        metrics = training_result.get("postprocess_metrics") or {}
+        object_keys = {
+            key: metrics.get(key)
+            for key in ["val/object_f1", "val/object_precision", "val/object_recall", "val/tp", "val/fp", "val/fn"]
+            if key in metrics
+        }
+        if "val/object_f1" not in object_keys:
+            result = _stage_result("failed", error="val/object_f1 was not computed.")
+        else:
+            result = _stage_result("success", **object_keys)
     elif stage == "predict_pseudolabel_scenes":
         if conf.smoke:
             smoke = _run_airflow_synthetic_pseudolabel_smoke(store)
             store.update_summary(pseudolabel_smoke=smoke)
             result = _stage_result("success", **smoke)
         else:
-            result = _stage_result("success", summary="Pseudolabel prediction is executed by MLSystem inference modules.")
-    elif stage in {"stitch_probability_maps", "vectorize_pseudolabel", "postprocess_pseudolabel", "export_pseudolabel_artifacts", "generate_prediction_examples", "log_mlflow_artifacts", "write_codex_api_summary"}:
-        result = _stage_result("success", summary=f"{stage} completed at orchestration boundary.")
+            coverage_path = store.run_dir / "coverage_report.json"
+            if not coverage_path.exists():
+                result = _stage_result("failed", error="coverage_report.json is missing after real inference.")
+            else:
+                coverage = read_json(coverage_path, default={}) or {}
+                result = _stage_result(
+                    "success",
+                    scenes_processed=coverage.get("scenes_processed"),
+                    total_predicted_windows=coverage.get("total_predicted_windows"),
+                    mean_coverage_fraction=coverage.get("mean_coverage_fraction"),
+                )
+    elif stage == "stitch_probability_maps":
+        coverage = read_json(store.run_dir / "coverage_report.json", default={}) or {}
+        if not coverage:
+            result = _stage_result("failed", error="coverage_report.json is missing.")
+        else:
+            result = _stage_result(
+                "success",
+                mean_coverage_fraction=coverage.get("mean_coverage_fraction"),
+                min_coverage_fraction=coverage.get("min_coverage_fraction"),
+                total_expected_windows=coverage.get("total_expected_windows"),
+                total_predicted_windows=coverage.get("total_predicted_windows"),
+            )
+    elif stage == "vectorize_pseudolabel":
+        accepted = store.run_dir / f"{conf.experiment_id}.accepted.geojson"
+        if not accepted.exists():
+            result = _stage_result("failed", error=f"{accepted.name} is missing.")
+        else:
+            result = _stage_result("success", accepted_geojson=str(accepted), size_bytes=accepted.stat().st_size)
+    elif stage == "postprocess_pseudolabel":
+        training_result = _read_training_result(store)
+        metrics = training_result.get("postprocess_metrics") or {}
+        if not metrics:
+            result = _stage_result("failed", error="No postprocess metrics found.")
+        else:
+            result = _stage_result(
+                "success",
+                accepted_objects=metrics.get("accepted_objects"),
+                max_objects=conf.postprocess.get("max_objects"),
+                threshold_used=metrics.get("threshold_used"),
+                min_object_area_m2_used=metrics.get("min_object_area_m2_used"),
+                simplify_tolerance_m_used=metrics.get("simplify_tolerance_m_used"),
+            )
+    elif stage == "export_pseudolabel_artifacts":
+        artifacts = _existing_artifacts(store)
+        required = ["pseudolabel_scenes.txt", f"{conf.experiment_id}.accepted.geojson", "coverage_report.json", "pseudolabel_summary.json"]
+        missing_required = [name for name in required if name not in artifacts]
+        if missing_required:
+            result = _stage_result("failed", error=f"Missing pseudolabel artifacts: {missing_required}")
+        else:
+            result = _stage_result(
+                "success",
+                artifacts={name: artifacts[name] for name in required},
+                excluded_local_artifacts_not_logged=_forbidden_logged_artifacts(store),
+            )
+    elif stage == "generate_prediction_examples":
+        examples = store.run_dir / "prediction_examples.html"
+        if not examples.exists():
+            result = _stage_result("failed", error="prediction_examples.html is missing.")
+        else:
+            result = _stage_result("success", prediction_examples_html=str(examples), size_bytes=examples.stat().st_size)
+    elif stage == "log_mlflow_artifacts":
+        run_summary_path, codex_summary_path = _write_run_summaries(conf, store)
+        mlflow_info = (store.read_summary().get("mlflow") or _read_training_result(store).get("mlflow") or {})
+        run_id = mlflow_info.get("run_id")
+        if run_id and not str(run_id).startswith("smoke-"):
+            import mlflow
+
+            pipeline_config = load_config()
+            mlflow.set_tracking_uri(pipeline_config.mlflow_tracking_uri_internal)
+            with mlflow.start_run(run_id=run_id):
+                mlflow.log_artifact(str(run_summary_path))
+                mlflow.log_artifact(str(codex_summary_path))
+        result = _stage_result("success", artifacts=_existing_artifacts(store))
+    elif stage == "write_codex_api_summary":
+        run_summary_path, codex_summary_path = _write_run_summaries(conf, store)
+        result = _stage_result("success", run_summary=str(run_summary_path), codex_summary=str(codex_summary_path))
     elif stage == "finalize_mlflow_run":
         result = _finalize_mlflow_run(conf, store)
     else:

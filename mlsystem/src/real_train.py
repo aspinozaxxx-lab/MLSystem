@@ -835,6 +835,9 @@ def run_real_train(
         )
     if not matches:
         raise RuntimeError("No scenes from scenes.txt matched available images")
+    max_scenes = job.preprocess.get("max_scenes") or job.train.get("max_scenes") or data.get("max_scenes")
+    if max_scenes is not None:
+        matches = matches[: max(1, int(max_scenes))]
 
     scene_report = {
         **matching_report,
@@ -929,6 +932,8 @@ def run_real_train(
     }
     dataset_report_path = experiment_dir / "train_dataset_report.json"
     write_json(dataset_report_path, dataset_report)
+    train_scenes_path = _write_scene_list(experiment_dir / "train_scenes.txt", train_matches)
+    val_scenes_path = _write_scene_list(experiment_dir / "val_scenes.txt", val_matches)
     mlflow_run.log_params(
         {
             "positive_scene_count": dataset_report["positive_scene_count"],
@@ -1041,7 +1046,7 @@ def run_real_train(
     checkpoint_path = experiment_dir / "tiny_unet_4ch.pt"
     checkpoint_path = experiment_dir / f"{model_name}.pt"
     torch.save({"model_state_dict": model.state_dict(), "job_id": job.job_id, "model_name": model_name, "best_epoch": best_epoch}, checkpoint_path)
-    artifacts.extend([dataset_report_path, checkpoint_path])
+    artifacts.extend([dataset_report_path, train_scenes_path, val_scenes_path, checkpoint_path])
     pseudolabel_cfg = job.predict.get("pseudolabel") or job.params.get("pseudolabel") or {}
     pseudolabel_matches = matches
     if str(pseudolabel_cfg.get("run_on") or "").lower() in {"all_available_images", "all_images"}:
@@ -1049,6 +1054,9 @@ def run_real_train(
             SceneMatch(entry=item["name"], key=item["key"], name=item["name"], score=1.0)
             for item in sorted(images, key=lambda row: row["key"])
         ]
+    max_pseudolabel_scenes = pseudolabel_cfg.get("max_scenes")
+    if max_pseudolabel_scenes is not None:
+        pseudolabel_matches = pseudolabel_matches[: max(1, int(max_pseudolabel_scenes))]
     object_metrics_prefix = "val" if str(pseudolabel_cfg.get("run_on") or "").lower() not in {"all_available_images", "all_images"} else "pseudolabel"
     with trace_stage(
         "postprocess_vectors",
