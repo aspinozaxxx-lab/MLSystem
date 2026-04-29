@@ -213,6 +213,7 @@ def _build_airflow_job(conf: AirflowExperimentConfig) -> JobSpec:
         train_cfg["max_train_tiles"] = preprocess_cfg["max_train_tiles"]
     if "max_val_tiles" in preprocess_cfg and "max_val_tiles" not in train_cfg:
         train_cfg["max_val_tiles"] = preprocess_cfg["max_val_tiles"]
+    train_cfg.setdefault("allow_train_val_sample_fallback", True)
     train_cfg.setdefault("model", model_cfg)
     train_cfg.setdefault("model_name", model_cfg.get("name") or "tiny_unet_4ch")
     return JobSpec(

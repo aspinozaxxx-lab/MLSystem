@@ -898,6 +898,16 @@ def run_real_train(
         empty_share,
         seed + 1000,
     )
+    if not val_samples and train_samples and bool(job.train.get("allow_train_val_sample_fallback", False)):
+        fallback_count = max(1, min(max_val_tiles, max(1, len(train_samples) // 4)))
+        if len(train_samples) > fallback_count:
+            val_samples = train_samples[-fallback_count:]
+            train_samples = train_samples[:-fallback_count]
+        else:
+            val_samples = train_samples[-fallback_count:]
+        fallback_report = dict(train_report[-1]) if train_report else {"scene": "train_holdout"}
+        fallback_report["validation_fallback_from_train_samples"] = True
+        val_report = [fallback_report]
     if not train_samples or not val_samples:
         raise RuntimeError(f"Not enough samples: train={len(train_samples)} val={len(val_samples)}")
 
