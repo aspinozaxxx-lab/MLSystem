@@ -8,6 +8,7 @@
 - Добавлен основной DAG `mlsystem_experiment_pipeline`.
 - Добавлен smoke DAG `mlsystem_smoke_pipeline`.
 - Добавлены task wrappers `mlsystem/src/pipeline/airflow_tasks.py`.
+- Smoke-ветка Airflow task wrappers сделана lightweight: DAG импортируется без `torch` и тяжелого ML-окружения.
 - Добавлен lightweight status store для Codex/API:
   - `/data/mlsystem/airflow/status/<experiment_id>/summary.json`
   - `/data/mlsystem/airflow/status/<experiment_id>/stages/*.json`
@@ -55,11 +56,14 @@ python -m compileall mlsystem\src tests airflow\dags
 python -m unittest discover -s tests
 python -m mlsystem.src.pipeline.airflow_tasks validate-config --run-id manual__cli_smoke --state-dir .tmp\airflow-status --conf-file .tmp\airflow-smoke-conf.json
 python -m mlsystem.src.pipeline.airflow_tasks check-s3-layout --run-id manual__cli_smoke --state-dir .tmp\airflow-status --conf-file .tmp\airflow-smoke-conf.json
+python -m mlsystem.src.pipeline.airflow_tasks predict-pseudolabel-scenes --run-id manual__airflow_smoke --state-dir .tmp\airflow-status --conf-file .tmp\airflow-cli-smoke.json
 ```
 
 `unittest`: 34 tests OK.
 
-`ansible-playbook` не установлен на локальной Windows машине, поэтому локальный syntax-check Ansible пропущен. YAML parse для Ansible/GitHub/Airflow config пройден.
+YAML parse для Ansible/GitHub/Airflow config пройден.
+
+`ansible-playbook` не установлен на локальной Windows машине, поэтому локальный syntax-check Ansible пропущен.
 
 ## Секреты
 

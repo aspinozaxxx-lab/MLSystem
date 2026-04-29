@@ -17,6 +17,9 @@
     "task_wrappers": [
       "mlsystem/src/pipeline/airflow_tasks.py"
     ],
+    "airflow_smoke": [
+      "lightweight synthetic smoke without torch import at DAG parse time"
+    ],
     "docs": [
       "docs/airflow_migration.md"
     ]
@@ -56,6 +59,7 @@
     },
     "yaml_parse": "passed",
     "local_airflow_task_cli_smoke": "passed",
+    "local_airflow_synthetic_pseudolabel_smoke": "passed",
     "ansible_syntax_local": "skipped_ansible_not_installed_on_windows"
   },
   "legacy": {

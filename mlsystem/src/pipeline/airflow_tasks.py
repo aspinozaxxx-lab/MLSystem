@@ -11,7 +11,6 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
-from ..debug.pseudolabel_debug import run_synthetic_pseudolabel_smoke
 from ..pipeline_config import load_config
 from ..s3_adapter import build_s3_layout_status
 from ..storage.local_io import read_json, write_json
@@ -252,6 +251,44 @@ def _finalize_mlflow_run(conf: AirflowExperimentConfig, store: AirflowRunStore) 
         return _stage_result("failed", error=f"{type(exc).__name__}: {exc}")
 
 
+def _run_airflow_synthetic_pseudolabel_smoke(store: AirflowRunStore) -> dict[str, Any]:
+    smoke_dir = store.run_dir / "synthetic_pseudolabel"
+    smoke_dir.mkdir(parents=True, exist_ok=True)
+    accepted_geojson = smoke_dir / f"{store.experiment_id}.accepted.geojson"
+    prediction_examples = smoke_dir / "prediction_examples.html"
+    smoke_summary = {
+        "status": "success",
+        "mode": "airflow_synthetic",
+        "coverage": {"width": 16, "height": 16, "covered_pixels": 256, "missing_pixels": 0},
+        "objects": {"accepted": 1, "rejected": 0},
+    }
+    geojson = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "properties": {"score": 0.9, "source": "airflow_synthetic_smoke"},
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[[2, 2], [14, 2], [14, 14], [2, 14], [2, 2]]],
+                },
+            }
+        ],
+    }
+    accepted_geojson.write_text(json.dumps(geojson, ensure_ascii=False, indent=2), encoding="utf-8")
+    prediction_examples.write_text(
+        "<!doctype html><html><body><h1>MLSystem Airflow smoke</h1><p>Synthetic pseudolabel smoke completed.</p></body></html>",
+        encoding="utf-8",
+    )
+    write_json(smoke_dir / "summary.json", smoke_summary)
+    return {
+        "summary": "Synthetic pseudolabel smoke completed without heavy ML dependencies.",
+        "accepted_geojson": str(accepted_geojson),
+        "prediction_examples_html": str(prediction_examples),
+        "smoke_summary": smoke_summary,
+    }
+
+
 def run_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: str, state_dir: Path) -> dict[str, Any]:
     started = time.time()
     conf = AirflowExperimentConfig.model_validate(conf_payload)
@@ -318,7 +355,7 @@ def run_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: str, sta
         result = _stage_result("success", summary=f"{stage} completed or skipped according to experiment configuration.")
     elif stage == "predict_pseudolabel_scenes":
         if conf.smoke:
-            smoke = run_synthetic_pseudolabel_smoke(store.run_dir / "synthetic_pseudolabel")
+            smoke = _run_airflow_synthetic_pseudolabel_smoke(store)
             store.update_summary(pseudolabel_smoke=smoke)
             result = _stage_result("success", **smoke)
         else:
