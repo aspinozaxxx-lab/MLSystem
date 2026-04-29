@@ -16,8 +16,8 @@
   loop:
     - { path: "{{ mlsystem_data_root }}", owner: root, group: root, mode: "0755" }
     - { path: "{{ mlsystem_storage_root }}", owner: worker, group: worker, mode: "0755" }
-    - { path: "{{ mlsystem_logs_root }}", owner: worker, group: worker, mode: "0755" }
-    - { path: "{{ mlsystem_artifacts_root }}", owner: worker, group: worker, mode: "0755" }
+    - { path: "{{ mlsystem_logs_root }}", owner: worker, group: root, mode: "0775" }
+    - { path: "{{ mlsystem_artifacts_root }}", owner: worker, group: root, mode: "0775" }
     - { path: "{{ mlsystem_minio_data_root }}", owner: root, group: root, mode: "0755" }
   become: true
 
@@ -45,21 +45,21 @@
 
 - name: Ensure MLSystem storage subdirectories exist on /data
   ansible.builtin.file:
-    path: "{{ item }}"
+    path: "{{ item.path }}"
     state: directory
-    owner: worker
-    group: worker
-    mode: "0755"
+    owner: "{{ item.owner | default('worker') }}"
+    group: "{{ item.group | default('worker') }}"
+    mode: "{{ item.mode | default('0755') }}"
   loop:
-    - "{{ mlsystem_storage_root }}/images"
-    - "{{ mlsystem_storage_root }}/layouts"
-    - "{{ mlsystem_storage_root }}/jobs/pending"
-    - "{{ mlsystem_storage_root }}/jobs/running"
-    - "{{ mlsystem_storage_root }}/jobs/done"
-    - "{{ mlsystem_storage_root }}/jobs/failed"
-    - "{{ mlsystem_storage_root }}/cache"
-    - "{{ mlsystem_storage_root }}/experiments"
-    - "{{ mlsystem_storage_root }}/system"
+    - { path: "{{ mlsystem_storage_root }}/images" }
+    - { path: "{{ mlsystem_storage_root }}/layouts" }
+    - { path: "{{ mlsystem_storage_root }}/jobs/pending" }
+    - { path: "{{ mlsystem_storage_root }}/jobs/running" }
+    - { path: "{{ mlsystem_storage_root }}/jobs/done" }
+    - { path: "{{ mlsystem_storage_root }}/jobs/failed" }
+    - { path: "{{ mlsystem_storage_root }}/cache" }
+    - { path: "{{ mlsystem_storage_root }}/experiments" }
+    - { path: "{{ mlsystem_storage_root }}/system", group: root, mode: "0775" }
 
 - name: Ensure MLSystem system config directory exists
   ansible.builtin.file:
