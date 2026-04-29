@@ -20,6 +20,19 @@
 - Добавлен playbook `disable_legacy_queue.yml` с backup legacy root перед остановкой services.
 - Airflow UI port по умолчанию: `8081`, чтобы не конфликтовать с legacy Streamlit на `8080` до smoke success.
 
+## Фактический deploy 2026-04-29
+
+- Airflow поднят через Docker Compose/Ansible на `http://mlserver:8081`.
+- Health endpoint `http://127.0.0.1:8081/api/v1/health` возвращает healthy metadatabase/scheduler/triggerer.
+- Smoke DAG run: `mlsystem_smoke_pipeline / smoke__codex_20260429_174748` - `success`.
+- Вызванный main DAG run: `mlsystem_experiment_pipeline / manual__2026-04-29T14:48:05.222259+00:00` - `success`.
+- Smoke MLflow run: `6d925a517b6349d3a1bed477bf523f4a`.
+- Smoke MLflow URL: `http://172.26.12.169:5000/#/experiments/2/runs/6d925a517b6349d3a1bed477bf523f4a`.
+- Codex/status summary: `/data/mlsystem/airflow/status/airflow_smoke_synthetic/summary.json`.
+- Accepted GeoJSON smoke artifact: `/data/mlsystem/airflow/status/airflow_smoke_synthetic/synthetic_pseudolabel/airflow_smoke_synthetic.accepted.geojson`.
+- Legacy backup: `/data/mlsystem/backups/mlsystem_legacy_20260429T145509Z.tar.gz`.
+- Legacy systemd services disabled: `mlsystem-executor.service`, `mlsystem-web.service`, `mlsystem-preprocess.service`.
+
 ## Airflow DAG stages
 
 Основной DAG содержит 23 stage:

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "date": "2026-04-29",
-  "status": "repo_airflow_migration_added",
+  "status": "airflow_deployed_smoke_passed_legacy_disabled",
   "created": {
     "airflow_dags": [
       "airflow/dags/mlsystem_experiment_pipeline.py",
@@ -63,6 +63,29 @@
     "local_airflow_synthetic_pseudolabel_smoke": "passed",
     "ansible_syntax_local": "skipped_ansible_not_installed_on_windows"
   },
+  "deploy_result": {
+    "airflow_ui": "http://mlserver:8081",
+    "health_endpoint": "http://127.0.0.1:8081/api/v1/health",
+    "health": "healthy",
+    "smoke_dag_run": {
+      "dag_id": "mlsystem_smoke_pipeline",
+      "run_id": "smoke__codex_20260429_174748",
+      "status": "success"
+    },
+    "main_dag_run_from_smoke": {
+      "dag_id": "mlsystem_experiment_pipeline",
+      "run_id": "manual__2026-04-29T14:48:05.222259+00:00",
+      "status": "success"
+    },
+    "smoke_mlflow": {
+      "experiment_id": "2",
+      "experiment_name": "mlsystem-airflow-smoke",
+      "run_id": "6d925a517b6349d3a1bed477bf523f4a",
+      "run_url_external": "http://172.26.12.169:5000/#/experiments/2/runs/6d925a517b6349d3a1bed477bf523f4a"
+    },
+    "status_summary": "/data/mlsystem/airflow/status/airflow_smoke_synthetic/summary.json",
+    "accepted_geojson": "/data/mlsystem/airflow/status/airflow_smoke_synthetic/synthetic_pseudolabel/airflow_smoke_synthetic.accepted.geojson"
+  },
   "legacy": {
     "queue_workflow": "deprecated_manual_only",
     "sync_results_workflow": "deprecated_manual_only",
@@ -71,7 +94,9 @@
       "mlsystem-executor.service",
       "mlsystem-web.service",
       "mlsystem-preprocess.service"
-    ]
+    ],
+    "disabled_after_smoke": true,
+    "legacy_backup": "/data/mlsystem/backups/mlsystem_legacy_20260429T145509Z.tar.gz"
   },
   "secrets_not_committed": [
     "AIRFLOW_ADMIN_PASSWORD",
