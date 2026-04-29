@@ -1,0 +1,36 @@
+experiment_id: airflow_smoke_synthetic
+class_name: deforest
+task: smoke
+smoke: true
+images_uri: s3://mlsystems/images/
+layout_uri: s3://mlsystems/layouts/deforest/
+scenes_file: scenes.txt
+annotation_file: auto
+model:
+  name: constant_probability
+  input_bands: [1, 2, 3, 4]
+  preview_bands: [4, 1, 2]
+preprocess:
+  tile_size: 6
+  stride: 4
+  context: 2
+  include_negative_scenes: true
+train:
+  enabled: false
+  time_limit_sec: 30
+  batch_size: auto
+  workers: 0
+pseudolabel:
+  enabled: true
+  run_on: synthetic
+  full_scene: true
+postprocess:
+  enabled: true
+  max_geojson_mb: 20
+  max_objects: 10
+  keep_largest_if_too_many: true
+  thresholds: [0.5]
+  min_object_area_m2_candidates: [1]
+  simplify_tolerance_m_candidates: [0]
+mlflow:
+  experiment: mlsystem-airflow-smoke

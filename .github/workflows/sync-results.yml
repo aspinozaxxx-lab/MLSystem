@@ -2,8 +2,6 @@ name: sync-results
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "*/15 * * * *"
 
 permissions:
   contents: write
@@ -13,144 +11,9 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  sync:
+  deprecated:
     runs-on: [self-hosted, linux]
     steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: true
-
-      - name: Pull lightweight summaries from server
-        shell: bash
+      - name: Results sync deprecated
         run: |
-          rm -rf .tmp/mlsystem-results
-          mkdir -p .tmp/mlsystem-results .tmp/mlsystem-queue/pending .tmp/mlsystem-queue/running results/summaries
-          src=/home/worker/mlsystem/storage/experiments
-          if [ -d "$src" ]; then
-            (cd "$src" && find . -maxdepth 2 -type f \( -name run_summary.json -o -name codex_summary.json -o -name pseudolabel_summary.json -o -name scenes_match_report.json -o -name train_dataset_report.json \) -print0 | tar --null -T - -cf -) \
-              | tar -xf - -C .tmp/mlsystem-results || true
-          else
-            ssh mlserver 'cd /home/worker/mlsystem/storage/experiments && find . -maxdepth 2 -type f \( -name run_summary.json -o -name codex_summary.json -o -name pseudolabel_summary.json -o -name scenes_match_report.json -o -name train_dataset_report.json \) -print0 | tar --null -T - -cf -' \
-              | tar -xf - -C .tmp/mlsystem-results || true
-          fi
-          queue=/home/worker/mlsystem/storage/jobs
-          if [ -d "$queue" ]; then
-            find "$queue/pending" -maxdepth 1 -type f -name "*.json" -exec cp {} .tmp/mlsystem-queue/pending/ \; || true
-            find "$queue/running" -maxdepth 2 -type f \( -name claim.json -o -name queue_metadata.json -o -name result.json \) -print0 \
-              | tar --null -T - -cf - | tar -xf - -C .tmp/mlsystem-queue/running --strip-components=5 || true
-          fi
-
-      - name: Normalize summaries
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import json
-
-          src_root = Path(".tmp/mlsystem-results")
-          out_root = Path("results/summaries")
-          out_root.mkdir(parents=True, exist_ok=True)
-
-          for run_path in src_root.glob("*/run_summary.json"):
-              run = json.loads(run_path.read_text(encoding="utf-8"))
-              codex_path = run_path.parent / "codex_summary.json"
-              codex = json.loads(codex_path.read_text(encoding="utf-8")) if codex_path.exists() else {}
-              pseudolabel_path = run_path.parent / "pseudolabel_summary.json"
-              pseudolabel = json.loads(pseudolabel_path.read_text(encoding="utf-8")) if pseudolabel_path.exists() else {}
-              mlflow = run.get("mlflow") or {}
-              result = run.get("result") or {}
-              timing = result.get("timing") or {}
-              pseudolabel_result = result.get("pseudolabel") or {}
-              pseudolabel_s3 = pseudolabel_result.get("s3_uris") or {}
-              metrics = dict(result.get("last_epoch_metrics") or {})
-              metrics.update(result.get("postprocess_metrics") or {})
-              if result.get("best_val_iou") is not None:
-                  metrics["best_val_iou"] = result.get("best_val_iou")
-              metrics.setdefault("accepted_objects", None)
-              metrics.setdefault("accepted_geojson_mb", None)
-              payload = {
-                  "schema_version": 1,
-                  "job_id": run.get("job_id"),
-                  "claim_id": run.get("claim_id", run_path.parent.name),
-                  "status": run.get("status", result.get("status")),
-                  "task": run.get("task"),
-                  "server": "roskadastr-ml",
-                  "started_at": run.get("started_at"),
-                  "finished_at": run.get("finished_at"),
-                  "duration_sec": run.get("duration_sec"),
-                  "train_duration_sec": timing.get("train_duration_sec"),
-                  "eval_duration_sec": timing.get("eval_duration_sec"),
-                  "pseudolabel_duration_sec": timing.get("pseudolabel_duration_sec"),
-                  "postprocess_duration_sec": timing.get("postprocess_duration_sec"),
-                  "epochs_completed": result.get("epochs_completed"),
-                  "mlflow_run_url": mlflow.get("run_url_external") or mlflow.get("external_run_url") or mlflow.get("run_url") or mlflow.get("url"),
-                  "s3_artifacts": {
-                      "accepted_geojson": pseudolabel_s3.get("accepted_geojson"),
-                      "accepted_geojson_gz": pseudolabel_s3.get("accepted_geojson_gz"),
-                      "accepted_gpkg": pseudolabel_s3.get("accepted_gpkg"),
-                      "report_html": None,
-                  },
-                  "mlflow_artifacts": {
-                      "accepted_geojson": "accepted.geojson" if (run_path.parent / "pseudolabel_summary.json").exists() else None,
-                      "accepted_geojson_gz": "accepted.geojson.gz" if (run_path.parent / "pseudolabel_summary.json").exists() else None,
-                      "accepted_gpkg": "accepted.gpkg" if (run_path.parent / "pseudolabel_summary.json").exists() else None,
-                      "pseudolabel_summary": "pseudolabel_summary.json" if pseudolabel else None,
-                      "scenes_match_report": "scenes_match_report.json" if (run_path.parent / "scenes_match_report.json").exists() else None,
-                      "train_dataset_report": "train_dataset_report.json" if (run_path.parent / "train_dataset_report.json").exists() else None,
-                  },
-                  "metrics": metrics,
-                  "matched_scenes_count": result.get("matched_scenes_count"),
-                  "missing_scenes": result.get("missing_scenes", []),
-                  "ambiguous_scenes": result.get("ambiguous_scenes", []),
-                  "train_scene_count": result.get("train_scene_count"),
-                  "val_scene_count": result.get("val_scene_count"),
-                  "train_tile_count": result.get("train_tile_count"),
-                  "val_tile_count": result.get("val_tile_count"),
-                  "best_epoch": result.get("best_epoch"),
-                  "pseudolabel": pseudolabel_result,
-                  "warnings": (codex.get("warnings", []) or []) + (result.get("warnings", []) or []),
-                  "errors": [] if run.get("status") != "failed" else [result.get("error")],
-              }
-              name = payload["job_id"] or payload["claim_id"]
-              safe_name = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in str(name))
-              (out_root / f"{safe_name}.json").write_text(
-                  json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-                  encoding="utf-8",
-              )
-              print(f"synced {out_root / (safe_name + '.json')}")
-
-          queue_root = Path(".tmp/mlsystem-queue")
-          for meta_path in sorted((queue_root / "pending").glob("*.json")):
-              meta = json.loads(meta_path.read_text(encoding="utf-8"))
-              mlflow = meta.get("mlflow") or {}
-              payload = {
-                  "schema_version": 1,
-                  "job_id": meta.get("job_id"),
-                  "claim_id": None,
-                  "status": "queued",
-                  "job_status": "queued",
-                  "task": meta.get("task"),
-                  "server": "roskadastr-ml",
-                  "mlflow_run_url": mlflow.get("run_url_external") or mlflow.get("external_run_url"),
-                  "metrics": {},
-                  "warnings": [],
-                  "errors": [],
-              }
-              name = payload["job_id"] or meta_path.stem
-              safe_name = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in str(name))
-              out = out_root / f"{safe_name}.json"
-              if not out.exists():
-                  out.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-                  print(f"queued {out}")
-          PY
-
-      - name: Commit updated summaries
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add results/summaries
-          if git diff --cached --quiet; then
-            echo "No summary changes"
-          else
-            git commit -m "Sync MLSystem result summaries [skip ci]"
-            git push
-          fi
+          echo "sync-results is deprecated. Use Airflow REST API and MLflow/S3 artifacts for status/results."

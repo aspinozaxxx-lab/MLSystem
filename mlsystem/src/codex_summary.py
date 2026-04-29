@@ -64,6 +64,7 @@ def build_codex_summary(
                 "status": current_job.get("status"),
                 "server": current_job.get("server"),
                 "metrics": current_job.get("metrics", {}),
+                "resource_summary": current_job.get("resource_summary"),
                 "errors": current_job.get("errors", []),
             }
         )

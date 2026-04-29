@@ -1,0 +1,28 @@
+---
+airflow_project_root: /data/mlsystem/airflow
+airflow_dags_root: "{{ airflow_project_root }}/dags"
+airflow_logs_root: "{{ airflow_project_root }}/logs"
+airflow_plugins_root: "{{ airflow_project_root }}/plugins"
+airflow_include_root: "{{ airflow_project_root }}/include"
+airflow_status_root: "{{ airflow_project_root }}/status"
+airflow_postgres_data_root: "{{ airflow_project_root }}/postgres"
+airflow_compose_path: "{{ airflow_project_root }}/docker-compose.yml"
+airflow_env_path: /etc/mlsystem/airflow.env
+airflow_image: apache/airflow:2.9.3-python3.11
+airflow_webserver_port: 8080
+airflow_admin_user: admin
+airflow_admin_email: admin@example.local
+airflow_admin_firstname: MLSystem
+airflow_admin_lastname: Admin
+airflow_admin_password: "{{ lookup('env', 'AIRFLOW_ADMIN_PASSWORD') | default('', true) }}"
+airflow_fernet_key: "{{ lookup('env', 'AIRFLOW_FERNET_KEY') | default('', true) }}"
+airflow_secret_key: "{{ lookup('env', 'AIRFLOW_SECRET_KEY') | default('', true) }}"
+airflow_postgres_password: "{{ lookup('env', 'AIRFLOW_POSTGRES_PASSWORD') | default('', true) }}"
+airflow_pip_requirements: "pydantic PyYAML mlflow boto3 numpy shapely rasterio pillow"
+airflow_executor: LocalExecutor
+airflow_uid: "50000"
+mlsystem_root: /home/worker/mlsystem
+mlsystem_data_root: /data
+mlsystem_airflow_network: mlsystem-airflow-net
+airflow_run_health_checks: true
+airflow_trigger_smoke: false

@@ -1,0 +1,125 @@
+---
+- name: Validate Airflow secrets are provided by environment
+  ansible.builtin.assert:
+    that:
+      - airflow_admin_password | length > 0
+      - airflow_fernet_key | length > 0
+      - airflow_secret_key | length > 0
+      - airflow_postgres_password | length > 0
+    fail_msg: "Set AIRFLOW_ADMIN_PASSWORD, AIRFLOW_FERNET_KEY, AIRFLOW_SECRET_KEY and AIRFLOW_POSTGRES_PASSWORD in the protected deployment environment."
+    quiet: true
+
+- name: Ensure Airflow directories exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default('worker') }}"
+    group: "{{ item.group | default('worker') }}"
+    mode: "{{ item.mode | default('0755') }}"
+  loop:
+    - { path: "{{ airflow_project_root }}" }
+    - { path: "{{ airflow_dags_root }}" }
+    - { path: "{{ airflow_logs_root }}" }
+    - { path: "{{ airflow_plugins_root }}" }
+    - { path: "{{ airflow_include_root }}" }
+    - { path: "{{ airflow_status_root }}" }
+    - { path: "{{ airflow_postgres_data_root }}" }
+  become: true
+
+- name: Copy Airflow DAGs
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../airflow/dags/"
+    dest: "{{ airflow_dags_root }}/"
+    owner: worker
+    group: worker
+    mode: preserve
+  become: true
+
+- name: Copy Airflow include files
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../airflow/include/"
+    dest: "{{ airflow_include_root }}/"
+    owner: worker
+    group: worker
+    mode: preserve
+  become: true
+
+- name: Copy Airflow plugins
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../airflow/plugins/"
+    dest: "{{ airflow_plugins_root }}/"
+    owner: worker
+    group: worker
+    mode: preserve
+  become: true
+
+- name: Install Airflow environment file
+  ansible.builtin.template:
+    src: airflow.env.j2
+    dest: "{{ airflow_env_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  become: true
+
+- name: Install Airflow docker compose
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ airflow_compose_path }}"
+    owner: worker
+    group: worker
+    mode: "0644"
+  become: true
+
+- name: Pull Airflow images
+  ansible.builtin.command:
+    cmd: docker compose --env-file "{{ airflow_env_path }}" -f "{{ airflow_compose_path }}" pull
+  changed_when: true
+  become: true
+
+- name: Initialize Airflow metadata database and admin user
+  ansible.builtin.command:
+    cmd: docker compose --env-file "{{ airflow_env_path }}" -f "{{ airflow_compose_path }}" up airflow-init
+  changed_when: true
+  become: true
+
+- name: Start Airflow services
+  ansible.builtin.command:
+    cmd: docker compose --env-file "{{ airflow_env_path }}" -f "{{ airflow_compose_path }}" up -d airflow-webserver airflow-scheduler airflow-triggerer
+  changed_when: true
+  become: true
+
+- name: Wait for Airflow webserver health
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ airflow_webserver_port }}/api/v1/health"
+    method: GET
+    status_code: 200
+    return_content: true
+    timeout: 10
+  register: airflow_health
+  retries: 30
+  delay: 5
+  until: airflow_health.status == 200
+  when: airflow_run_health_checks | bool
+
+- name: Check DAG import list
+  ansible.builtin.command:
+    cmd: docker compose --env-file "{{ airflow_env_path }}" -f "{{ airflow_compose_path }}" exec -T airflow-scheduler airflow dags list
+  register: airflow_dags_list
+  changed_when: false
+  become: true
+  when: airflow_run_health_checks | bool
+
+- name: Trigger smoke DAG run when requested
+  ansible.builtin.command:
+    cmd: docker compose --env-file "{{ airflow_env_path }}" -f "{{ airflow_compose_path }}" exec -T airflow-scheduler airflow dags trigger mlsystem_smoke_pipeline
+  changed_when: true
+  become: true
+  when: airflow_trigger_smoke | bool
+
+- name: Report Airflow deployment
+  ansible.builtin.debug:
+    msg:
+      ui: "http://127.0.0.1:{{ airflow_webserver_port }}"
+      health: "{{ airflow_health.json | default('skipped') }}"
+      dags: "{{ airflow_dags_list.stdout_lines | default([]) }}"

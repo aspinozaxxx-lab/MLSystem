@@ -2,12 +2,6 @@ name: cicd-queue
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - "jobs/pending/**/*.yml"
-      - "jobs/pending/**/*.yaml"
-      - ".github/workflows/cicd-queue.yml"
 
 permissions:
   contents: read
@@ -17,55 +11,9 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  queue:
+  deprecated:
     runs-on: [self-hosted, linux]
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 50
-
-      - name: Select job files
-        shell: bash
+      - name: Queue workflow deprecated
         run: |
-          set -euo pipefail
-          mkdir -p .tmp
-          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ -n "${{ github.event.before }}" ]; then
-            before="${{ github.event.before }}"
-            after="${{ github.sha }}"
-            if git cat-file -e "${before}^{commit}" 2>/dev/null; then
-              git diff --name-only "${before}" "${after}" | grep -E '^jobs/pending/.*\.ya?ml$' > .tmp/queue_job_files.txt || true
-            else
-              git diff-tree --no-commit-id --name-only -r "${after}" | grep -E '^jobs/pending/.*\.ya?ml$' > .tmp/queue_job_files.txt || true
-            fi
-          else
-            find jobs/pending -type f \( -name '*.yml' -o -name '*.yaml' \) | sort > .tmp/queue_job_files.txt
-          fi
-          cat .tmp/queue_job_files.txt
-
-      - name: Validate pending job YAML
-        run: |
-          /home/worker/ml-training/.venv/bin/python - <<'PY'
-          from pathlib import Path
-          import sys, yaml
-          sys.path.insert(0, str(Path("mlsystem").resolve()))
-          from src.job_schema import JobSpec
-          files = [Path(line.strip()) for line in Path(".tmp/queue_job_files.txt").read_text(encoding="utf-8").splitlines() if line.strip()]
-          for path in files:
-              JobSpec.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")) or {})
-              print(f"ok {path}")
-          print(f"selected_jobs={len(files)}")
-          PY
-
-      - name: Enqueue jobs through server CLI
-        shell: bash
-        run: |
-          mapfile -t files < .tmp/queue_job_files.txt
-          if [ ${#files[@]} -eq 0 ]; then
-            echo "No changed pending job files to enqueue"
-            exit 0
-          fi
-          cd /home/worker/mlsystem
-          /home/worker/ml-training/.venv/bin/python -m src.cli mlflow-setup-experiment --experiment mlsystem-deforest
-          for file in "${files[@]}"; do
-            /home/worker/ml-training/.venv/bin/python -m src.cli enqueue "$GITHUB_WORKSPACE/$file"
-          done
+          echo "cicd-queue is deprecated. Trigger experiments through Airflow DAG mlsystem_experiment_pipeline."

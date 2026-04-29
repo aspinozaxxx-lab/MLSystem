@@ -6,6 +6,7 @@ on:
     branches: [main]
     paths:
       - "ansible/**"
+      - "airflow/**"
       - ".github/workflows/cicd-ansible.yml"
 
 permissions:
@@ -48,6 +49,8 @@ jobs:
           ansible-playbook -i 'localhost,' -c local ansible/playbooks/deploy_code.yml --syntax-check
           ansible-playbook -i 'localhost,' -c local ansible/playbooks/deploy_mlflow.yml --syntax-check
           ansible-playbook -i 'localhost,' -c local ansible/playbooks/deploy.yml --syntax-check
+          ansible-playbook -i 'localhost,' -c local ansible/playbooks/deploy_airflow.yml --syntax-check
+          ansible-playbook -i 'localhost,' -c local ansible/playbooks/disable_legacy_queue.yml --syntax-check
           ansible-playbook -i 'localhost,' -c local ansible/playbooks/runner.yml --syntax-check
 
       - name: Deploy MLflow platform
@@ -58,13 +61,18 @@ jobs:
         run: |
           ansible-playbook -i 'localhost,' -c local ansible/playbooks/deploy_infra.yml
 
-      - name: Validate services and endpoints
+      - name: Deploy Airflow orchestrator
+        env:
+          AIRFLOW_ADMIN_PASSWORD: ${{ secrets.AIRFLOW_ADMIN_PASSWORD }}
+          AIRFLOW_FERNET_KEY: ${{ secrets.AIRFLOW_FERNET_KEY }}
+          AIRFLOW_SECRET_KEY: ${{ secrets.AIRFLOW_SECRET_KEY }}
+          AIRFLOW_POSTGRES_PASSWORD: ${{ secrets.AIRFLOW_POSTGRES_PASSWORD }}
         run: |
-          systemctl is-active mlsystem-web.service
-          systemctl is-active mlsystem-executor.service
-          systemctl is-active mlsystem-preprocess.service
-          curl -fsS http://127.0.0.1:8010/api/state | /home/worker/ml-training/.venv/bin/python -m json.tool
-          curl -fsS http://127.0.0.1:8010/api/preprocess | /home/worker/ml-training/.venv/bin/python -m json.tool
+          ansible-playbook -i 'localhost,' -c local ansible/playbooks/deploy_airflow.yml
+
+      - name: Validate platform and Airflow endpoints
+        run: |
+          curl -fsS http://127.0.0.1:8080/api/v1/health | /home/worker/ml-training/.venv/bin/python -m json.tool
           curl -fsS http://127.0.0.1:5000 >/dev/null
           test "$(curl -fsS http://127.0.0.1:5000/version)" = "3.11.1"
           curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null

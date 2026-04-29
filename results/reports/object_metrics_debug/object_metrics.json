@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "method": "CHTZ Appendix G object F1: ObjF1 = 2TP / (2TP + FP + FN), TP if polygon IoU > 0.5",
+  "matching_method": "greedy_descending_iou",
+  "iou_condition": "strictly_greater_than_0.5",
+  "gt_path": "E:\\Projects\\NSPD\\Images\\Разметка для обучения\\Вырубки от 2026-04-24\\layout.geojson",
+  "prediction_path": "E:\\Projects\\razmetka\\deforest_control_pseudolabel_full_v2.geojson",
+  "gt_crs": "urn:ogc:def:crs:EPSG::3857",
+  "prediction_crs": "urn:ogc:def:crs:EPSG::3857",
+  "crs_note": "Both GeoJSON files declare the same CRS; no reprojection was needed in this local debug.",
+  "gt_objects_loaded": 300,
+  "pred_objects_loaded": 500,
+  "gt_objects_clean": 300,
+  "pred_objects_clean": 500,
+  "metrics": {
+    "object_tp": 42,
+    "object_fp": 458,
+    "object_fn": 258,
+    "object_precision": 0.084,
+    "object_recall": 0.14,
+    "object_f1": 0.105,
+    "object_iou_threshold": 0.5,
+    "matching_method": "greedy_descending_iou"
+  },
+  "unmatched_pred_count": 458,
+  "unmatched_gt_count": 258,
+  "pixel_f1": null,
+  "pixel_f1_note": "Not computed in local debug because no rasterized GT/prediction masks were generated.",
+  "artifacts": {
+    "object_matches_csv": "object_metrics_debug/object_matches.csv",
+    "object_tp_geojson": "object_metrics_debug/object_tp.geojson",
+    "object_fp_geojson": "object_metrics_debug/object_fp.geojson",
+    "object_fn_geojson": "object_metrics_debug/object_fn.geojson",
+    "preview_svg": "object_metrics_debug/object_metrics_preview.svg"
+  }
+}

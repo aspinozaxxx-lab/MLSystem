@@ -8,6 +8,7 @@ on:
       - "mlsystem/**"
       - "mlsystem/**/*"
       - "mlsystem/*.md"
+      - "airflow/**"
       - "configs/**"
       - ".github/workflows/cicd-code.yml"
 
@@ -34,7 +35,7 @@ jobs:
           fi
 
       - name: Compile Python
-        run: /home/worker/ml-training/.venv/bin/python -m compileall -q mlsystem/src
+        run: /home/worker/ml-training/.venv/bin/python -m compileall -q mlsystem/src airflow/dags
 
       - name: Validate configs
         run: |
@@ -86,17 +87,21 @@ jobs:
           PY
 
       - name: Check code deploy playbook syntax
-        run: ansible-playbook -i 'localhost,' -c local ansible/playbooks/deploy_code.yml --syntax-check
+        run: |
+          ansible-playbook -i 'localhost,' -c local ansible/playbooks/deploy_code.yml --syntax-check
+          ansible-playbook -i 'localhost,' -c local ansible/playbooks/deploy_airflow.yml --syntax-check
 
       - name: Deploy application code
         run: ansible-playbook -i 'localhost,' -c local ansible/playbooks/deploy_code.yml -e mlsystem_manage_services=false
 
+      - name: Deploy Airflow DAGs and task code
+        env:
+          AIRFLOW_ADMIN_PASSWORD: ${{ secrets.AIRFLOW_ADMIN_PASSWORD }}
+          AIRFLOW_FERNET_KEY: ${{ secrets.AIRFLOW_FERNET_KEY }}
+          AIRFLOW_SECRET_KEY: ${{ secrets.AIRFLOW_SECRET_KEY }}
+          AIRFLOW_POSTGRES_PASSWORD: ${{ secrets.AIRFLOW_POSTGRES_PASSWORD }}
+        run: ansible-playbook -i 'localhost,' -c local ansible/playbooks/deploy_airflow.yml
+
       - name: Validate services
         run: |
-          systemctl is-active mlsystem-web.service
-          systemctl is-active mlsystem-executor.service
-          if systemctl list-unit-files mlsystem-preprocess.service --no-legend | grep -q mlsystem-preprocess.service; then
-            systemctl is-active mlsystem-preprocess.service
-          fi
-          curl -fsS http://127.0.0.1:8010/api/state | /home/worker/ml-training/.venv/bin/python -m json.tool
-          curl -fsS http://127.0.0.1:8010/api/preprocess | /home/worker/ml-training/.venv/bin/python -m json.tool
+          curl -fsS http://127.0.0.1:8080/api/v1/health | /home/worker/ml-training/.venv/bin/python -m json.tool

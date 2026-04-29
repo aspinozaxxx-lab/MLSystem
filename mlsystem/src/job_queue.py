@@ -7,7 +7,7 @@ import yaml
 from .io_utils import write_json
 from .job_schema import JobSpec
 from .pipeline_config import PipelineConfig, ensure_storage_layout
-from .mlflow_adapter import MLFLOW_NOTE_TAG, build_run_note, compact_run_label, create_queued_job_run
+from .mlflow_adapter import MLFLOW_NOTE_TAG, build_run_note, compact_run_label, create_queued_job_run, trace_stage
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -42,44 +42,45 @@ def enqueue(config: PipelineConfig, source_yaml: Path) -> dict[str, Any]:
         layout_uri=job.data.get("layout_uri"),
         warnings=["queued; training has not started yet"],
     )
-    mlflow_result = create_queued_job_run(
-        config,
-        experiment_name,
-        run_label,
-        params={
-            "job_id": job.job_id,
-            "task": job.task,
-            "class_name": job.class_name,
-            "priority": job.priority,
-            "description": job.description,
-            "params": job.params,
-            "data": job.data,
-            "preprocess": job.preprocess,
-            "train": job.train,
-            "predict": job.predict,
-            "postprocess": job.postprocess,
-            "resources": job.resources.model_dump(),
-        },
-        tags={
-            "job_id": job.job_id,
-            "task": job.task,
-            "class_name": job.class_name or "",
-            "priority": job.priority,
-            "created_at": utc_now(),
-            "run_label": run_label,
-            "experiment_group": job.class_name or "",
-            "model_name": model_name or "",
-            "tile_size": tile_size or "",
-            "stride": stride or "",
-            "train_time_limit_sec": job.train.get("time_limit_sec") or "",
-            "pseudolabel_enabled": str(bool((job.predict.get("pseudolabel") or {}).get("enabled"))).lower(),
-            "postprocess_profile": "auto_tune" if job.postprocess.get("auto_tune") else "default",
-            MLFLOW_NOTE_TAG: run_note,
-            **job.mlflow.tags,
-        },
-        artifacts=[dest],
-        queue_position=queue_position,
-    )
+    with trace_stage("enqueue_job", {"job_id": job.job_id, "task": job.task, "queue_position": queue_position}):
+        mlflow_result = create_queued_job_run(
+            config,
+            experiment_name,
+            run_label,
+            params={
+                "job_id": job.job_id,
+                "task": job.task,
+                "class_name": job.class_name,
+                "priority": job.priority,
+                "description": job.description,
+                "params": job.params,
+                "data": job.data,
+                "preprocess": job.preprocess,
+                "train": job.train,
+                "predict": job.predict,
+                "postprocess": job.postprocess,
+                "resources": job.resources.model_dump(),
+            },
+            tags={
+                "job_id": job.job_id,
+                "task": job.task,
+                "class_name": job.class_name or "",
+                "priority": job.priority,
+                "created_at": utc_now(),
+                "run_label": run_label,
+                "experiment_group": job.class_name or "",
+                "model_name": model_name or "",
+                "tile_size": tile_size or "",
+                "stride": stride or "",
+                "train_time_limit_sec": job.train.get("time_limit_sec") or "",
+                "pseudolabel_enabled": str(bool((job.predict.get("pseudolabel") or {}).get("enabled"))).lower(),
+                "postprocess_profile": "auto_tune" if job.postprocess.get("auto_tune") else "default",
+                MLFLOW_NOTE_TAG: run_note,
+                **job.mlflow.tags,
+            },
+            artifacts=[dest],
+            queue_position=queue_position,
+        )
     metadata = {
         "job_id": job.job_id,
         "task": job.task,

@@ -3,12 +3,55 @@ import json
 import platform
 import socket
 import sys
+from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from .pipeline_config import PipelineConfig
 
 MAX_ARTIFACT_BYTES = 20_000_000
 MLFLOW_NOTE_TAG = "mlflow.note.content"
+MLFLOW_EXCLUDED_ARTIFACT_NAMES = {
+    "accepted.geojson.gz",
+    "accepted.gpkg",
+    "accepted_debug.geojson",
+    "windows_preview.geojson",
+}
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+def _resource_snapshot() -> dict[str, Any]:
+    try:
+        import psutil
+        vm = psutil.virtual_memory()
+        disk = psutil.disk_usage("/")
+        return {
+            "cpu_percent": psutil.cpu_percent(interval=None),
+            "ram_used_gb": round(vm.used / (1024 ** 3), 3),
+            "ram_total_gb": round(vm.total / (1024 ** 3), 3),
+            "ram_percent": vm.percent,
+            "disk_free_gb": round(disk.free / (1024 ** 3), 3),
+            "disk_percent": disk.percent,
+        }
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+@contextmanager
+def trace_stage(name: str, attributes: dict[str, Any] | None = None):
+    """MLflow trace/span wrapper that records only compact scalar attributes."""
+    attributes = attributes or {}
+    try:
+        import mlflow
+        if hasattr(mlflow, "start_span"):
+            with mlflow.start_span(name=name) as span:
+                if hasattr(span, "set_attributes"):
+                    span.set_attributes({key: str(value) for key, value in attributes.items() if value is not None})
+                yield
+            return
+    except Exception:
+        pass
+    yield
 
 def compact_run_label(job_id: str, model_name: str | None = None, tile_size: int | str | None = None) -> str:
     """Return a short MLflow run label that stays useful when UI columns are narrow."""
@@ -53,10 +96,12 @@ def build_run_note(
     metrics: dict[str, Any] | None = None,
     artifacts: dict[str, Any] | None = None,
     warnings: list[str] | None = None,
+    counts: dict[str, Any] | None = None,
 ) -> str:
     metrics = metrics or {}
     artifacts = artifacts or {}
     warnings = warnings or []
+    counts = counts or {}
     lines = [
         f"# {run_label}",
         "",
@@ -68,13 +113,32 @@ def build_run_note(
         lines.append(f"- images: `{data_uri}`")
     if layout_uri:
         lines.append(f"- layout: `{layout_uri}`")
+    if counts:
+        lines.extend(["", "## Dataset"])
+        for key in ("train_scene_count", "val_scene_count", "test_scene_count", "positive_scene_count", "negative_scene_count"):
+            if counts.get(key) is not None:
+                lines.append(f"- `{key}`: `{counts[key]}`")
     metric_keys = [
+        "best_val_object_f1",
+        "val/object_f1",
+        "val/object_precision",
+        "val/object_recall",
+        "test/object_f1",
+        "test/object_precision",
+        "test/object_recall",
+        "pseudolabel/object_f1",
+        "pseudolabel/object_precision",
+        "pseudolabel/object_recall",
         "best_val_iou",
         "val/iou",
         "val/dice",
-        "val/f1",
+        "val/pixel_f1",
+        "test/pixel_f1",
+        "test/pixel_iou",
+        "test/pixel_dice",
         "accepted_objects",
         "accepted_geojson_mb",
+        "top500_applied",
     ]
     visible_metrics = {key: metrics.get(key) for key in metric_keys if metrics.get(key) is not None}
     if visible_metrics:
@@ -157,8 +221,11 @@ def setup_deforest_experiment(config: PipelineConfig, experiment_name: str = "ml
             "- images: `s3://mlsystems/images/`",
             "- layouts: `s3://mlsystems/layouts/deforest/`",
             "- reports: `results/reports/deforest_experiments_summary.md`",
+            "- acceptance_metric: `object_f1`",
+            "- object_iou_threshold: `0.5`",
             "",
-            "Current notes: layout coverage is incomplete; some `scenes.txt` entries do not yet match uploaded images.",
+            "Acceptance metric follows CHTZ Appendix G: object-level F1 over polygons with one-to-one matching and IoU > 0.5.",
+            "Pixel metrics are auxiliary diagnostics only. Object F1 is computed after vectorization/postprocess.",
         ]
     )
     tags = {
@@ -170,7 +237,11 @@ def setup_deforest_experiment(config: PipelineConfig, experiment_name: str = "ml
         "storage": "s3://mlsystems",
         "images_uri": "s3://mlsystems/images/",
         "layout_uri": "s3://mlsystems/layouts/deforest/",
-        "data_status": "partial_layout_scene_matching",
+        "acceptance_metric": "object_f1",
+        "object_iou_threshold": "0.5",
+        "metric_method": "CHTZ Appendix G polygon object matching",
+        "pixel_metrics_role": "auxiliary",
+        "data_status": "full_or_partial_scene_matching_depends_on_job",
         "results_summary": "results/reports/deforest_experiments_summary.md",
     }
     for key, value in tags.items():
@@ -203,22 +274,17 @@ class MLflowJobRun:
         self._run = None
         self.experiment_id: str | None = None
         self.run_id: str | None = None
+        self.started_at: str | None = None
+        self.resource_start: dict[str, Any] | None = None
 
     def __enter__(self) -> "MLflowJobRun":
         import mlflow
         self._mlflow = mlflow
         mlflow.set_tracking_uri(self.config.mlflow_tracking_uri_internal)
-        if hasattr(mlflow, "enable_system_metrics_logging"):
-            try:
-                mlflow.enable_system_metrics_logging()
-                if hasattr(mlflow, "set_system_metrics_sampling_interval"):
-                    mlflow.set_system_metrics_sampling_interval(1)
-                if hasattr(mlflow, "set_system_metrics_samples_before_logging"):
-                    mlflow.set_system_metrics_samples_before_logging(1)
-            except Exception:
-                pass
         experiment = mlflow.set_experiment(self.experiment_name)
         self.experiment_id = experiment.experiment_id
+        self.started_at = utc_now()
+        self.resource_start = _resource_snapshot()
         try:
             if self.existing_run_id:
                 self._run = mlflow.start_run(run_id=self.existing_run_id, log_system_metrics=True)
@@ -237,6 +303,7 @@ class MLflowJobRun:
                 "mlsystem.cpu_only": str(self.config.cpu_only).lower(),
                 "mlsystem.tracking_uri_internal": self.config.mlflow_tracking_uri_internal,
                 "mlsystem.tracking_uri_external": self.config.mlflow_tracking_uri_external,
+                "mlsystem.started_at": self.started_at,
                 **self.tags,
             }
         )
@@ -254,6 +321,20 @@ class MLflowJobRun:
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
         if not self._mlflow:
             return
+        finished_at = utc_now()
+        resource_finish = _resource_snapshot()
+        self.set_tags(
+            {
+                "mlsystem.finished_at": finished_at,
+                "mlsystem.run_exception": "" if exc_type is None else str(exc_type),
+            }
+        )
+        final_metrics: dict[str, float] = {}
+        for key, value in resource_finish.items():
+            if isinstance(value, (int, float)):
+                final_metrics[f"resource/final_{key}"] = float(value)
+        if final_metrics:
+            self.log_metrics(final_metrics)
         self._mlflow.end_run(status="FAILED" if exc_type else "FINISHED")
 
     def log_params(self, params: dict[str, Any]) -> None:
@@ -278,8 +359,18 @@ class MLflowJobRun:
         if not self._mlflow:
             return
         for artifact in artifacts:
+            if artifact.name in MLFLOW_EXCLUDED_ARTIFACT_NAMES:
+                continue
             if artifact.exists() and artifact.is_file() and artifact.stat().st_size < MAX_ARTIFACT_BYTES:
                 self._mlflow.log_artifact(str(artifact))
+
+    def resource_summary(self) -> dict[str, Any]:
+        return {
+            "started_at": self.started_at,
+            "start": self.resource_start,
+            "finish": _resource_snapshot(),
+            "system_metrics_source": "mlflow.start_run(log_system_metrics=True); final resource snapshot stored in summaries",
+        }
 
     def log_table(self, data: Any, artifact_file: str) -> bool:
         if not self._mlflow or not hasattr(self._mlflow, "log_table"):
