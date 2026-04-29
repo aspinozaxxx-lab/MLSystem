@@ -1,0 +1,100 @@
+{
+  "date": "2026-04-29",
+  "status": "success",
+  "airflow": {
+    "ui": "http://172.26.12.169:8081",
+    "dag_id": "mlsystem_experiment_pipeline",
+    "dag_run_id": "AIR-real-mini-deforest-r5",
+    "dag_run_url": "http://172.26.12.169:8081/dags/mlsystem_experiment_pipeline/grid?dag_run_id=AIR-real-mini-deforest-r5"
+  },
+  "mlflow": {
+    "tracking_uri": "http://172.26.12.169:5000",
+    "experiment_id": "1",
+    "experiment_name": "mlsystem-deforest",
+    "run_id": "6ba597b9d1e34200a5894a96cbd3873c",
+    "run_url": "http://172.26.12.169:5000/#/experiments/1/runs/6ba597b9d1e34200a5894a96cbd3873c"
+  },
+  "stage_status": {
+    "validate_experiment_config": "success",
+    "check_s3_layout": "success",
+    "match_scenes": "success",
+    "validate_scene_matching": "success",
+    "inventory_images": "success",
+    "prepare_dataset_manifest": "success",
+    "prepare_train_tiles_or_windows": "success",
+    "validate_dataset": "success",
+    "create_mlflow_run": "success",
+    "train_model": "success",
+    "evaluate_pixel_metrics": "success",
+    "predict_validation_scenes": "success",
+    "vectorize_validation_predictions": "success",
+    "compute_object_f1": "success",
+    "predict_pseudolabel_scenes": "success",
+    "stitch_probability_maps": "success",
+    "vectorize_pseudolabel": "success",
+    "postprocess_pseudolabel": "success",
+    "export_pseudolabel_artifacts": "success",
+    "generate_prediction_examples": "success",
+    "log_mlflow_artifacts": "success",
+    "write_codex_api_summary": "success",
+    "finalize_mlflow_run": "success"
+  },
+  "metrics": {
+    "train/loss": 1.7090254426002502,
+    "train/iou": 0.07215563456252842,
+    "val/iou": 3.814697265623545e-13,
+    "val/dice": 3.814697265623545e-13,
+    "val/pixel_f1": 1.0000075293933967e-7,
+    "val/object_f1": 0.0,
+    "val/object_precision": 0.0,
+    "val/object_recall": 0.0,
+    "val/object_tp": 0.0,
+    "val/object_fp": 1.0,
+    "val/object_fn": 300.0,
+    "accepted_objects": 1.0,
+    "coverage_fraction": 0.7723794744217091
+  },
+  "mlflow_artifacts": [
+    "AIR-real-mini-deforest-r5.accepted.geojson",
+    "codex_summary.json",
+    "coverage_report.json",
+    "history.csv",
+    "history.json",
+    "inference_timing_report.json",
+    "object_matches.csv",
+    "object_metrics.json",
+    "postprocess_debug.json",
+    "prediction_examples.html",
+    "prediction_examples_table.json",
+    "probability_preview_KV3_30861_31739-00_KANOPUS_20230826_035108_20.L2.png",
+    "pseudolabel_gpkg_error.txt",
+    "pseudolabel_scenes.txt",
+    "pseudolabel_summary.json",
+    "run_summary.json",
+    "scene_matching_report.json",
+    "scenes_match_report.json",
+    "segformer_tiling_debug.json",
+    "summary.json",
+    "tiling_debug.json",
+    "tiny_unet_4ch.pt",
+    "train_dataset_report.json",
+    "train_scenes.txt",
+    "val_scenes.txt"
+  ],
+  "forbidden_artifacts_logged": {
+    "accepted.geojson.gz": false,
+    "accepted.gpkg": false,
+    "accepted_debug.geojson": false,
+    "windows_preview.geojson": false
+  },
+  "xcom": {
+    "largest_observed_bytes": 2784,
+    "heavy_payloads_in_xcom": false
+  },
+  "remaining_limitations": [
+    "TrainingPipeline still delegates heavy ML work to real_train.run_real_train.",
+    "Downstream Airflow tasks validate/report outputs produced by train_model rather than running separate compute tasks.",
+    "Airflow mini configs enable a validation holdout fallback for tiny scene subsets.",
+    "Full extraction of real_train into independent training/inference/postprocess tasks remains next work."
+  ]
+}

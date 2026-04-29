@@ -29,22 +29,21 @@ Compact Codex-readable status is also written on the server:
 /data/mlsystem/airflow/status/<experiment_id>/stages/*.json
 ```
 
-## Mini Acceptance Config
+## Real Mini Acceptance Config
 
-This config was used for the non-synthetic acceptance run `AIR-mini-deforest-r4`.
+This config was used for the real ML acceptance run `AIR-real-mini-deforest-r5`.
 
 ```json
 {
-  "experiment_id": "AIR-mini-deforest-r4",
+  "experiment_id": "AIR-real-mini-deforest-r5",
   "class_name": "deforest",
   "task": "train_predict_pseudolabel",
-  "smoke": false,
   "images_uri": "s3://mlsystems/images/",
   "layout_uri": "s3://mlsystems/layouts/deforest/",
   "scenes_file": "scenes.txt",
   "annotation_file": "auto",
   "model": {
-    "name": "unet_small",
+    "name": "tiny_unet_4ch",
     "input_bands": [1, 2, 3, 4],
     "preview_bands": [4, 1, 2]
   },
@@ -52,35 +51,60 @@ This config was used for the non-synthetic acceptance run `AIR-mini-deforest-r4`
     "tile_size": 512,
     "stride": 384,
     "context": 64,
-    "include_negative_scenes": false
+    "include_negative_scenes": true,
+    "max_scenes": 2,
+    "max_train_tiles": 64,
+    "max_val_tiles": 16
   },
   "train": {
     "enabled": true,
-    "time_limit_sec": 300,
-    "epochs": 1,
+    "time_limit_sec": 600,
+    "max_epochs": 2,
     "batch_size": 1,
-    "workers": 0
+    "workers": 0,
+    "augmentations": {
+      "flips": true,
+      "rot90": true
+    }
   },
   "pseudolabel": {
     "enabled": true,
-    "run_on": "matched_scenes",
-    "max_scenes": 2,
-    "full_scene": false
+    "run_on": "validation_scenes",
+    "max_scenes": 1,
+    "full_scene": true
   },
   "postprocess": {
     "enabled": true,
     "max_geojson_mb": 20,
     "max_objects": 500,
-    "thresholds": [0.45],
-    "min_object_area_m2_candidates": [1000],
-    "simplify_tolerance_m_candidates": [5]
+    "keep_largest_if_too_many": true,
+    "thresholds": [0.35, 0.5],
+    "min_object_area_m2_candidates": [500, 1000],
+    "simplify_tolerance_m_candidates": [2, 5]
   },
   "mlflow": {
-    "experiment": "mlsystem-airflow-acceptance"
+    "experiment": "mlsystem-deforest"
   }
 }
 ```
 
-## Current Limitation
+## Current Status
 
-As of the acceptance run, Airflow executes real S3 layout checking, scene matching, status JSON, and MLflow run creation/finalization. Training, inference, stitching, vectorization, postprocessing, object F1, prediction examples, and artifact export are still placeholders in `src.pipeline.airflow_tasks`.
+As of `AIR-real-mini-deforest-r5`, Airflow runs a real MLSystem mini pipeline:
+
+- real S3 layout check and scene matching;
+- dataset manifest and train/validation scene selection;
+- `TrainingPipeline -> real_train.run_real_train` for real CPU training;
+- real full-scene pseudolabel inference through `SceneInferenceRunner`;
+- real stitching, vectorization, postprocess and object F1;
+- MLflow metrics/artifacts logging;
+- Airflow/Codex summaries under `/data/mlsystem/airflow/status/<experiment_id>/`.
+
+The remaining compatibility seam is intentional: `training_pipeline.py` still delegates the heavy implementation to `real_train.run_real_train`. Airflow task IDs after `train_model` are real validation/reporting gates over files and metrics produced by the pipeline, but the physical ML computation is still executed inside the `train_model` stage until the legacy facade is split further.
+
+Acceptance run:
+
+```text
+Airflow run: http://172.26.12.169:8081/dags/mlsystem_experiment_pipeline/grid?dag_run_id=AIR-real-mini-deforest-r5
+MLflow run: http://172.26.12.169:5000/#/experiments/1/runs/6ba597b9d1e34200a5894a96cbd3873c
+```
