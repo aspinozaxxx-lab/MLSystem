@@ -135,6 +135,20 @@
     - "{{ airflow_status_root }}"
   become: true
 
+- name: Ensure Airflow can write lightweight MLSystem runtime directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: worker
+    group: "0"
+    mode: "0775"
+    recurse: true
+  loop:
+    - "{{ mlsystem_data_root }}/mlsystem/storage/system"
+    - "{{ mlsystem_data_root }}/mlsystem/artifacts"
+    - "{{ mlsystem_data_root }}/mlsystem/logs"
+  become: true
+
 - name: Start Airflow services
   ansible.builtin.command:
     cmd: docker compose --env-file "{{ airflow_env_path }}" -f "{{ airflow_compose_path }}" up -d airflow-webserver airflow-scheduler airflow-triggerer
