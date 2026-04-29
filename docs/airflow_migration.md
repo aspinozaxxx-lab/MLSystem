@@ -56,6 +56,14 @@ ssh -L 8081:127.0.0.1:8081 mlserver
 
 Минимальный smoke можно запустить DAG `mlsystem_smoke_pipeline`; он trigger-ит основной DAG с synthetic конфигом.
 
+Проверенный внешний URL Airflow:
+
+```text
+http://172.26.12.169:8081
+```
+
+`http://mlserver:8081` удобен как SSH/server alias; с внешних машин использовать IP или DNS, который резолвится в сервер.
+
 Пример API:
 
 ```bash
@@ -116,6 +124,35 @@ curl -u "$AIRFLOW_USER:$AIRFLOW_PASSWORD" \
 23. `finalize_mlflow_run`
 
 Некоторые стадии пока являются orchestration-boundary wrappers, если физическая ML-логика еще выполняется внутри существующих MLSystem modules.
+
+## Приемка 2026-04-29
+
+Проверочный non-synthetic run:
+
+```text
+DAG: mlsystem_experiment_pipeline
+run_id: AIR-mini-deforest-r4
+MLflow run: 1257f447516c416dab09fc89d80e74b3
+MLflow URL: http://172.26.12.169:5000/#/experiments/3/runs/1257f447516c416dab09fc89d80e74b3
+```
+
+Что реально выполнено:
+
+- Airflow UI/API доступны на `8081`.
+- Legacy services `mlsystem-executor`, `mlsystem-web`, `mlsystem-preprocess` disabled/inactive.
+- `check_s3_layout` реально проверяет S3 layout и пишет `/data/mlsystem/storage/system/s3_layout.json`.
+- `match_scenes` реально читает `s3://mlsystems/layouts/deforest/.../scenes.txt`, листит `s3://mlsystems/images/`, строит `scene_matching_report.json`.
+- `create_mlflow_run` реально создает MLflow run и пишет params.
+- `finalize_mlflow_run` реально логирует `summary.json` в MLflow artifacts.
+
+Что пока не является настоящим ML pipeline:
+
+- `train_model` - placeholder, training loop не запускается.
+- `evaluate_pixel_metrics`, `compute_object_f1` - placeholder, metrics не считаются.
+- `predict_validation_scenes`, `predict_pseudolabel_scenes` - placeholder для non-smoke, модельный inference не запускается.
+- `stitch_probability_maps`, `vectorize_pseudolabel`, `postprocess_pseudolabel`, `export_pseudolabel_artifacts`, `generate_prediction_examples`, `log_mlflow_artifacts` - orchestration-boundary wrappers без production artifacts.
+
+Поэтому Airflow уже заменяет legacy queue как механизм запуска, статусов и логов, но полная приемка как real ML orchestrator требует подключить refactored `training`/`inference`/`postprocessing` modules вместо placeholders.
 
 ## Legacy disable
 

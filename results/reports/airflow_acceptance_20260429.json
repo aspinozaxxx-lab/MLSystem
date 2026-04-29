@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "date": "2026-04-29",
+  "airflow": {
+    "local_url": "http://127.0.0.1:8081",
+    "external_url": "http://172.26.12.169:8081",
+    "health": "healthy",
+    "mlserver_alias": "works as server/SSH alias, not guaranteed external DNS"
+  },
+  "legacy_services": {
+    "mlsystem-executor.service": {
+      "enabled": "disabled",
+      "active": "inactive"
+    },
+    "mlsystem-web.service": {
+      "enabled": "disabled",
+      "active": "inactive"
+    },
+    "mlsystem-preprocess.service": {
+      "enabled": "disabled",
+      "active": "inactive"
+    }
+  },
+  "workflows": {
+    "cicd-code": "workflow_dispatch and push on mlsystem/**, airflow/**, configs/**",
+    "cicd-ansible": "workflow_dispatch and push on ansible/**, airflow/**",
+    "cicd-queue": "workflow_dispatch only, deprecated",
+    "sync-results": "workflow_dispatch only, deprecated"
+  },
+  "mini_run": {
+    "dag_id": "mlsystem_experiment_pipeline",
+    "run_id": "AIR-mini-deforest-r4",
+    "status": "success",
+    "airflow_url": "http://172.26.12.169:8081/dags/mlsystem_experiment_pipeline/grid?dag_run_id=AIR-mini-deforest-r4",
+    "mlflow_run_id": "1257f447516c416dab09fc89d80e74b3",
+    "mlflow_url": "http://172.26.12.169:5000/#/experiments/3/runs/1257f447516c416dab09fc89d80e74b3",
+    "real_work": [
+      "config validation",
+      "S3 layout check",
+      "scene matching",
+      "scene matching validation",
+      "dataset_manifest.json write",
+      "MLflow run create/finalize"
+    ],
+    "placeholder_work": [
+      "train_model",
+      "evaluate_pixel_metrics",
+      "predict_validation_scenes",
+      "vectorize_validation_predictions",
+      "compute_object_f1",
+      "predict_pseudolabel_scenes",
+      "stitch_probability_maps",
+      "vectorize_pseudolabel",
+      "postprocess_pseudolabel",
+      "export_pseudolabel_artifacts",
+      "generate_prediction_examples",
+      "log_mlflow_artifacts"
+    ],
+    "mlflow_metrics": {},
+    "mlflow_artifacts": [
+      "summary.json"
+    ],
+    "missing_expected_artifacts": [
+      "train_scenes.txt",
+      "pseudolabel_scenes.txt",
+      "accepted geojson",
+      "codex_summary.json",
+      "prediction_examples.html"
+    ],
+    "forbidden_artifacts_found": []
+  },
+  "verdict": {
+    "queue_replacement": true,
+    "full_real_ml_orchestrator": false,
+    "reason": "Core ML stages are still placeholders in src.pipeline.airflow_tasks."
+  }
+}
