@@ -18,6 +18,9 @@ airflow_admin_password: "{{ lookup('env', 'AIRFLOW_ADMIN_PASSWORD') | default(''
 airflow_fernet_key: "{{ lookup('env', 'AIRFLOW_FERNET_KEY') | default('', true) }}"
 airflow_secret_key: "{{ lookup('env', 'AIRFLOW_SECRET_KEY') | default('', true) }}"
 airflow_postgres_password: "{{ lookup('env', 'AIRFLOW_POSTGRES_PASSWORD') | default('', true) }}"
+airflow_s3_access_key: "{{ lookup('env', 'AWS_ACCESS_KEY_ID') | default('', true) }}"
+airflow_s3_secret_key: "{{ lookup('env', 'AWS_SECRET_ACCESS_KEY') | default('', true) }}"
+airflow_s3_alias: mlplatform
 airflow_pip_requirements: "pydantic PyYAML mlflow boto3 numpy shapely rasterio pillow"
 airflow_executor: LocalExecutor
 airflow_uid: "50000"

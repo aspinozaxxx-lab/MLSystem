@@ -37,6 +37,31 @@
     airflow_postgres_password_resolved: "{{ airflow_postgres_password if airflow_postgres_password | length > 0 else ((airflow_existing_env | default({})).get('POSTGRES_PASSWORD', lookup('password', '/dev/null length=32 chars=ascii_letters,digits'))) }}"
   no_log: true
 
+- name: Check worker MinIO client config
+  ansible.builtin.stat:
+    path: /home/worker/.mc/config.json
+  register: airflow_worker_mc_config_stat
+  no_log: true
+
+- name: Read worker MinIO client config for Airflow S3 credentials
+  ansible.builtin.slurp:
+    path: /home/worker/.mc/config.json
+  register: airflow_worker_mc_config_file
+  no_log: true
+  when: airflow_worker_mc_config_stat.stat.exists
+
+- name: Parse worker MinIO client alias
+  ansible.builtin.set_fact:
+    airflow_worker_mc_alias: "{{ ((airflow_worker_mc_config_file.content | b64decode | from_json).aliases | default({})).get(airflow_s3_alias, {}) }}"
+  no_log: true
+  when: airflow_worker_mc_config_stat.stat.exists
+
+- name: Resolve Airflow S3 credentials
+  ansible.builtin.set_fact:
+    airflow_s3_access_key_resolved: "{{ airflow_s3_access_key if airflow_s3_access_key | length > 0 else (airflow_worker_mc_alias.accessKey | default('')) }}"
+    airflow_s3_secret_key_resolved: "{{ airflow_s3_secret_key if airflow_s3_secret_key | length > 0 else (airflow_worker_mc_alias.secretKey | default('')) }}"
+  no_log: true
+
 - name: Validate Airflow secrets are available
   ansible.builtin.assert:
     that:
@@ -44,7 +69,9 @@
       - airflow_fernet_key_resolved | length > 0
       - airflow_secret_key_resolved | length > 0
       - airflow_postgres_password_resolved | length > 0
-    fail_msg: "Airflow secrets could not be resolved from protected env vars, existing {{ airflow_env_path }}, or generated first-run values."
+      - airflow_s3_access_key_resolved | length > 0
+      - airflow_s3_secret_key_resolved | length > 0
+    fail_msg: "Airflow secrets could not be resolved from protected env vars, existing {{ airflow_env_path }}, generated first-run values, or worker mc config."
     quiet: true
   no_log: true
 
