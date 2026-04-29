@@ -60,6 +60,7 @@
     - { path: "{{ mlsystem_storage_root }}/cache" }
     - { path: "{{ mlsystem_storage_root }}/experiments" }
     - { path: "{{ mlsystem_storage_root }}/system", group: root, mode: "0775" }
+  become: true
 
 - name: Ensure MLSystem system config directory exists
   ansible.builtin.file:
