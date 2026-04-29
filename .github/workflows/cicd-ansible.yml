@@ -72,7 +72,7 @@ jobs:
 
       - name: Validate platform and Airflow endpoints
         run: |
-          curl -fsS http://127.0.0.1:8080/api/v1/health | /home/worker/ml-training/.venv/bin/python -m json.tool
+          curl -fsS http://127.0.0.1:8081/api/v1/health | /home/worker/ml-training/.venv/bin/python -m json.tool
           curl -fsS http://127.0.0.1:5000 >/dev/null
           test "$(curl -fsS http://127.0.0.1:5000/version)" = "3.11.1"
           curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null

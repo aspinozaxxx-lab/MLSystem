@@ -18,6 +18,7 @@
   - `cicd-queue` оставлен manual-only deprecated.
   - `sync-results` оставлен manual-only deprecated.
 - Добавлен playbook `disable_legacy_queue.yml` с backup legacy root перед остановкой services.
+- Airflow UI port по умолчанию: `8081`, чтобы не конфликтовать с legacy Streamlit на `8080` до smoke success.
 
 ## Airflow DAG stages
 

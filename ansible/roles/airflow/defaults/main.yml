@@ -9,7 +9,7 @@ airflow_postgres_data_root: "{{ airflow_project_root }}/postgres"
 airflow_compose_path: "{{ airflow_project_root }}/docker-compose.yml"
 airflow_env_path: /etc/mlsystem/airflow.env
 airflow_image: apache/airflow:2.9.3-python3.11
-airflow_webserver_port: 8080
+airflow_webserver_port: 8081
 airflow_admin_user: admin
 airflow_admin_email: admin@example.local
 airflow_admin_firstname: MLSystem

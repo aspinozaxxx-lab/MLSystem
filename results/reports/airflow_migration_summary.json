@@ -26,6 +26,7 @@
   },
   "main_dag": "mlsystem_experiment_pipeline",
   "smoke_dag": "mlsystem_smoke_pipeline",
+  "airflow_ui_port": 8081,
   "stages": [
     "validate_experiment_config",
     "check_s3_layout",

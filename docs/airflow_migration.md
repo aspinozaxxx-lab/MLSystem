@@ -39,13 +39,13 @@ ansible-playbook -i ansible/inventory/hosts.ini ansible/playbooks/deploy_airflow
 Airflow UI:
 
 ```text
-http://mlserver:8080
+http://mlserver:8081
 ```
 
 Если внешний доступ закрыт, использовать SSH tunnel:
 
 ```bash
-ssh -L 8080:127.0.0.1:8080 mlserver
+ssh -L 8081:127.0.0.1:8081 mlserver
 ```
 
 ## Запуск эксперимента
@@ -60,7 +60,7 @@ ssh -L 8080:127.0.0.1:8080 mlserver
 curl -u "$AIRFLOW_USER:$AIRFLOW_PASSWORD" \
   -H "Content-Type: application/json" \
   -X POST \
-  http://127.0.0.1:8080/api/v1/dags/mlsystem_experiment_pipeline/dagRuns \
+  http://127.0.0.1:8081/api/v1/dags/mlsystem_experiment_pipeline/dagRuns \
   -d '{"conf":{"experiment_id":"deforest_segformer_b0_t1024_v1","class_name":"deforest","task":"train_predict_pseudolabel","images_uri":"s3://mlsystems/images/","layout_uri":"s3://mlsystems/layouts/deforest/","scenes_file":"scenes.txt","annotation_file":"auto","model":{"name":"segformer_b0","input_bands":[1,2,3,4],"preview_bands":[4,1,2]},"preprocess":{"tile_size":1024,"stride":768,"context":128,"include_negative_scenes":true},"train":{"enabled":true,"time_limit_sec":14400,"early_stopping":true,"batch_size":"auto","workers":0},"pseudolabel":{"enabled":true,"run_on":"all_available_images","full_scene":true},"postprocess":{"enabled":true,"max_geojson_mb":20,"max_objects":500,"keep_largest_if_too_many":true,"thresholds":[0.35,0.45,0.55,0.65],"min_object_area_m2_candidates":[500,1000,2000,5000],"simplify_tolerance_m_candidates":[2,5,10,20]},"mlflow":{"experiment":"mlsystem-deforest"}}}'
 ```
 
