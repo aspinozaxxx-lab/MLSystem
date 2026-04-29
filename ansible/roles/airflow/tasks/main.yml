@@ -122,6 +122,19 @@
   changed_when: true
   become: true
 
+- name: Ensure Airflow writable mounted directories ownership
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ airflow_uid }}"
+    group: "0"
+    mode: "0775"
+    recurse: true
+  loop:
+    - "{{ airflow_logs_root }}"
+    - "{{ airflow_status_root }}"
+  become: true
+
 - name: Start Airflow services
   ansible.builtin.command:
     cmd: docker compose --env-file "{{ airflow_env_path }}" -f "{{ airflow_compose_path }}" up -d airflow-webserver airflow-scheduler airflow-triggerer
