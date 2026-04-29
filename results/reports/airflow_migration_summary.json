@@ -78,5 +78,6 @@
     "AIRFLOW_FERNET_KEY",
     "AIRFLOW_SECRET_KEY",
     "AIRFLOW_POSTGRES_PASSWORD"
-  ]
+  ],
+  "airflow_secret_source": "protected env vars or generated first-run values persisted in /etc/mlsystem/airflow.env mode 0600"
 }

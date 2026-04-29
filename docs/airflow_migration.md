@@ -30,6 +30,8 @@ export AIRFLOW_SECRET_KEY='...'
 export AIRFLOW_POSTGRES_PASSWORD='...'
 ```
 
+Если protected env vars отсутствуют при первом deploy, Ansible role сгенерирует first-run значения и сохранит их в `/etc/mlsystem/airflow.env` с mode `0600`. Последующие deploy переиспользуют этот protected env file, если явные env vars не переданы.
+
 Deploy:
 
 ```bash

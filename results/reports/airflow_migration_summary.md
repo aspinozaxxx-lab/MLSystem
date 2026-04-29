@@ -75,6 +75,8 @@ Airflow secrets не коммитятся. Deploy ожидает protected env v
 - `AIRFLOW_SECRET_KEY`
 - `AIRFLOW_POSTGRES_PASSWORD`
 
+Если protected env vars отсутствуют, Ansible role генерирует first-run значения и сохраняет их в `/etc/mlsystem/airflow.env` с mode `0600`; следующие deploy переиспользуют этот файл.
+
 ## Legacy policy
 
 Legacy queue services отключаются только отдельным playbook после smoke success:
