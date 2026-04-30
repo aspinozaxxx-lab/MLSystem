@@ -49,8 +49,20 @@ def s3_client(config: PipelineConfig):
 
 
 def cached_s3_object_path(config: PipelineConfig, bucket: str, key: str) -> Path:
-    cache_roots = config.known_data_roots or [Path("/data/mlsystem/cache")]
-    root = Path(cache_roots[0]) / "s3" / bucket
+    env_root = os.getenv("MLSYSTEM_S3_CACHE_DIR")
+    cache_roots = ([Path(env_root)] if env_root else []) + [Path(root) for root in (config.known_data_roots or [])]
+    cache_roots.append(Path("/data/mlsystem/cache"))
+    root: Path | None = None
+    for candidate in cache_roots:
+        candidate_root = candidate / "s3" / bucket
+        try:
+            candidate_root.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            continue
+        root = candidate_root
+        break
+    if root is None:
+        raise RuntimeError(f"No writable S3 cache root found for s3://{bucket}/{key}")
     path = root / key
     if path.exists() and path.stat().st_size > 0:
         return path
