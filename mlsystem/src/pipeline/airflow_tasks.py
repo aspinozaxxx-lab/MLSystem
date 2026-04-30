@@ -213,6 +213,11 @@ def _build_airflow_job(conf: AirflowExperimentConfig) -> JobSpec:
         train_cfg["max_train_tiles"] = preprocess_cfg["max_train_tiles"]
     if "max_val_tiles" in preprocess_cfg and "max_val_tiles" not in train_cfg:
         train_cfg["max_val_tiles"] = preprocess_cfg["max_val_tiles"]
+    if isinstance(train_cfg.get("early_stopping"), bool):
+        train_cfg["early_stopping"] = {
+            "enabled": bool(train_cfg["early_stopping"]),
+            "patience": train_cfg.get("early_stopping_patience", 10),
+        }
     train_cfg.setdefault("allow_train_val_sample_fallback", True)
     train_cfg.setdefault("model", model_cfg)
     train_cfg.setdefault("model_name", model_cfg.get("name") or "tiny_unet_4ch")
