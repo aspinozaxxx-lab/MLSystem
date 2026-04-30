@@ -30,6 +30,7 @@ class SceneInferenceConfig:
     context_bounds: int | None = None
     full_scene: bool = True
     max_windows_per_scene: int | None = None
+    batch_size: int = 1
 
 
 @dataclass
@@ -54,6 +55,18 @@ def _predict_probability(model: torch.nn.Module, device: torch.device, arr: np.n
             logits = torch.nn.functional.interpolate(logits, size=arr.shape[-2:], mode="bilinear", align_corners=False)
         prob = torch.sigmoid(logits)[0, 0].detach().cpu().numpy()
     return prob, model_output_shape
+
+
+def _predict_probability_batch(model: torch.nn.Module, device: torch.device, arrays: list[np.ndarray]) -> tuple[np.ndarray, list[int]]:
+    batch = np.stack([normalize_image(arr) for arr in arrays])
+    sample = torch.from_numpy(batch).to(device)
+    with torch.no_grad():
+        logits = model(sample)
+        model_output_shape = list(logits.shape)
+        if tuple(logits.shape[-2:]) != tuple(arrays[0].shape[-2:]):
+            logits = torch.nn.functional.interpolate(logits, size=arrays[0].shape[-2:], mode="bilinear", align_corners=False)
+        probs = torch.sigmoid(logits)[:, 0].detach().cpu().numpy()
+    return probs, model_output_shape
 
 
 def _window_feature(ds: Any, window: Any, props: dict[str, Any]) -> dict[str, Any]:
@@ -97,6 +110,57 @@ class SceneInferenceRunner:
                 )
                 skipped_reasons: dict[str, int] = {}
                 predicted_count = 0
+                batch_size = max(1, int(cfg.batch_size or 1))
+                pending: list[tuple[Any, Any, dict[str, Any], np.ndarray]] = []
+
+                def flush_pending() -> None:
+                    nonlocal predicted_count
+                    if not pending:
+                        return
+                    arrays = [item[3] for item in pending]
+                    probs, model_output_shape = _predict_probability_batch(self.model, self.device, arrays)
+                    for (tile_window_item, raster_window_item, props_item, arr_item), prob in zip(pending, probs):
+                        insert = accumulator.add_tile(tile_window_item, prob)
+                        predicted_count += 1
+                        props_item["predicted"] = True
+                        windows_preview_features.append(_window_feature(ds, raster_window_item, props_item))
+                        insert_props = {
+                            **props_item,
+                            "model_input_shape": [
+                                len(pending),
+                                int(arr_item.shape[0]),
+                                int(arr_item.shape[1]),
+                                int(arr_item.shape[2]),
+                            ],
+                            "model_output_shape": model_output_shape,
+                            "inference_batch_size": batch_size,
+                            "crop_mode": cfg.crop_mode,
+                            "stitch_mode": cfg.stitch_mode,
+                            "center_size": cfg.center_size,
+                            "context_bounds": cfg.context_bounds,
+                            **insert,
+                            "expected_insert_bounds": [
+                                insert["insert_x"],
+                                insert["insert_y"],
+                                insert["insert_x"] + insert["insert_width"],
+                                insert["insert_y"] + insert["insert_height"],
+                            ],
+                            "actual_insert_bounds": [
+                                insert["insert_x"],
+                                insert["insert_y"],
+                                insert["insert_x"] + insert["insert_width"],
+                                insert["insert_y"] + insert["insert_height"],
+                            ],
+                            "predicted_nonzero_fraction": float(
+                                np.count_nonzero(prob[: tile_window_item.height, : tile_window_item.width] > cfg.threshold)
+                                / max(1, tile_window_item.width * tile_window_item.height)
+                            ),
+                        }
+                        insert_window = Window(insert["insert_x"], insert["insert_y"], insert["insert_width"], insert["insert_height"])
+                        tile_insert_features.append(_window_feature(ds, insert_window, insert_props))
+                        tile_insert_debug_rows.append(insert_props)
+                    pending.clear()
+
                 for tile_window in windows:
                     raster_window = Window(tile_window.x, tile_window.y, cfg.patch_size, cfg.patch_size)
                     props = {
@@ -116,37 +180,10 @@ class SceneInferenceRunner:
                         windows_preview_features.append(_window_feature(ds, raster_window, props))
                         continue
 
-                    prob, model_output_shape = _predict_probability(self.model, self.device, arr)
-                    insert = accumulator.add_tile(tile_window, prob)
-                    predicted_count += 1
-                    props["predicted"] = True
-                    windows_preview_features.append(_window_feature(ds, raster_window, props))
-                    insert_props = {
-                        **props,
-                        "model_input_shape": [1, int(arr.shape[0]), int(arr.shape[1]), int(arr.shape[2])],
-                        "model_output_shape": model_output_shape,
-                        "crop_mode": cfg.crop_mode,
-                        "stitch_mode": cfg.stitch_mode,
-                        "center_size": cfg.center_size,
-                        "context_bounds": cfg.context_bounds,
-                        **insert,
-                        "expected_insert_bounds": [
-                            insert["insert_x"],
-                            insert["insert_y"],
-                            insert["insert_x"] + insert["insert_width"],
-                            insert["insert_y"] + insert["insert_height"],
-                        ],
-                        "actual_insert_bounds": [
-                            insert["insert_x"],
-                            insert["insert_y"],
-                            insert["insert_x"] + insert["insert_width"],
-                            insert["insert_y"] + insert["insert_height"],
-                        ],
-                        "predicted_nonzero_fraction": float(np.count_nonzero(prob[: tile_window.height, : tile_window.width] > cfg.threshold) / max(1, tile_window.width * tile_window.height)),
-                    }
-                    insert_window = Window(insert["insert_x"], insert["insert_y"], insert["insert_width"], insert["insert_height"])
-                    tile_insert_features.append(_window_feature(ds, insert_window, insert_props))
-                    tile_insert_debug_rows.append(insert_props)
+                    pending.append((tile_window, raster_window, props, arr))
+                    if len(pending) >= batch_size:
+                        flush_pending()
+                flush_pending()
 
                 probability_map = accumulator.finalize(transform=ds.transform, crs=str(ds.crs))
                 debug_row = build_scene_debug_row(

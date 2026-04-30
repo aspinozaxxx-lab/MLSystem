@@ -1165,6 +1165,10 @@ def run_real_train(
     checkpoint_path = experiment_dir / f"{model_name}.pt"
     torch.save({"model_state_dict": model.state_dict(), "job_id": job.job_id, "model_name": model_name, "best_epoch": best_epoch}, checkpoint_path)
     artifacts.extend([dataset_report_path, train_scenes_path, val_scenes_path, checkpoint_path])
+    train_tensor_pair = None
+    val_tensor_pair = None
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
     pseudolabel_cfg = job.predict.get("pseudolabel") or job.params.get("pseudolabel") or {}
     pseudolabel_matches = matches
     if str(pseudolabel_cfg.get("run_on") or "").lower() in {"all_available_images", "all_images"}:

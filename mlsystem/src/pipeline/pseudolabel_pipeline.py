@@ -69,6 +69,7 @@ def run_pseudolabel_pipeline(
     smooth_polygons = bool(post_cfg.get("smooth_polygons", False))
     full_scene = bool(pseudolabel_cfg.get("full_scene", True))
     max_windows_per_scene = pseudolabel_cfg.get("max_windows_per_scene")
+    batch_size_raw = pseudolabel_cfg.get("batch_size") or pseudolabel_cfg.get("inference_batch_size")
     max_debug_scenes = pseudolabel_cfg.get("max_debug_scenes")
     if max_debug_scenes is not None:
         matches = matches[: max(1, int(max_debug_scenes))]
@@ -90,6 +91,14 @@ def run_pseudolabel_pipeline(
     stitch_mode = str(pseudolabel_cfg.get("stitch_mode") or "").lower()
     if not stitch_mode:
         stitch_mode = "weighted_overlap" if model_name.startswith("segformer") else "hard_insert"
+    if batch_size_raw is not None:
+        inference_batch_size = max(1, int(batch_size_raw))
+    elif patch_size <= 512:
+        inference_batch_size = 64
+    elif patch_size <= 768:
+        inference_batch_size = 16 if "deeplab" in model_name else 24
+    else:
+        inference_batch_size = 8 if model_name.startswith("segformer") else 12
 
     started = time.time()
     model.eval()
@@ -115,6 +124,7 @@ def run_pseudolabel_pipeline(
             context_bounds=context_bounds,
             full_scene=full_scene,
             max_windows_per_scene=max_windows_per_scene,
+            batch_size=inference_batch_size,
         ),
     )
 
@@ -229,6 +239,7 @@ def run_pseudolabel_pipeline(
         "stitch_mode": stitch_mode,
         "center_size": center_size,
         "context_bounds": context_bounds,
+        "inference_batch_size": inference_batch_size,
         "scenes": tiling_debug_rows,
     }
     segformer_debug = {
@@ -238,6 +249,7 @@ def run_pseudolabel_pipeline(
         "stitch_mode": stitch_mode,
         "center_size": center_size,
         "context_bounds": context_bounds,
+        "inference_batch_size": inference_batch_size,
         "tile_inserts": tile_insert_debug_rows[:10000],
     }
     exported = export_pseudolabel_artifacts(
@@ -258,6 +270,7 @@ def run_pseudolabel_pipeline(
     postprocess_debug["vertices_after"] = vertices_after
     postprocess_debug["auto_tune"] = auto_tune
     postprocess_debug["smooth_polygons"] = smooth_polygons
+    postprocess_debug["inference_batch_size"] = inference_batch_size
     postprocess_debug["candidates_checked"] = candidates_checked
     postprocess_debug_path = experiment_dir / "postprocess_debug.json"
     write_json(postprocess_debug_path, postprocess_debug)
@@ -288,6 +301,7 @@ def run_pseudolabel_pipeline(
         "inference_parallel_enabled": parallel_enabled,
         "inference_max_workers": max_workers,
         "torch_threads_per_worker": torch_threads_per_worker,
+        "inference_batch_size": inference_batch_size,
         "inference_duration_sec": round(time.time() - started, 3),
         "crop_mode": crop_mode,
         "stitch_mode": stitch_mode,
@@ -312,6 +326,7 @@ def run_pseudolabel_pipeline(
             "strategy": "scene" if parallel_enabled else "sequential",
             "max_workers": max_workers,
             "torch_threads_per_worker": torch_threads_per_worker,
+            "batch_size": inference_batch_size,
         },
         "total_inference_duration_sec": coverage_report["inference_duration_sec"],
         "per_scene": [
@@ -357,6 +372,7 @@ def run_pseudolabel_pipeline(
         "inference_parallel_enabled": float(parallel_enabled),
         "inference_max_workers": max_workers,
         "torch_threads_per_worker": torch_threads_per_worker,
+        "inference_batch_size": inference_batch_size,
         "top_limit_applied": float(max_objects is not None and postprocess_result.objects_after_filter > int(max_objects)),
         "top500_applied": float(max_objects == 500 and postprocess_result.objects_after_filter > 500),
         "pseudolabel/accepted_geojson_mb": geojson_mb,
