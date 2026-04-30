@@ -1,0 +1,45 @@
+schema_version: 1
+project_root: /opt/mlsystem
+storage_root: /data/mlsystem/storage
+logs_root: /data/mlsystem/logs
+mlflow:
+  tracking_uri_internal: http://mlflow:5000
+  tracking_uri_external: http://{{ mlsystem_gpu_public_host }}:{{ mlsystem_gpu_mlflow_port }}
+  default_experiment: mlsystem
+s3_endpoint_url: http://minio:9000
+s3_alias: gpu-minio
+artifact_bucket: {{ mlsystem_gpu_bucket }}
+dataset_cache_bucket: {{ mlsystem_gpu_bucket }}
+storage:
+  local_root: /data/mlsystem/storage
+  heavy_backend: s3
+  s3_bucket: {{ mlsystem_gpu_bucket }}
+  s3_prefix: ""
+s3_paths:
+  images: s3://{{ mlsystem_gpu_bucket }}/images/
+  layouts: s3://{{ mlsystem_gpu_bucket }}/layouts/
+  datasets: s3://{{ mlsystem_gpu_bucket }}/datasets/
+  cache: s3://{{ mlsystem_gpu_bucket }}/cache/
+  models: s3://{{ mlsystem_gpu_bucket }}/models/
+  predictions: s3://{{ mlsystem_gpu_bucket }}/predictions/
+  pseudolabels: s3://{{ mlsystem_gpu_bucket }}/pseudolabels/
+  reports: s3://{{ mlsystem_gpu_bucket }}/reports/
+  experiments: s3://{{ mlsystem_gpu_bucket }}/experiments/
+  system: s3://{{ mlsystem_gpu_bucket }}/system/
+s3_write_test_enabled: false
+s3_test_bucket: null
+cpu_only: false
+max_gpu_train_jobs: 1
+max_cpu_train_jobs: 0
+max_cpu_preprocess_jobs: 1
+default_workers: 0
+known_data_roots:
+  - /data/mlsystem/cache
+max_inventory_files: 2000
+max_inventory_depth: 5
+preprocess_interval_sec: 300
+disk_warning_free_gb: 100
+recent_jobs_limit: 20
+web:
+  host: 0.0.0.0
+  port: 8010

@@ -1,0 +1,109 @@
+name: deploy-gpu-server
+
+on:
+  workflow_dispatch:
+    inputs:
+      bootstrap:
+        description: "Install/repair Docker, NVIDIA driver and NVIDIA container toolkit before deploy"
+        required: false
+        default: "false"
+  push:
+    branches: [main]
+    paths:
+      - "ansible/**"
+      - "airflow/**"
+      - "deploy/**"
+      - "mlsystem/**"
+      - ".github/workflows/deploy-gpu-server.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mlsystem-deploy-gpu-server
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      GPU_SERVER_HOST: ${{ secrets.GPU_SERVER_HOST }}
+      GPU_SERVER_USER: ${{ secrets.GPU_SERVER_USER }}
+      MINIO_ROOT_USER: ${{ secrets.MINIO_ROOT_USER }}
+      MINIO_ROOT_PASSWORD: ${{ secrets.MINIO_ROOT_PASSWORD }}
+      MLFLOW_DB_PASSWORD: ${{ secrets.MLFLOW_DB_PASSWORD }}
+      AIRFLOW_ADMIN_USER: ${{ secrets.AIRFLOW_ADMIN_USER }}
+      AIRFLOW_ADMIN_PASSWORD: ${{ secrets.AIRFLOW_ADMIN_PASSWORD }}
+      AIRFLOW_POSTGRES_PASSWORD: ${{ secrets.AIRFLOW_POSTGRES_PASSWORD }}
+      AIRFLOW_FERNET_KEY: ${{ secrets.AIRFLOW_FERNET_KEY }}
+      AIRFLOW_SECRET_KEY: ${{ secrets.AIRFLOW_SECRET_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check required secrets
+        run: |
+          missing=0
+          for name in GPU_SERVER_HOST GPU_SERVER_USER MINIO_ROOT_USER MINIO_ROOT_PASSWORD MLFLOW_DB_PASSWORD AIRFLOW_ADMIN_USER AIRFLOW_ADMIN_PASSWORD AIRFLOW_POSTGRES_PASSWORD AIRFLOW_FERNET_KEY AIRFLOW_SECRET_KEY; do
+            if [ -z "${!name:-}" ]; then
+              echo "Missing GitHub secret: ${name}" >&2
+              missing=1
+            fi
+          done
+          if [ -z "${{ secrets.GPU_SERVER_SSH_KEY }}" ]; then
+            echo "Missing GitHub secret: GPU_SERVER_SSH_KEY" >&2
+            missing=1
+          fi
+          exit "$missing"
+
+      - name: Install Ansible
+        run: |
+          python3 -m pip install --user ansible-core PyYAML
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          umask 077
+          cat > ~/.ssh/gpu_server_key <<'KEY'
+          ${{ secrets.GPU_SERVER_SSH_KEY }}
+          KEY
+          sed -i 's/^          //' ~/.ssh/gpu_server_key
+          ssh-keyscan -H "$GPU_SERVER_HOST" >> ~/.ssh/known_hosts
+          cat > ansible/inventory/gpu-ci.ini <<EOF
+          [gpu_mlserver]
+          gpu-mlserver ansible_host=${GPU_SERVER_HOST} ansible_user=${GPU_SERVER_USER} ansible_ssh_private_key_file=$HOME/.ssh/gpu_server_key ansible_python_interpreter=/usr/bin/python3
+          EOF
+
+      - name: Parse Ansible YAML
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import yaml
+          for path in list(Path('ansible').rglob('*.yml')) + list(Path('ansible').rglob('*.yaml')):
+              yaml.safe_load(path.read_text(encoding='utf-8'))
+              print(f'ok yaml {path}')
+          PY
+
+      - name: Syntax check
+        run: |
+          ansible-playbook -i ansible/inventory/gpu-ci.ini ansible/playbooks/bootstrap_gpu_server.yml --syntax-check
+          ansible-playbook -i ansible/inventory/gpu-ci.ini ansible/playbooks/deploy_mlsystem_code.yml --syntax-check
+          ansible-playbook -i ansible/inventory/gpu-ci.ini ansible/playbooks/deploy_ml_platform.yml --syntax-check
+          ansible-playbook -i ansible/inventory/gpu-ci.ini ansible/playbooks/deploy_triton.yml --syntax-check
+
+      - name: Bootstrap GPU server
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.bootstrap == 'true' }}
+        run: ansible-playbook -i ansible/inventory/gpu-ci.ini ansible/playbooks/bootstrap_gpu_server.yml
+
+      - name: Deploy MLSystem code
+        run: ansible-playbook -i ansible/inventory/gpu-ci.ini ansible/playbooks/deploy_mlsystem_code.yml
+
+      - name: Deploy GPU ML platform
+        run: ansible-playbook -i ansible/inventory/gpu-ci.ini ansible/playbooks/deploy_ml_platform.yml
+
+      - name: Health checks
+        run: |
+          curl -fsS "http://${GPU_SERVER_HOST}:8081/api/v1/health" | python3 -m json.tool
+          curl -fsS "http://${GPU_SERVER_HOST}:5000/health" >/dev/null
+          curl -fsS "http://${GPU_SERVER_HOST}:9000/minio/health/live" >/dev/null
+          curl -fsS "http://${GPU_SERVER_HOST}:8000/v2/health/ready" >/dev/null

@@ -1,0 +1,33 @@
+---
+- name: Deploy MLSystem code to GPU server
+  hosts: gpu_mlserver
+  gather_facts: false
+  become: true
+  vars:
+    mlsystem_git_repo: https://github.com/aspinozaxxx-lab/MLSystem.git
+    mlsystem_git_version: main
+  tasks:
+    - name: Ensure git is installed
+      ansible.builtin.apt:
+        name: git
+        state: present
+        update_cache: true
+
+    - name: Ensure repo parent exists
+      ansible.builtin.file:
+        path: "{{ mlsystem_gpu_repo_root | dirname }}"
+        state: directory
+        mode: "0755"
+
+    - name: Checkout MLSystem repository
+      ansible.builtin.git:
+        repo: "{{ mlsystem_git_repo }}"
+        dest: "{{ mlsystem_gpu_repo_root }}"
+        version: "{{ mlsystem_git_version }}"
+        force: true
+        update: true
+
+    - name: Remove Python cache directories from deployed repo
+      ansible.builtin.command:
+        cmd: find "{{ mlsystem_gpu_repo_root }}" -type d -name __pycache__ -prune -exec rm -rf {} +
+      changed_when: false

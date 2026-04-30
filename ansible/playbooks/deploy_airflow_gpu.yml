@@ -1,0 +1,7 @@
+---
+- name: Deploy Airflow on GPU ML server
+  hosts: gpu_mlserver
+  gather_facts: false
+  become: true
+  roles:
+    - role: gpu_platform

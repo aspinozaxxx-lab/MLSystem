@@ -1,0 +1,149 @@
+---
+- name: Update apt cache
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Install base packages
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - gnupg
+      - lsb-release
+      - python3-pip
+      - python3-venv
+      - rsync
+      - jq
+      - unzip
+      - pciutils
+      - ubuntu-drivers-common
+      - ufw
+    state: present
+
+- name: Install NVIDIA driver package
+  ansible.builtin.apt:
+    name: "{{ mlsystem_gpu_nvidia_driver_package }}"
+    state: present
+  when: mlsystem_gpu_install_nvidia_driver | bool
+  register: nvidia_driver_install
+
+- name: Create Docker apt key directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+
+- name: Install Docker apt key
+  ansible.builtin.shell: |
+    set -euo pipefail
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    chmod a+r /etc/apt/keyrings/docker.gpg
+  args:
+    creates: /etc/apt/keyrings/docker.gpg
+    executable: /bin/bash
+
+- name: Install Docker apt repository
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/docker.list
+    mode: "0644"
+    content: |
+      deb [arch={{ 'amd64' if ansible_architecture | default('x86_64') == 'x86_64' else ansible_architecture }} signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release | default('noble') }} stable
+
+- name: Install Docker packages
+  ansible.builtin.apt:
+    update_cache: true
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-buildx-plugin
+      - docker-compose-plugin
+    state: present
+
+- name: Install NVIDIA Container Toolkit apt key
+  ansible.builtin.shell: |
+    set -euo pipefail
+    curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+    chmod a+r /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+  args:
+    creates: /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+    executable: /bin/bash
+
+- name: Install NVIDIA Container Toolkit apt repository
+  ansible.builtin.shell: |
+    set -euo pipefail
+    curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+      | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+      > /etc/apt/sources.list.d/nvidia-container-toolkit.list
+  args:
+    creates: /etc/apt/sources.list.d/nvidia-container-toolkit.list
+    executable: /bin/bash
+
+- name: Install NVIDIA Container Toolkit
+  ansible.builtin.apt:
+    update_cache: true
+    name: nvidia-container-toolkit
+    state: present
+
+- name: Configure NVIDIA runtime for Docker
+  ansible.builtin.command: nvidia-ctk runtime configure --runtime=docker
+  changed_when: true
+
+- name: Enable Docker service
+  ansible.builtin.systemd:
+    name: docker
+    enabled: true
+    state: restarted
+
+- name: Configure UFW incoming policy
+  ansible.builtin.command: ufw default deny incoming
+  changed_when: false
+  when: mlsystem_gpu_open_firewall | bool
+
+- name: Allow required TCP ports
+  ansible.builtin.command: "ufw allow {{ item }}/tcp"
+  changed_when: false
+  loop:
+    - "22"
+    - "{{ mlsystem_gpu_airflow_port }}"
+    - "{{ mlsystem_gpu_mlflow_port }}"
+    - "{{ mlsystem_gpu_minio_api_port }}"
+    - "{{ mlsystem_gpu_minio_console_port }}"
+    - "{{ mlsystem_gpu_triton_http_port }}"
+    - "{{ mlsystem_gpu_triton_grpc_port }}"
+    - "{{ mlsystem_gpu_triton_metrics_port }}"
+  when: mlsystem_gpu_open_firewall | bool
+
+- name: Enable UFW
+  ansible.builtin.command: ufw --force enable
+  changed_when: false
+  when: mlsystem_gpu_open_firewall | bool
+
+- name: Reboot after NVIDIA driver install when required
+  ansible.builtin.reboot:
+    msg: Rebooting after NVIDIA driver installation
+    reboot_timeout: 900
+  when: nvidia_driver_install is changed
+
+- name: Wait for nvidia-smi
+  ansible.builtin.command: nvidia-smi
+  register: nvidia_smi_result
+  changed_when: false
+  retries: 20
+  delay: 15
+  until: nvidia_smi_result.rc == 0
+
+- name: Verify Docker GPU runtime
+  ansible.builtin.command: docker run --rm --gpus all nvidia/cuda:12.8.1-base-ubuntu24.04 nvidia-smi
+  register: docker_gpu_result
+  changed_when: false
+  retries: 3
+  delay: 10
+  until: docker_gpu_result.rc == 0
+
+- name: Report GPU bootstrap
+  ansible.builtin.debug:
+    msg:
+      nvidia_smi: "{{ nvidia_smi_result.stdout_lines }}"
+      docker_gpu: "{{ docker_gpu_result.stdout_lines[-10:] }}"

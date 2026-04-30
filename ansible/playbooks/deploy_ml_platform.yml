@@ -1,0 +1,7 @@
+---
+- name: Deploy GPU ML platform
+  hosts: gpu_mlserver
+  gather_facts: false
+  become: true
+  roles:
+    - role: gpu_platform

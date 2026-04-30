@@ -2,15 +2,6 @@ name: cicd-code
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - "mlsystem/**"
-      - "mlsystem/**/*"
-      - "mlsystem/*.md"
-      - "airflow/**"
-      - "configs/**"
-      - ".github/workflows/cicd-code.yml"
 
 permissions:
   contents: read

@@ -1,0 +1,194 @@
+---
+- name: Check existing GPU platform env
+  ansible.builtin.stat:
+    path: "{{ mlsystem_gpu_env_path }}"
+  register: gpu_env_stat
+
+- name: Read existing GPU platform env
+  ansible.builtin.slurp:
+    src: "{{ mlsystem_gpu_env_path }}"
+  register: gpu_env_file
+  when: gpu_env_stat.stat.exists
+
+- name: Parse existing GPU platform env
+  ansible.builtin.set_fact:
+    gpu_existing_env: "{{ dict((gpu_env_file.content | b64decode | regex_findall('(?m)^([A-Z0-9_]+)=(.*)$'))) }}"
+  when: gpu_env_stat.stat.exists
+
+- name: Resolve GPU platform secrets
+  ansible.builtin.set_fact:
+    mlsystem_gpu_minio_root_user_resolved: "{{ lookup('env', 'MINIO_ROOT_USER') | default('', true) or (gpu_existing_env | default({})).get('MINIO_ROOT_USER', 'mlsystem') }}"
+    mlsystem_gpu_minio_root_password_resolved: "{{ lookup('env', 'MINIO_ROOT_PASSWORD') | default('', true) or (gpu_existing_env | default({})).get('MINIO_ROOT_PASSWORD', lookup('password', '/dev/null length=32 chars=ascii_letters,digits')) }}"
+    mlsystem_gpu_mlflow_db_password_resolved: "{{ lookup('env', 'MLFLOW_DB_PASSWORD') | default('', true) or (gpu_existing_env | default({})).get('MLFLOW_DB_PASSWORD', lookup('password', '/dev/null length=32 chars=ascii_letters,digits')) }}"
+    mlsystem_gpu_airflow_db_password_resolved: "{{ lookup('env', 'AIRFLOW_POSTGRES_PASSWORD') | default('', true) or (gpu_existing_env | default({})).get('AIRFLOW_POSTGRES_PASSWORD', lookup('password', '/dev/null length=32 chars=ascii_letters,digits')) }}"
+    mlsystem_gpu_airflow_admin_user_resolved: "{{ lookup('env', 'AIRFLOW_ADMIN_USER') | default('', true) or (gpu_existing_env | default({})).get('AIRFLOW_ADMIN_USER', 'admin') }}"
+    mlsystem_gpu_airflow_admin_password_resolved: "{{ lookup('env', 'AIRFLOW_ADMIN_PASSWORD') | default('', true) or (gpu_existing_env | default({})).get('AIRFLOW_ADMIN_PASSWORD', lookup('password', '/dev/null length=24 chars=ascii_letters,digits')) }}"
+    mlsystem_gpu_airflow_fernet_key_resolved: "{{ lookup('env', 'AIRFLOW_FERNET_KEY') | default('', true) or (gpu_existing_env | default({})).get('AIRFLOW_FERNET_KEY', lookup('password', '/dev/null length=44 chars=ascii_letters,digits')) }}"
+    mlsystem_gpu_airflow_secret_key_resolved: "{{ lookup('env', 'AIRFLOW_SECRET_KEY') | default('', true) or (gpu_existing_env | default({})).get('AIRFLOW_SECRET_KEY', lookup('password', '/dev/null length=48 chars=ascii_letters,digits')) }}"
+
+- name: Ensure GPU platform directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0775"
+  loop:
+    - /etc/mlsystem
+    - "{{ mlsystem_gpu_repo_root }}"
+    - "{{ mlsystem_gpu_platform_root }}"
+    - "{{ mlsystem_gpu_data_root }}/minio"
+    - "{{ mlsystem_gpu_data_root }}/mlflow"
+    - "{{ mlsystem_gpu_data_root }}/airflow/logs"
+    - "{{ mlsystem_gpu_data_root }}/airflow/status"
+    - "{{ mlsystem_gpu_data_root }}/airflow/postgres"
+    - "{{ mlsystem_gpu_data_root }}/triton/model_repository/identity_python/1"
+    - "{{ mlsystem_gpu_data_root }}/models"
+    - "{{ mlsystem_gpu_data_root }}/cache"
+    - "{{ mlsystem_gpu_data_root }}/artifacts"
+    - "{{ mlsystem_gpu_data_root }}/backups"
+    - "{{ mlsystem_gpu_data_root }}/storage/system"
+    - "{{ mlsystem_gpu_data_root }}/logs"
+
+- name: Install GPU platform env
+  ansible.builtin.template:
+    src: gpu-platform.env.j2
+    dest: "{{ mlsystem_gpu_env_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Install GPU Docker Compose file
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../{{ mlsystem_gpu_compose_src }}"
+    dest: "{{ mlsystem_gpu_compose_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Check deployed MLSystem config directory
+  ansible.builtin.stat:
+    path: "{{ mlsystem_gpu_repo_root }}/mlsystem/configs"
+  register: gpu_mlsystem_config_dir
+
+- name: Install GPU pipeline config into deployed repo
+  ansible.builtin.template:
+    src: pipeline.server.yaml.j2
+    dest: "{{ mlsystem_gpu_repo_root }}/mlsystem/configs/pipeline.server.yaml"
+    owner: root
+    group: root
+    mode: "0644"
+  when: gpu_mlsystem_config_dir.stat.isdir | default(false)
+
+- name: Install Triton identity Python model
+  ansible.builtin.copy:
+    dest: "{{ mlsystem_gpu_data_root }}/triton/model_repository/identity_python/1/model.py"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      import numpy as np
+      import triton_python_backend_utils as pb_utils
+
+      class TritonPythonModel:
+          def execute(self, requests):
+              responses = []
+              for request in requests:
+                  tensor = pb_utils.get_input_tensor_by_name(request, "INPUT0")
+                  output = pb_utils.Tensor("OUTPUT0", tensor.as_numpy().astype(np.float32))
+                  responses.append(pb_utils.InferenceResponse(output_tensors=[output]))
+              return responses
+
+- name: Install Triton identity model config
+  ansible.builtin.copy:
+    dest: "{{ mlsystem_gpu_data_root }}/triton/model_repository/identity_python/config.pbtxt"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      name: "identity_python"
+      backend: "python"
+      max_batch_size: 0
+      input [
+        { name: "INPUT0" data_type: TYPE_FP32 dims: [ 1 ] }
+      ]
+      output [
+        { name: "OUTPUT0" data_type: TYPE_FP32 dims: [ 1 ] }
+      ]
+
+- name: Validate GPU Docker Compose config
+  ansible.builtin.command:
+    cmd: docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}" config
+  changed_when: false
+
+- name: Pull GPU platform images
+  ansible.builtin.command:
+    cmd: docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}" pull
+  changed_when: true
+
+- name: Initialize Airflow metadata DB and admin user
+  ansible.builtin.command:
+    cmd: docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}" up airflow-init
+  changed_when: true
+
+- name: Start GPU ML platform services
+  ansible.builtin.command:
+    cmd: docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}" up -d minio mlflow-postgres mlflow airflow-webserver airflow-scheduler airflow-triggerer triton
+  changed_when: true
+
+- name: Wait for MinIO health
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ mlsystem_gpu_minio_api_port }}/minio/health/live"
+    status_code: 200
+  retries: 30
+  delay: 5
+  register: minio_health
+  until: minio_health.status == 200
+
+- name: Wait for MLflow health
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ mlsystem_gpu_mlflow_port }}/health"
+    status_code: 200
+  retries: 30
+  delay: 5
+  register: mlflow_health
+  until: mlflow_health.status == 200
+
+- name: Wait for Airflow health
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ mlsystem_gpu_airflow_port }}/api/v1/health"
+    status_code: 200
+  retries: 40
+  delay: 5
+  register: airflow_health
+  until: airflow_health.status == 200
+
+- name: Wait for Triton health
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ mlsystem_gpu_triton_http_port }}/v2/health/ready"
+    status_code: 200
+  retries: 40
+  delay: 5
+  register: triton_health
+  until: triton_health.status == 200
+
+- name: Verify PyTorch sees CUDA inside Airflow scheduler
+  ansible.builtin.command:
+    cmd: docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}" exec -T airflow-scheduler python -c "import torch; print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NO_CUDA')"
+  register: torch_cuda_check
+  changed_when: false
+
+- name: Verify Triton models endpoint
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ mlsystem_gpu_triton_http_port }}/v2/models"
+    status_code: 200
+    return_content: true
+  register: triton_models
+
+- name: Report GPU platform deploy
+  ansible.builtin.debug:
+    msg:
+      airflow: "http://{{ mlsystem_gpu_public_host }}:{{ mlsystem_gpu_airflow_port }}"
+      mlflow: "http://{{ mlsystem_gpu_public_host }}:{{ mlsystem_gpu_mlflow_port }}"
+      minio_console: "http://{{ mlsystem_gpu_public_host }}:{{ mlsystem_gpu_minio_console_port }}"
+      triton_ready: "http://{{ mlsystem_gpu_public_host }}:{{ mlsystem_gpu_triton_http_port }}/v2/health/ready"
+      torch_cuda: "{{ torch_cuda_check.stdout_lines }}"
+      triton_models: "{{ triton_models.content }}"

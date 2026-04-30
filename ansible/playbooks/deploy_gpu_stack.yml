@@ -1,0 +1,13 @@
+---
+- name: Deploy full GPU MLSystem stack
+  hosts: gpu_mlserver
+  gather_facts: true
+  become: true
+  roles:
+    - role: gpu_server
+
+- name: Deploy MLSystem code
+  import_playbook: deploy_mlsystem_code.yml
+
+- name: Deploy GPU ML platform services
+  import_playbook: deploy_ml_platform.yml

@@ -2,12 +2,6 @@ name: cicd-ansible
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - "ansible/**"
-      - "airflow/**"
-      - ".github/workflows/cicd-ansible.yml"
 
 permissions:
   contents: read

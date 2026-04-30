@@ -1,0 +1,27 @@
+---
+mlsystem_gpu_public_host: "31.192.104.147"
+mlsystem_gpu_repo_root: /opt/mlsystem/repo
+mlsystem_gpu_data_root: /data/mlsystem
+mlsystem_gpu_platform_root: /data/mlsystem/platform
+mlsystem_gpu_env_path: /etc/mlsystem/gpu-platform.env
+mlsystem_gpu_compose_src: deploy/docker-compose.gpu.yml
+mlsystem_gpu_compose_path: /data/mlsystem/platform/docker-compose.yml
+mlsystem_gpu_airflow_port: 8081
+mlsystem_gpu_mlflow_port: 5000
+mlsystem_gpu_minio_api_port: 9000
+mlsystem_gpu_minio_console_port: 9001
+mlsystem_gpu_triton_http_port: 8000
+mlsystem_gpu_triton_grpc_port: 8001
+mlsystem_gpu_triton_metrics_port: 8002
+mlsystem_gpu_bucket: mlsystems
+mlsystem_gpu_mlflow_bucket: mlflow-artifacts
+mlsystem_gpu_triton_image: nvcr.io/nvidia/tritonserver:25.03-py3
+mlsystem_gpu_airflow_image: apache/airflow:2.9.3-python3.11
+mlsystem_gpu_mlflow_image: ghcr.io/mlflow/mlflow:v3.11.1
+mlsystem_gpu_minio_image: minio/minio:RELEASE.2024-01-11T07-46-16Z
+mlsystem_gpu_postgres_image: postgres:15
+mlsystem_gpu_airflow_uid: "50000"
+mlsystem_gpu_airflow_pip_requirements: "pydantic PyYAML mlflow boto3 numpy shapely rasterio pillow tritonclient[http] segmentation-models-pytorch torch torchvision --index-url https://download.pytorch.org/whl/cu128 --extra-index-url https://pypi.org/simple"
+mlsystem_gpu_install_nvidia_driver: true
+mlsystem_gpu_nvidia_driver_package: nvidia-driver-580
+mlsystem_gpu_open_firewall: true
