@@ -1,4 +1,4 @@
 ---
 mlsystem_gpu_install_nvidia_driver: true
-mlsystem_gpu_nvidia_driver_package: nvidia-driver-580
+mlsystem_gpu_nvidia_driver_package: nvidia-driver-580-open
 mlsystem_gpu_open_firewall: true
