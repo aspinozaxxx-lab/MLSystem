@@ -126,6 +126,7 @@ def run_pseudolabel_pipeline(
             full_scene=full_scene,
             max_windows_per_scene=max_windows_per_scene,
             batch_size=inference_batch_size,
+            collect_debug_features=debug_mode,
         ),
     )
 

@@ -32,6 +32,7 @@ class SceneInferenceConfig:
     full_scene: bool = True
     max_windows_per_scene: int | None = None
     batch_size: int = 1
+    collect_debug_features: bool = False
 
 
 @dataclass
@@ -150,43 +151,44 @@ class SceneInferenceRunner:
                         insert = accumulator.add_tile(tile_window_item, prob)
                         predicted_count += 1
                         props_item["predicted"] = True
-                        windows_preview_features.append(_window_feature(ds, raster_window_item, props_item))
-                        insert_props = {
-                            **props_item,
-                            "model_input_shape": [
-                                len(pending),
-                                int(arr_item.shape[0]),
-                                int(arr_item.shape[1]),
-                                int(arr_item.shape[2]),
-                            ],
-                            "model_output_shape": model_output_shape,
-                            "inference_batch_size": batch_size,
-                            "effective_inference_batch_size": effective_batch_size,
-                            "crop_mode": cfg.crop_mode,
-                            "stitch_mode": cfg.stitch_mode,
-                            "center_size": cfg.center_size,
-                            "context_bounds": cfg.context_bounds,
-                            **insert,
-                            "expected_insert_bounds": [
-                                insert["insert_x"],
-                                insert["insert_y"],
-                                insert["insert_x"] + insert["insert_width"],
-                                insert["insert_y"] + insert["insert_height"],
-                            ],
-                            "actual_insert_bounds": [
-                                insert["insert_x"],
-                                insert["insert_y"],
-                                insert["insert_x"] + insert["insert_width"],
-                                insert["insert_y"] + insert["insert_height"],
-                            ],
-                            "predicted_nonzero_fraction": float(
-                                np.count_nonzero(prob[: tile_window_item.height, : tile_window_item.width] > cfg.threshold)
-                                / max(1, tile_window_item.width * tile_window_item.height)
-                            ),
-                        }
-                        insert_window = Window(insert["insert_x"], insert["insert_y"], insert["insert_width"], insert["insert_height"])
-                        tile_insert_features.append(_window_feature(ds, insert_window, insert_props))
-                        tile_insert_debug_rows.append(insert_props)
+                        if cfg.collect_debug_features:
+                            windows_preview_features.append(_window_feature(ds, raster_window_item, props_item))
+                            insert_props = {
+                                **props_item,
+                                "model_input_shape": [
+                                    len(pending),
+                                    int(arr_item.shape[0]),
+                                    int(arr_item.shape[1]),
+                                    int(arr_item.shape[2]),
+                                ],
+                                "model_output_shape": model_output_shape,
+                                "inference_batch_size": batch_size,
+                                "effective_inference_batch_size": effective_batch_size,
+                                "crop_mode": cfg.crop_mode,
+                                "stitch_mode": cfg.stitch_mode,
+                                "center_size": cfg.center_size,
+                                "context_bounds": cfg.context_bounds,
+                                **insert,
+                                "expected_insert_bounds": [
+                                    insert["insert_x"],
+                                    insert["insert_y"],
+                                    insert["insert_x"] + insert["insert_width"],
+                                    insert["insert_y"] + insert["insert_height"],
+                                ],
+                                "actual_insert_bounds": [
+                                    insert["insert_x"],
+                                    insert["insert_y"],
+                                    insert["insert_x"] + insert["insert_width"],
+                                    insert["insert_y"] + insert["insert_height"],
+                                ],
+                                "predicted_nonzero_fraction": float(
+                                    np.count_nonzero(prob[: tile_window_item.height, : tile_window_item.width] > cfg.threshold)
+                                    / max(1, tile_window_item.width * tile_window_item.height)
+                                ),
+                            }
+                            insert_window = Window(insert["insert_x"], insert["insert_y"], insert["insert_width"], insert["insert_height"])
+                            tile_insert_features.append(_window_feature(ds, insert_window, insert_props))
+                            tile_insert_debug_rows.append(insert_props)
                     pending.clear()
 
                 for tile_window in windows:
@@ -205,7 +207,8 @@ class SceneInferenceRunner:
                     if np.count_nonzero(arr) == 0:
                         skipped_reasons["all_zero"] = skipped_reasons.get("all_zero", 0) + 1
                         props["skipped_reason"] = "all_zero"
-                        windows_preview_features.append(_window_feature(ds, raster_window, props))
+                        if cfg.collect_debug_features:
+                            windows_preview_features.append(_window_feature(ds, raster_window, props))
                         continue
 
                     pending.append((tile_window, raster_window, props, arr))
