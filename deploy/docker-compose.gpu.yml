@@ -132,6 +132,7 @@ services:
     command:
       - -lc
       - |
+        export PATH="/home/airflow/.local/bin:/usr/local/bin:$${PATH}"
         mkdir -p /opt/airflow/logs /opt/airflow/dags /opt/airflow/plugins /opt/airflow/mlsystem_runs
         chown -R "$${AIRFLOW_UID}:0" /opt/airflow/logs /opt/airflow/dags /opt/airflow/plugins /opt/airflow/mlsystem_runs
         airflow db migrate
