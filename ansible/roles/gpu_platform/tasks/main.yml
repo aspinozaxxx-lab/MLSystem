@@ -178,7 +178,8 @@
 
 - name: Verify Triton models endpoint
   ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ mlsystem_gpu_triton_http_port }}/v2/models"
+    url: "http://127.0.0.1:{{ mlsystem_gpu_triton_http_port }}/v2/repository/index"
+    method: POST
     status_code: 200
     return_content: true
   register: triton_models
