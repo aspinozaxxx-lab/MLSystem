@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -79,6 +80,7 @@ class SceneInferenceRunner:
         self.model = model
         self.device = device
         self.inference_config = inference_config
+        self._predict_lock = threading.Lock()
 
     def run_scene(self, scene_index: int, match: Any) -> SceneInferenceResult:
         import rasterio
@@ -118,7 +120,32 @@ class SceneInferenceRunner:
                     if not pending:
                         return
                     arrays = [item[3] for item in pending]
-                    probs, model_output_shape = _predict_probability_batch(self.model, self.device, arrays)
+                    with self._predict_lock:
+                        try:
+                            probs, model_output_shape = _predict_probability_batch(self.model, self.device, arrays)
+                            effective_batch_size = len(arrays)
+                        except torch.cuda.OutOfMemoryError:
+                            if self.device.type == "cuda":
+                                torch.cuda.empty_cache()
+                            probs_rows: list[np.ndarray] = []
+                            model_output_shape = []
+                            fallback_batch_size = max(1, len(arrays) // 2)
+                            start = 0
+                            while start < len(arrays):
+                                chunk = arrays[start : start + fallback_batch_size]
+                                try:
+                                    chunk_probs, model_output_shape = _predict_probability_batch(self.model, self.device, chunk)
+                                except torch.cuda.OutOfMemoryError:
+                                    if self.device.type == "cuda":
+                                        torch.cuda.empty_cache()
+                                    if fallback_batch_size <= 1:
+                                        raise
+                                    fallback_batch_size = max(1, fallback_batch_size // 2)
+                                    continue
+                                probs_rows.extend(list(chunk_probs))
+                                start += fallback_batch_size
+                            probs = np.stack(probs_rows)
+                            effective_batch_size = fallback_batch_size
                     for (tile_window_item, raster_window_item, props_item, arr_item), prob in zip(pending, probs):
                         insert = accumulator.add_tile(tile_window_item, prob)
                         predicted_count += 1
@@ -134,6 +161,7 @@ class SceneInferenceRunner:
                             ],
                             "model_output_shape": model_output_shape,
                             "inference_batch_size": batch_size,
+                            "effective_inference_batch_size": effective_batch_size,
                             "crop_mode": cfg.crop_mode,
                             "stitch_mode": cfg.stitch_mode,
                             "center_size": cfg.center_size,
