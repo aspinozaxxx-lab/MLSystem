@@ -736,7 +736,15 @@ def run_debug_pseudolabel(
     input_bands = job.params.get("input_bands") or model_cfg.get("input_bands") or [1, 2, 3, 4]
     input_bands = [int(band) for band in input_bands]
     patch_size = int(job.preprocess.get("tile_size") or job.train.get("patch_size") or 1024)
-    device = torch.device("cuda" if torch.cuda.is_available() and not config.cpu_only else "cpu")
+    require_gpu = bool(job.train.get("require_gpu", False) or job.resources.requires_gpu)
+    cuda_available = bool(torch.cuda.is_available())
+    if require_gpu and not cuda_available:
+        raise RuntimeError(
+            "GPU inference was requested, but CUDA is not available "
+            f"(config.cpu_only={config.cpu_only}, torch.cuda.is_available={cuda_available})."
+        )
+    cpu_only_effective = bool(config.cpu_only) and not require_gpu
+    device = torch.device("cuda" if cuda_available and not cpu_only_effective else "cpu")
     model_name = str(model_cfg.get("name") or job.predict.get("model_name") or "tiny_unet_4ch")
     base_channels = int(model_cfg.get("base_channels") or job.train.get("base_channels") or 8)
     model = _build_model(model_name, len(input_bands), int(model_cfg.get("out_channels") or 1), base_channels).to(device)
@@ -989,12 +997,13 @@ def run_real_train(
 
     require_gpu = bool(job.train.get("require_gpu", False) or job.resources.requires_gpu)
     cuda_available = bool(torch.cuda.is_available())
-    if require_gpu and (config.cpu_only or not cuda_available):
+    if require_gpu and not cuda_available:
         raise RuntimeError(
             "GPU training was requested, but CUDA is not available "
             f"(config.cpu_only={config.cpu_only}, torch.cuda.is_available={cuda_available})."
         )
-    device = torch.device("cuda" if cuda_available and not config.cpu_only else "cpu")
+    cpu_only_effective = bool(config.cpu_only) and not require_gpu
+    device = torch.device("cuda" if cuda_available and not cpu_only_effective else "cpu")
     gpu_name = torch.cuda.get_device_name(0) if device.type == "cuda" else None
     if device.type == "cuda":
         torch.backends.cudnn.benchmark = True
