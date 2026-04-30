@@ -29,7 +29,7 @@ with DAG(
     start_date=datetime(2026, 1, 1),
     schedule=None,
     catchup=False,
-    max_active_runs=2,
+    max_active_runs=3,
     tags=["mlsystem", "ml", "deforest"],
 ) as dag:
     previous = None
