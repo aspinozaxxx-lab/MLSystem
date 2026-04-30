@@ -481,6 +481,32 @@ def _write_history(experiment_dir: Path, history: list[dict[str, float]]) -> lis
     return [json_path, csv_path]
 
 
+def _default_tile_limits(job: JobSpec) -> tuple[int, int, int]:
+    use_all_scenes = bool(job.preprocess.get("use_all_matched_scenes"))
+    default_train_tiles = 512 if use_all_scenes else 24
+    default_val_tiles = 128 if use_all_scenes else 8
+    default_tiles_per_scene = 32 if use_all_scenes else 4
+    max_train_tiles = int(job.train.get("max_train_tiles") or job.preprocess.get("max_train_tiles") or default_train_tiles)
+    max_val_tiles = int(job.train.get("max_val_tiles") or job.preprocess.get("max_val_tiles") or default_val_tiles)
+    max_tiles_per_scene = int(
+        job.train.get("max_tiles_per_scene")
+        or job.preprocess.get("max_tiles_per_scene")
+        or default_tiles_per_scene
+    )
+    return max_train_tiles, max_val_tiles, max_tiles_per_scene
+
+
+def _auto_batch_size(model_name: str, patch_size: int, device: torch.device) -> int:
+    if device.type != "cuda":
+        return 1
+    name = model_name.lower()
+    if patch_size <= 512:
+        return 16
+    if patch_size <= 768:
+        return 8 if "deeplab" in name else 12
+    return 4 if "segformer" in name else 6
+
+
 def _scene_file_names(matches: list[SceneMatch]) -> list[str]:
     return [PurePosixPath(match.name or match.key).name for match in matches]
 
@@ -866,9 +892,7 @@ def run_real_train(
     input_bands = job.params.get("input_bands") or model_cfg.get("input_bands") or [1, 2, 3, 4]
     input_bands = [int(band) for band in input_bands]
     patch_size = int(job.train.get("patch_size") or job.train.get("train_patch_size") or 256)
-    max_train_tiles = int(job.train.get("max_train_tiles") or 24)
-    max_val_tiles = int(job.train.get("max_val_tiles") or 8)
-    max_tiles_per_scene = int(job.train.get("max_tiles_per_scene") or 4)
+    max_train_tiles, max_val_tiles, max_tiles_per_scene = _default_tile_limits(job)
     empty_share = float(job.preprocess.get("max_empty_tile_share") or 0.5)
     with trace_stage("prepare_dataset", {"job_id": job.job_id, "scene_count": len(matches), "tile_size": patch_size}):
         shapes = _load_shapes(config, annotation_uri)
@@ -982,8 +1006,16 @@ def run_real_train(
     optimizer = torch.optim.AdamW(model.parameters(), lr=float(job.train.get("learning_rate") or 5e-4))
     batch_size = job.train.get("batch_size") or 2
     if batch_size == "auto":
-        batch_size = 1 if device.type == "cpu" else 2
+        batch_size = _auto_batch_size(model_name, patch_size, device)
     batch_size = max(1, int(batch_size))
+    mlflow_run.log_params(
+        {
+            "train.batch_size_resolved": batch_size,
+            "train.max_train_tiles": max_train_tiles,
+            "train.max_val_tiles": max_val_tiles,
+            "train.max_tiles_per_scene": max_tiles_per_scene,
+        }
+    )
     epochs = int(job.train.get("epochs") or 20)
     time_limit_sec = int(job.train.get("time_limit_sec") or 600)
     early_cfg = job.train.get("early_stopping") or {}
@@ -999,6 +1031,30 @@ def run_real_train(
             random.shuffle(rows)
         return [rows[i : i + batch_size] for i in range(0, len(rows), batch_size)]
 
+    train_tensor_pair: tuple[torch.Tensor, torch.Tensor] | None = None
+    val_tensor_pair: tuple[torch.Tensor, torch.Tensor] | None = None
+    if device.type == "cuda" and bool(job.train.get("cache_samples_on_gpu", True)):
+        train_x = torch.from_numpy(np.stack([item[0] for item in train_samples])).to(device)
+        train_y = torch.from_numpy(np.stack([item[1] for item in train_samples])).to(device)
+        val_x = torch.from_numpy(np.stack([item[0] for item in val_samples])).to(device)
+        val_y = torch.from_numpy(np.stack([item[1] for item in val_samples])).to(device)
+        train_tensor_pair = (train_x, train_y)
+        val_tensor_pair = (val_x, val_y)
+        cached_mb = (
+            train_x.numel() * train_x.element_size()
+            + train_y.numel() * train_y.element_size()
+            + val_x.numel() * val_x.element_size()
+            + val_y.numel() * val_y.element_size()
+        ) / (1024 * 1024)
+        mlflow_run.log_params({"train.cache_samples_on_gpu": True, "train.cached_samples_gpu_mb": round(cached_mb, 3)})
+        log_fn(job_log, f"real_train cached_samples_on_gpu=true cached_mb={cached_mb:.1f} batch_size={batch_size}")
+
+    def make_index_batches(count: int, shuffle: bool) -> list[list[int]]:
+        indices = list(range(count))
+        if shuffle:
+            random.shuffle(indices)
+        return [indices[i : i + batch_size] for i in range(0, len(indices), batch_size)]
+
     best_val_iou = -1.0
     best_epoch = 0
     epochs_without_improvement = 0
@@ -1012,29 +1068,55 @@ def run_real_train(
                 _set_batchnorm_eval(model)
             train_losses = []
             train_metrics = []
-            for batch in make_batches(train_samples, shuffle=True):
-                x = torch.from_numpy(np.stack([item[0] for item in batch])).to(device)
-                y = torch.from_numpy(np.stack([item[1] for item in batch])).to(device)
-                optimizer.zero_grad(set_to_none=True)
-                logits = model(x)
-                loss = _loss_fn(logits, y)
-                loss.backward()
-                optimizer.step()
-                train_losses.append(float(loss.item()))
-                train_metrics.append(_dice_iou_precision_recall(logits.detach(), y))
-                if time.time() - started > time_limit_sec:
-                    break
+            if train_tensor_pair is not None:
+                train_x, train_y = train_tensor_pair
+                for batch_indices in make_index_batches(train_x.shape[0], shuffle=True):
+                    idx = torch.as_tensor(batch_indices, dtype=torch.long, device=device)
+                    x = train_x.index_select(0, idx)
+                    y = train_y.index_select(0, idx)
+                    optimizer.zero_grad(set_to_none=True)
+                    logits = model(x)
+                    loss = _loss_fn(logits, y)
+                    loss.backward()
+                    optimizer.step()
+                    train_losses.append(float(loss.item()))
+                    train_metrics.append(_dice_iou_precision_recall(logits.detach(), y))
+                    if time.time() - started > time_limit_sec:
+                        break
+            else:
+                for batch in make_batches(train_samples, shuffle=True):
+                    x = torch.from_numpy(np.stack([item[0] for item in batch])).to(device)
+                    y = torch.from_numpy(np.stack([item[1] for item in batch])).to(device)
+                    optimizer.zero_grad(set_to_none=True)
+                    logits = model(x)
+                    loss = _loss_fn(logits, y)
+                    loss.backward()
+                    optimizer.step()
+                    train_losses.append(float(loss.item()))
+                    train_metrics.append(_dice_iou_precision_recall(logits.detach(), y))
+                    if time.time() - started > time_limit_sec:
+                        break
 
             model.eval()
             val_losses = []
             val_metrics = []
             with torch.no_grad():
-                for batch in make_batches(val_samples, shuffle=False):
-                    x = torch.from_numpy(np.stack([item[0] for item in batch])).to(device)
-                    y = torch.from_numpy(np.stack([item[1] for item in batch])).to(device)
-                    logits = model(x)
-                    val_losses.append(float(_loss_fn(logits, y).item()))
-                    val_metrics.append(_dice_iou_precision_recall(logits, y))
+                if val_tensor_pair is not None:
+                    val_x, val_y = val_tensor_pair
+                    for batch_indices in make_index_batches(val_x.shape[0], shuffle=False):
+                        idx = torch.as_tensor(batch_indices, dtype=torch.long, device=device)
+                        x = val_x.index_select(0, idx)
+                        y = val_y.index_select(0, idx)
+                        logits = model(x)
+                        val_losses.append(float(_loss_fn(logits, y).item()))
+                        val_metrics.append(_dice_iou_precision_recall(logits, y))
+                else:
+                    for batch in make_batches(val_samples, shuffle=False):
+                        x = torch.from_numpy(np.stack([item[0] for item in batch])).to(device)
+                        y = torch.from_numpy(np.stack([item[1] for item in batch])).to(device)
+                        logits = model(x)
+                        val_losses.append(float(_loss_fn(logits, y).item()))
+                        val_metrics.append(_dice_iou_precision_recall(logits, y))
 
             def avg_metric(rows: list[dict[str, float]], name: str) -> float:
                 return float(np.mean([row[name] for row in rows])) if rows else 0.0
