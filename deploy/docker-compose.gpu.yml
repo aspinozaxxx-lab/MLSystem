@@ -70,6 +70,7 @@ services:
         condition: service_healthy
       minio-init:
         condition: service_completed_successfully
+    env_file: /etc/mlsystem/gpu-platform.env
     environment:
       MLFLOW_S3_ENDPOINT_URL: http://minio:9000
       AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
