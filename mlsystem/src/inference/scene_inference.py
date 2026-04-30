@@ -33,6 +33,7 @@ class SceneInferenceConfig:
     max_windows_per_scene: int | None = None
     batch_size: int = 1
     collect_debug_features: bool = False
+    gpu_forward_concurrency: int = 1
 
 
 @dataclass
@@ -81,7 +82,7 @@ class SceneInferenceRunner:
         self.model = model
         self.device = device
         self.inference_config = inference_config
-        self._predict_lock = threading.Lock()
+        self._predict_guard = threading.BoundedSemaphore(max(1, int(inference_config.gpu_forward_concurrency)))
 
     def run_scene(self, scene_index: int, match: Any) -> SceneInferenceResult:
         import rasterio
@@ -121,7 +122,7 @@ class SceneInferenceRunner:
                     if not pending:
                         return
                     arrays = [item[3] for item in pending]
-                    with self._predict_lock:
+                    with self._predict_guard:
                         try:
                             probs, model_output_shape = _predict_probability_batch(self.model, self.device, arrays)
                             effective_batch_size = len(arrays)

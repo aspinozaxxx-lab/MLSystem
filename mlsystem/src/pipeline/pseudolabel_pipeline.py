@@ -95,11 +95,11 @@ def run_pseudolabel_pipeline(
     if batch_size_raw is not None:
         inference_batch_size = max(1, int(batch_size_raw))
     elif patch_size <= 512:
-        inference_batch_size = 64
+        inference_batch_size = 128
     elif patch_size <= 768:
-        inference_batch_size = 16 if "deeplab" in model_name else 24
+        inference_batch_size = 32 if "deeplab" in model_name else 48
     else:
-        inference_batch_size = 8 if model_name.startswith("segformer") else 12
+        inference_batch_size = 24 if model_name.startswith("segformer") else 32
 
     started = time.time()
     model.eval()
@@ -108,6 +108,14 @@ def run_pseudolabel_pipeline(
     parallel_enabled = bool(parallel_cfg.get("enabled", device.type == "cuda"))
     max_workers = max(1, int(parallel_cfg.get("max_workers") or (4 if parallel_enabled else 1)))
     torch_threads_per_worker = max(1, int(parallel_cfg.get("torch_threads_per_worker") or max(1, torch.get_num_threads() // max_workers)))
+    gpu_forward_concurrency = max(
+        1,
+        int(
+            parallel_cfg.get("gpu_forward_concurrency")
+            or parallel_cfg.get("max_concurrent_forwards")
+            or (2 if parallel_enabled and device.type == "cuda" and max_workers > 1 else 1)
+        ),
+    )
     torch.set_num_threads(torch_threads_per_worker)
 
     runner = SceneInferenceRunner(
@@ -127,6 +135,7 @@ def run_pseudolabel_pipeline(
             max_windows_per_scene=max_windows_per_scene,
             batch_size=inference_batch_size,
             collect_debug_features=debug_mode,
+            gpu_forward_concurrency=gpu_forward_concurrency,
         ),
     )
 
@@ -310,6 +319,7 @@ def run_pseudolabel_pipeline(
         "inference_max_workers": max_workers,
         "torch_threads_per_worker": torch_threads_per_worker,
         "inference_batch_size": inference_batch_size,
+        "gpu_forward_concurrency": gpu_forward_concurrency,
         "inference_duration_sec": round(time.time() - started, 3),
         "crop_mode": crop_mode,
         "stitch_mode": stitch_mode,
@@ -335,6 +345,7 @@ def run_pseudolabel_pipeline(
             "max_workers": max_workers,
             "torch_threads_per_worker": torch_threads_per_worker,
             "batch_size": inference_batch_size,
+            "gpu_forward_concurrency": gpu_forward_concurrency,
         },
         "total_inference_duration_sec": coverage_report["inference_duration_sec"],
         "per_scene": [
@@ -381,6 +392,7 @@ def run_pseudolabel_pipeline(
         "inference_max_workers": max_workers,
         "torch_threads_per_worker": torch_threads_per_worker,
         "inference_batch_size": inference_batch_size,
+        "gpu_forward_concurrency": gpu_forward_concurrency,
         "top_limit_applied": float(max_objects is not None and postprocess_result.objects_after_filter > int(max_objects)),
         "top500_applied": float(max_objects == 500 and postprocess_result.objects_after_filter > 500),
         "pseudolabel/accepted_geojson_mb": geojson_mb,
