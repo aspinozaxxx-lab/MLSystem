@@ -1028,6 +1028,8 @@ def run_real_train(
                 "val/loss": float(np.mean(val_losses)) if val_losses else 0.0,
                 "val/dice": avg_metric(val_metrics, "dice"),
                 "val/iou": avg_metric(val_metrics, "iou"),
+                "val/pixel_dice": avg_metric(val_metrics, "dice"),
+                "val/pixel_iou": avg_metric(val_metrics, "iou"),
                 "val/precision": avg_metric(val_metrics, "precision"),
                 "val/recall": avg_metric(val_metrics, "recall"),
                 "val/pixel_f1": avg_metric(val_metrics, "f1"),

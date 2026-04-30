@@ -10,6 +10,7 @@ from src.pipeline.airflow_tasks import MAIN_DAG_STAGES, run_airflow_stage
 
 
 AIRFLOW_STATE_DIR = Path("/opt/airflow/mlsystem_runs")
+GPU_POOL_STAGES = {"train_model"}
 
 
 def _run_stage(stage: str, **context):
@@ -37,6 +38,7 @@ with DAG(
             task_id=stage_name,
             python_callable=_run_stage,
             op_kwargs={"stage": stage_name},
+            pool="gpu_training" if stage_name in GPU_POOL_STAGES else "default_pool",
         )
         if previous:
             previous >> task

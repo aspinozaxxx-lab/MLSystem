@@ -30,11 +30,12 @@ def postprocess_vectorization_result(
     *,
     min_area_m2: float,
     simplify_tolerance_m: float,
-    max_objects: int,
+    max_objects: int | None,
 ) -> PostprocessResult:
     area_filtered = filter_features_by_area(vectorization.features_raw, min_area_m2)
     simplified = simplify_features(area_filtered, simplify_tolerance_m)
-    top = limit_top_features(simplified, max_objects)
+    top = limit_top_features(simplified, max_objects) if max_objects is not None else simplified
+    top_limit_applied = max_objects is not None and len(simplified) > int(max_objects)
     return PostprocessResult(
         features=top,
         objects_before_filter=vectorization.raw_count,
@@ -44,7 +45,7 @@ def postprocess_vectorization_result(
             "threshold": vectorization.threshold,
             "min_object_area_m2": float(min_area_m2),
             "simplify_tolerance_m": float(simplify_tolerance_m),
-            "max_objects": int(max_objects),
+            "max_objects": int(max_objects) if max_objects is not None else None,
         },
-        warnings=["top_limit_applied"] if len(simplified) > int(max_objects) else [],
+        warnings=["top_limit_applied"] if top_limit_applied else [],
     )

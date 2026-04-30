@@ -137,6 +137,7 @@ services:
         chown -R "$${AIRFLOW_UID}:0" /opt/airflow/logs /opt/airflow/dags /opt/airflow/plugins /opt/airflow/mlsystem_runs
         airflow db migrate
         airflow users create --username "$${_AIRFLOW_WWW_USER_USERNAME}" --password "$${_AIRFLOW_WWW_USER_PASSWORD}" --firstname "$${_AIRFLOW_WWW_USER_FIRSTNAME}" --lastname "$${_AIRFLOW_WWW_USER_LASTNAME}" --role Admin --email "$${_AIRFLOW_WWW_USER_EMAIL}" || true
+        airflow pools set gpu_training 1 "Single GPU training slot"
     volumes:
       - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/airflow/dags:/opt/airflow/dags
       - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/airflow/plugins:/opt/airflow/plugins

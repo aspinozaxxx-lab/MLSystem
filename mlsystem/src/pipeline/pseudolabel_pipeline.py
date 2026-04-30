@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import json
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -33,6 +34,11 @@ def _geojson_size_mb(path: Path) -> float:
     return path.stat().st_size / (1024 * 1024)
 
 
+def _features_geojson_size_mb(features: list[dict[str, Any]]) -> float:
+    payload = {"type": "FeatureCollection", "features": features}
+    return len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) / (1024 * 1024)
+
+
 def run_pseudolabel_pipeline(
     config: PipelineConfig,
     job: JobSpec,
@@ -54,12 +60,13 @@ def run_pseudolabel_pipeline(
 
     post_cfg = job.postprocess or {}
     thresholds = post_cfg.get("thresholds") or [threshold]
-    threshold_used = float(thresholds[0])
-    max_objects = int(post_cfg.get("max_objects") or 500)
+    max_objects_raw = post_cfg.get("max_objects", 500)
+    max_objects = None if max_objects_raw is None else int(max_objects_raw)
     min_area_candidates = post_cfg.get("min_object_area_m2_candidates") or [1000]
     simplify_candidates = post_cfg.get("simplify_tolerance_m_candidates") or [5]
-    min_area = float(min_area_candidates[0])
-    simplify_tolerance = float(simplify_candidates[0])
+    max_geojson_mb = float(post_cfg.get("max_geojson_mb") or 20)
+    auto_tune = bool(post_cfg.get("auto_tune", False))
+    smooth_polygons = bool(post_cfg.get("smooth_polygons", False))
     full_scene = bool(pseudolabel_cfg.get("full_scene", True))
     max_windows_per_scene = pseudolabel_cfg.get("max_windows_per_scene")
     max_debug_scenes = pseudolabel_cfg.get("max_debug_scenes")
@@ -101,7 +108,7 @@ def run_pseudolabel_pipeline(
             input_bands=input_bands,
             patch_size=patch_size,
             stride=int(job.preprocess.get("stride") or patch_size),
-            threshold=threshold_used,
+            threshold=float(thresholds[0]),
             crop_mode=crop_mode,
             stitch_mode=stitch_mode,
             center_size=center_size,
@@ -128,11 +135,6 @@ def run_pseudolabel_pipeline(
     vertices_before = 0
     preview_artifacts: list[Path] = []
     for result in sorted(scene_results, key=lambda item: item.scene_index):
-        vectorized = vectorize_probability_map(result.probability_map, scene_name=result.scene_name, threshold=threshold_used)
-        all_raw_features.extend(vectorized.features_raw)
-        vertices_before += vectorized.vertices_before
-        result.debug_row["objects_before_filter"] = vectorized.raw_count
-        result.debug_row["objects_after_filter"] = vectorized.raw_count
         windows_preview_features.extend(result.windows_preview_features)
         tile_insert_features.extend(result.tile_insert_features)
         tile_insert_debug_rows.extend(result.tile_insert_debug_rows)
@@ -142,20 +144,83 @@ def run_pseudolabel_pipeline(
             if preview:
                 preview_artifacts.append(preview)
 
-    vectorization = VectorizationResult(
-        features_raw=all_raw_features,
-        raw_count=len(all_raw_features),
-        vertices_before=vertices_before,
-        threshold=threshold_used,
-        crs="EPSG:3857",
-        metadata={"scene_count": len(scene_results)},
-    )
-    postprocess_result = postprocess_vectorization_result(
-        vectorization,
-        min_area_m2=min_area,
-        simplify_tolerance_m=simplify_tolerance,
-        max_objects=max_objects,
-    )
+    def build_vectorization(threshold_value: float) -> VectorizationResult:
+        raw_features: list[dict[str, Any]] = []
+        raw_vertices = 0
+        for result in sorted(scene_results, key=lambda item: item.scene_index):
+            vectorized = vectorize_probability_map(result.probability_map, scene_name=result.scene_name, threshold=threshold_value)
+            raw_features.extend(vectorized.features_raw)
+            raw_vertices += vectorized.vertices_before
+        return VectorizationResult(
+            features_raw=raw_features,
+            raw_count=len(raw_features),
+            vertices_before=raw_vertices,
+            threshold=threshold_value,
+            crs="EPSG:3857",
+            metadata={"scene_count": len(scene_results)},
+        )
+
+    selected: tuple[VectorizationResult, Any, float, float, float, float] | None = None
+    candidates_checked: list[dict[str, Any]] = []
+    threshold_values = [float(item) for item in thresholds]
+    min_area_values = [float(item) for item in min_area_candidates]
+    simplify_values = [float(item) for item in simplify_candidates]
+    if not auto_tune:
+        threshold_values = threshold_values[:1]
+        min_area_values = min_area_values[:1]
+        simplify_values = simplify_values[:1]
+    for threshold_candidate in threshold_values:
+        vectorization_candidate = build_vectorization(threshold_candidate)
+        for min_area_candidate in min_area_values:
+            for simplify_candidate in simplify_values:
+                result_candidate = postprocess_vectorization_result(
+                    vectorization_candidate,
+                    min_area_m2=min_area_candidate,
+                    simplify_tolerance_m=simplify_candidate,
+                    max_objects=max_objects,
+                )
+                candidate_size_mb = _features_geojson_size_mb(result_candidate.features)
+                candidates_checked.append(
+                    {
+                        "threshold": threshold_candidate,
+                        "min_object_area_m2": min_area_candidate,
+                        "simplify_tolerance_m": simplify_candidate,
+                        "object_count": len(result_candidate.features),
+                        "vertices_count": int(sum(vertex_count(item["geometry"]) for item in result_candidate.features)),
+                        "estimated_geojson_mb": candidate_size_mb,
+                    }
+                )
+                if selected is None or candidate_size_mb < selected[5]:
+                    selected = (
+                        vectorization_candidate,
+                        result_candidate,
+                        threshold_candidate,
+                        min_area_candidate,
+                        simplify_candidate,
+                        candidate_size_mb,
+                    )
+                if candidate_size_mb <= max_geojson_mb:
+                    selected = (
+                        vectorization_candidate,
+                        result_candidate,
+                        threshold_candidate,
+                        min_area_candidate,
+                        simplify_candidate,
+                        candidate_size_mb,
+                    )
+                    break
+            if selected and selected[5] <= max_geojson_mb:
+                break
+        if selected and selected[5] <= max_geojson_mb:
+            break
+    if selected is None:
+        raise RuntimeError("Postprocess did not produce any candidate result")
+    vectorization, postprocess_result, threshold_used, min_area, simplify_tolerance, _estimated_geojson_mb = selected
+    all_raw_features = vectorization.features_raw
+    vertices_before = vectorization.vertices_before
+    for result in tiling_debug_rows:
+        result["objects_before_filter"] = vectorization.raw_count
+        result["objects_after_filter"] = vectorization.raw_count
     vertices_after = int(sum(vertex_count(item["geometry"]) for item in postprocess_result.features))
     tiling_debug = {
         "schema_version": 1,
@@ -188,10 +253,12 @@ def run_pseudolabel_pipeline(
     geojson_mb = _geojson_size_mb(exported["geojson_path"])
     gz_mb = _geojson_size_mb(exported["gz_path"])
     gpkg_mb = _geojson_size_mb(exported["gpkg_path"]) if exported["gpkg_path"].exists() else None
-    max_geojson_mb = float(post_cfg.get("max_geojson_mb") or 20)
     postprocess_debug = build_postprocess_debug(postprocess_result, geojson_mb=geojson_mb, max_geojson_mb=max_geojson_mb)
     postprocess_debug["vertices_before"] = vertices_before
     postprocess_debug["vertices_after"] = vertices_after
+    postprocess_debug["auto_tune"] = auto_tune
+    postprocess_debug["smooth_polygons"] = smooth_polygons
+    postprocess_debug["candidates_checked"] = candidates_checked
     postprocess_debug_path = experiment_dir / "postprocess_debug.json"
     write_json(postprocess_debug_path, postprocess_debug)
 
@@ -213,9 +280,11 @@ def run_pseudolabel_pipeline(
         "accepted_geojson_mb": geojson_mb,
         "accepted_geojson_gz_mb": gz_mb,
         "accepted_gpkg_mb": gpkg_mb,
-        "top500_applied": postprocess_result.objects_after_filter > max_objects,
+        "top_limit_applied": max_objects is not None and postprocess_result.objects_after_filter > int(max_objects),
+        "top500_applied": max_objects == 500 and postprocess_result.objects_after_filter > 500,
         "max_objects": max_objects,
         "max_geojson_mb": max_geojson_mb,
+        "smooth_polygons": smooth_polygons,
         "inference_parallel_enabled": parallel_enabled,
         "inference_max_workers": max_workers,
         "torch_threads_per_worker": torch_threads_per_worker,
@@ -279,6 +348,7 @@ def run_pseudolabel_pipeline(
         "accepted_gpkg_mb": gpkg_mb,
         "total_area_m2": total_area,
         "total_vertices": vertices_after,
+        "vertices_count": vertices_after,
         "threshold_used": threshold_used,
         "min_object_area_m2_used": min_area,
         "simplify_tolerance_m_used": simplify_tolerance,
@@ -287,7 +357,12 @@ def run_pseudolabel_pipeline(
         "inference_parallel_enabled": float(parallel_enabled),
         "inference_max_workers": max_workers,
         "torch_threads_per_worker": torch_threads_per_worker,
-        "top500_applied": float(postprocess_result.objects_after_filter > max_objects),
+        "top_limit_applied": float(max_objects is not None and postprocess_result.objects_after_filter > int(max_objects)),
+        "top500_applied": float(max_objects == 500 and postprocess_result.objects_after_filter > 500),
+        "pseudolabel/accepted_geojson_mb": geojson_mb,
+        "pseudolabel/object_count": len(postprocess_result.features),
+        "pseudolabel/vertices_count": vertices_after,
+        "pseudolabel/max_geojson_mb": max_geojson_mb,
     }
     metrics.update(object_metric_values)
     if tiling_debug_rows:
