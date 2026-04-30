@@ -1,0 +1,111 @@
+{
+  "date": "2026-04-30",
+  "new_server": {
+    "host": "31.192.104.147",
+    "ssh_alias": "gpu-mlserver",
+    "os": "Ubuntu 24.04.4 LTS",
+    "kernel": "6.8.0-110-generic",
+    "cpu": "AMD Ryzen 9 9950X 16-Core Processor",
+    "ram_gib": 123,
+    "root_disk_tib": 1.9,
+    "gpu": "NVIDIA GeForce RTX 5090",
+    "vram_mib": 32607,
+    "nvidia_driver": "580.142",
+    "cuda_driver_version": "13.0"
+  },
+  "urls": {
+    "airflow": "http://31.192.104.147:8081",
+    "mlflow": "http://31.192.104.147:5000",
+    "minio_console": "http://31.192.104.147:9001",
+    "triton_ready": "http://31.192.104.147:8000/v2/health/ready"
+  },
+  "deployed_services": [
+    "minio",
+    "mlflow-postgres",
+    "mlflow",
+    "airflow-postgres",
+    "airflow-webserver",
+    "airflow-scheduler",
+    "airflow-triggerer",
+    "triton"
+  ],
+  "checks": {
+    "airflow_health": "ok",
+    "mlflow_health": "ok",
+    "minio_health": "ok",
+    "triton_health": "ok",
+    "docker_gpus_all": "ok",
+    "pytorch_cuda_in_airflow": true,
+    "pytorch_device": "NVIDIA GeForce RTX 5090",
+    "triton_identity_inference": "ok"
+  },
+  "migration": {
+    "bucket": "mlsystems",
+    "migrated_prefixes": {
+      "images": {"size": "42 GiB", "objects": 332},
+      "layouts": {"size": "338 KiB"},
+      "system": {"status": "copied"},
+      "models": {"status": "copied; no old checkpoints found"},
+      "reports": {"status": "copied"}
+    },
+    "not_migrated": [
+      "old generated predictions",
+      "old pseudolabel debug/probability maps",
+      "deprecated queue state",
+      "old MLflow database"
+    ],
+    "old_server_deleted_or_disabled": false
+  },
+  "smoke_runs": {
+    "synthetic": {
+      "dag_id": "mlsystem_experiment_pipeline",
+      "dag_run_id": "manual__AIR-gpu-smoke-synthetic__20260430T115829Z",
+      "status": "success",
+      "mlflow_url": "http://31.192.104.147:5000/#/experiments/1/runs/95f0be755c624befbdc93ec3f6f926c3"
+    },
+    "real_mini": {
+      "dag_id": "mlsystem_experiment_pipeline",
+      "dag_run_id": "manual__AIR-gpu-mini-deforest__20260430T115951Z",
+      "status": "success",
+      "mlflow_url": "http://31.192.104.147:5000/#/experiments/2/runs/f0105ffa612444068fad8975f99d7ca1",
+      "model": "tiny_unet_4ch",
+      "device": "cuda",
+      "epochs_completed": 1,
+      "metrics": {
+        "train/loss": 1.7174495855967205,
+        "train/iou": 0.07215563456252842,
+        "val/iou": 3.814697265623545e-13,
+        "val/object_f1": 0.0,
+        "val/object_precision": 0.0,
+        "val/object_recall": 0.0
+      },
+      "artifacts": [
+        "train_scenes.txt",
+        "val_scenes.txt",
+        "pseudolabel_scenes.txt",
+        "AIR-gpu-mini-deforest.accepted.geojson",
+        "object_metrics.json",
+        "coverage_report.json",
+        "pseudolabel_summary.json",
+        "prediction_examples.html",
+        "run_summary.json",
+        "codex_summary.json",
+        "history.json",
+        "history.csv",
+        "tiny_unet_4ch.pt"
+      ]
+    }
+  },
+  "github_actions": {
+    "workflow": ".github/workflows/deploy-gpu-server.yml",
+    "runner": "ubuntu-latest",
+    "self_hosted_runner_required": false,
+    "requires_secrets_configuration": true
+  },
+  "remaining_limits": [
+    "Build a custom Airflow image instead of installing ML dependencies at container startup.",
+    "Export real trained models to Triton and wire inference_backend=triton for production inference.",
+    "Old MLflow history remains on the old server.",
+    "GitHub deploy workflow requires GitHub Secrets to be configured."
+  ]
+}

@@ -2,13 +2,19 @@
 
 ## UI
 
-Open Airflow:
+Primary GPU Airflow:
+
+```text
+http://31.192.104.147:8081
+```
+
+Legacy Airflow on the old server remains available for old runs:
 
 ```text
 http://172.26.12.169:8081
 ```
 
-On the server or through SSH alias, `http://mlserver:8081` may also work.
+On the old server or through SSH alias, `http://mlserver:8081` may also work.
 
 Trigger experiments from DAG `mlsystem_experiment_pipeline` with JSON `dag_run.conf`.
 
@@ -22,12 +28,31 @@ GET /api/v1/dags/mlsystem_experiment_pipeline/dagRuns/{dag_run_id}
 GET /api/v1/dags/mlsystem_experiment_pipeline/dagRuns/{dag_run_id}/taskInstances
 ```
 
-Compact Codex-readable status is also written on the server:
+Compact Codex-readable status is also written on the active server:
 
 ```text
 /data/mlsystem/airflow/status/<experiment_id>/summary.json
 /data/mlsystem/airflow/status/<experiment_id>/stages/*.json
 ```
+
+For new GPU runs, read that path on `gpu-mlserver`.
+
+## GPU Real Mini Acceptance
+
+The first real GPU mini run:
+
+```text
+Airflow run: http://31.192.104.147:8081/dags/mlsystem_experiment_pipeline/grid?dag_run_id=manual__AIR-gpu-mini-deforest__20260430T115951Z
+MLflow run: http://31.192.104.147:5000/#/experiments/2/runs/f0105ffa612444068fad8975f99d7ca1
+```
+
+Result:
+
+- all 23 Airflow stages succeeded;
+- `tiny_unet_4ch` trained for 1 epoch;
+- training device: `cuda`;
+- MLflow metrics include `train/loss`, `train/iou`, `val/iou`, `val/object_f1`, `val/object_precision`, `val/object_recall`;
+- artifacts include `train_scenes.txt`, `pseudolabel_scenes.txt`, `AIR-gpu-mini-deforest.accepted.geojson`, `object_metrics.json`, `coverage_report.json`, `prediction_examples.html`, `run_summary.json`, and `codex_summary.json`.
 
 ## Real Mini Acceptance Config
 
