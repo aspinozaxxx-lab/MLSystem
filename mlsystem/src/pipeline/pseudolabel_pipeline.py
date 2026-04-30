@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -104,8 +105,8 @@ def run_pseudolabel_pipeline(
     model.eval()
     previous_torch_threads = torch.get_num_threads()
     parallel_cfg = ((job.predict.get("inference") or {}).get("parallel") or (job.params.get("inference") or {}).get("parallel") or {})
-    parallel_enabled = bool(parallel_cfg.get("enabled", False))
-    max_workers = max(1, int(parallel_cfg.get("max_workers") or 1))
+    parallel_enabled = bool(parallel_cfg.get("enabled", device.type == "cuda"))
+    max_workers = max(1, int(parallel_cfg.get("max_workers") or (4 if parallel_enabled else 1)))
     torch_threads_per_worker = max(1, int(parallel_cfg.get("torch_threads_per_worker") or max(1, torch.get_num_threads() // max_workers)))
     torch.set_num_threads(torch_threads_per_worker)
 
@@ -130,10 +131,16 @@ def run_pseudolabel_pipeline(
 
     scene_results = []
     try:
-        # The previous implementation could run scenes in parallel. This keeps
-        # deterministic behavior in the refactor step; the config is still
-        # reported and can be re-enabled inside SceneInferenceRunner later.
-        scene_results = [runner.run_scene(idx, match) for idx, match in enumerate(matches)]
+        if parallel_enabled and max_workers > 1 and len(matches) > 1:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {
+                    executor.submit(runner.run_scene, idx, match): idx
+                    for idx, match in enumerate(matches)
+                }
+                for future in as_completed(futures):
+                    scene_results.append(future.result())
+        else:
+            scene_results = [runner.run_scene(idx, match) for idx, match in enumerate(matches)]
     finally:
         torch.set_num_threads(previous_torch_threads)
 
