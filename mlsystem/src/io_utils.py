@@ -1,11 +1,12 @@
 from __future__ import annotations
 import json
+import os
 from pathlib import Path
 from typing import Any
 
 def write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
     with tmp.open("w", encoding="utf-8") as fp:
         json.dump(payload, fp, ensure_ascii=False, indent=2, sort_keys=True)
         fp.write("\n")
