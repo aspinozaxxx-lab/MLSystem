@@ -413,7 +413,7 @@ def _read_samples(
         for scene_idx, match in enumerate(matches):
             if len(samples) >= max_tiles_total:
                 break
-            path = f"/vsis3/{config.storage.s3_bucket}/{match.key}"
+            path = s3_storage.raster_path_for_s3_key(config, match.key)
             with rasterio.open(path) as ds:
                 scene_bounds = box(*ds.bounds)
                 positive_scene = any(

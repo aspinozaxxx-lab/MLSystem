@@ -13,7 +13,7 @@ from shapely.geometry import box, mapping
 from ..pipeline.contracts import ProbabilityMap, TileWindow
 from ..pipeline_config import PipelineConfig
 from ..preprocessing.normalization import normalize_image
-from ..storage.s3 import aws_session
+from ..storage.s3 import aws_session, raster_path_for_s3_key
 from ..tiling.debug_tiling import probability_nonzero_bbox
 from ..tiling.windows import window_grid
 from .probability_map import ProbabilityMapAccumulator, ProbabilityMapConfig
@@ -94,7 +94,7 @@ class SceneInferenceRunner:
         aws = aws_session(self.config)
 
         with rasterio.Env(aws, AWS_HTTPS="NO", AWS_VIRTUAL_HOSTING="FALSE"):
-            path = f"/vsis3/{self.config.storage.s3_bucket}/{match.key}"
+            path = raster_path_for_s3_key(self.config, match.key)
             with rasterio.open(path) as ds:
                 all_windows = window_grid(ds.width, ds.height, cfg.patch_size, cfg.stride, scene_id=match.name)
                 windows = all_windows if cfg.full_scene else all_windows[: max(1, int(cfg.max_windows_per_scene or len(all_windows)))]

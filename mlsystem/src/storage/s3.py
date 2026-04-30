@@ -48,6 +48,27 @@ def s3_client(config: PipelineConfig):
     )
 
 
+def cached_s3_object_path(config: PipelineConfig, bucket: str, key: str) -> Path:
+    cache_roots = config.known_data_roots or [Path("/data/mlsystem/cache")]
+    root = Path(cache_roots[0]) / "s3" / bucket
+    path = root / key
+    if path.exists() and path.stat().st_size > 0:
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(path.name + ".tmp")
+    client = s3_client(config)
+    client.download_file(bucket, key, str(tmp_path))
+    tmp_path.replace(path)
+    return path
+
+
+def raster_path_for_s3_key(config: PipelineConfig, key: str) -> str:
+    if str(config.storage.heavy_backend).lower() == "s3":
+        cached = cached_s3_object_path(config, config.storage.s3_bucket, key)
+        return str(cached)
+    return f"/vsis3/{config.storage.s3_bucket}/{key}"
+
+
 def aws_session(config: PipelineConfig):
     import boto3
     from rasterio.session import AWSSession
