@@ -710,8 +710,17 @@ def run_debug_pseudolabel(
     matching_report_path = experiment_dir / "scene_matching_report.json"
     write_json(scenes_report_path, scene_report)
     write_json(matching_report_path, scene_report)
-    train_scenes_path = _write_scene_list(experiment_dir / "train_scenes.txt", matches)
-    mlflow_run.log_artifacts([scenes_report_path, matching_report_path, train_scenes_path])
+    preserve_train_scenes = bool(
+        pseudolabel_cfg.get("preserve_train_scenes")
+        or job.predict.get("preserve_train_scenes")
+        or job.params.get("preserve_train_scenes")
+    )
+    scene_list_path = (
+        _write_scene_list(experiment_dir / "pseudolabel_candidate_scenes.txt", matches)
+        if preserve_train_scenes
+        else _write_scene_list(experiment_dir / "train_scenes.txt", matches)
+    )
+    mlflow_run.log_artifacts([scenes_report_path, matching_report_path, scene_list_path])
     mlflow_run.log_params(
         {
             "scene_count": len(matches),
@@ -1242,6 +1251,7 @@ def run_real_train(
         "time_limit_sec": time_limit_sec,
         "best_epoch": best_epoch,
         "best_val_iou": best_val_iou,
+        "checkpoint_path": str(checkpoint_path),
         "last_epoch_metrics": last,
         "postprocess_metrics": postprocess_metrics,
         "pseudolabel": {

@@ -18,6 +18,7 @@ from ..s3_adapter import build_s3_layout_status
 from ..storage.local_io import read_json, write_json
 from ..storage.s3 import find_layout_files, list_s3_objects, read_s3_text
 from ..data.scene_matching import build_scene_matching_report
+from .prediction_pipeline import PredictionPipeline
 from .training_pipeline import TrainingPipeline
 
 
@@ -73,6 +74,9 @@ class AirflowExperimentConfig(BaseModel):
     train: dict[str, Any] = Field(default_factory=dict)
     pseudolabel: dict[str, Any] = Field(default_factory=dict)
     postprocess: dict[str, Any] = Field(default_factory=dict)
+    inference: dict[str, Any] = Field(default_factory=dict)
+    predict: dict[str, Any] = Field(default_factory=dict)
+    params: dict[str, Any] = Field(default_factory=dict)
     mlflow: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("experiment_id")
@@ -205,6 +209,8 @@ def _build_airflow_job(conf: AirflowExperimentConfig) -> JobSpec:
     preprocess_cfg = dict(conf.preprocess or {})
     model_cfg = dict(conf.model or {})
     pseudolabel_cfg = dict(conf.pseudolabel or {})
+    predict_cfg = dict(conf.predict or {})
+    params_cfg = dict(conf.params or {})
     if "tile_size" in preprocess_cfg and "patch_size" not in train_cfg:
         train_cfg["patch_size"] = preprocess_cfg["tile_size"]
     if "max_epochs" in train_cfg and "epochs" not in train_cfg:
@@ -222,16 +228,23 @@ def _build_airflow_job(conf: AirflowExperimentConfig) -> JobSpec:
     train_cfg.setdefault("allow_train_val_sample_fallback", True)
     train_cfg.setdefault("model", model_cfg)
     train_cfg.setdefault("model_name", model_cfg.get("name") or "tiny_unet_4ch")
+    if conf.inference:
+        params_cfg.setdefault("inference", dict(conf.inference))
+        predict_cfg.setdefault("inference", dict(conf.inference))
+    params_cfg.update(
+        {
+            "model": model_cfg,
+            "input_bands": model_cfg.get("input_bands") or [1, 2, 3, 4],
+            "pseudolabel": pseudolabel_cfg,
+        }
+    )
+    predict_cfg.update({"pseudolabel": pseudolabel_cfg, "model": model_cfg})
     return JobSpec(
         job_id=conf.experiment_id,
         task=conf.task,
         class_name=conf.class_name,
         description="Airflow experiment run",
-        params={
-            "model": model_cfg,
-            "input_bands": model_cfg.get("input_bands") or [1, 2, 3, 4],
-            "pseudolabel": pseudolabel_cfg,
-        },
+        params=params_cfg,
         data={
             "images_uri": conf.images_uri,
             "layout_uri": conf.layout_uri,
@@ -240,7 +253,7 @@ def _build_airflow_job(conf: AirflowExperimentConfig) -> JobSpec:
         },
         preprocess=preprocess_cfg,
         train=train_cfg,
-        predict={"pseudolabel": pseudolabel_cfg, "model": model_cfg},
+        predict=predict_cfg,
         postprocess=conf.postprocess or {},
         resources={"requires_gpu": bool(train_cfg.get("require_gpu", True))},
         mlflow={"experiment": conf.mlflow.get("experiment")} if conf.mlflow.get("experiment") else {},
@@ -253,7 +266,10 @@ def _run_training_pipeline(conf: AirflowExperimentConfig, store: AirflowRunStore
     run_id = mlflow_info.get("run_id")
     pipeline_config = load_config()
     experiment_name = conf.mlflow.get("experiment") or pipeline_config.mlflow_default_experiment
-    job = _build_airflow_job(conf)
+    train_pseudolabel = dict(conf.pseudolabel or {})
+    train_pseudolabel["enabled"] = False
+    train_only_conf = conf.model_copy(update={"pseudolabel": train_pseudolabel})
+    job = _build_airflow_job(train_only_conf)
     job_log = store.run_dir / "airflow_train.log"
     tags = {
         "job_id": conf.experiment_id,
@@ -282,10 +298,91 @@ def _run_training_pipeline(conf: AirflowExperimentConfig, store: AirflowRunStore
     ) as mlflow_run:
         result = TrainingPipeline().run(pipeline_config, job, store.run_dir, mlflow_run, job_log, _append_log)
         result["mlflow"] = mlflow_run.result()
-        mlflow_run.set_tags({"job_status": "ml_pipeline_completed", "airflow_training_status": "success"})
+        mlflow_run.set_tags({"job_status": "training_completed", "airflow_training_status": "success"})
     write_json(store.run_dir / "training_result.json", result)
     store.update_summary(training_result=result, mlflow=result.get("mlflow") or mlflow_info)
     return result
+
+
+def _checkpoint_path_for_pseudolabel(conf: AirflowExperimentConfig, store: AirflowRunStore, training_result: dict[str, Any]) -> Path:
+    checkpoint_path = training_result.get("checkpoint_path")
+    if checkpoint_path:
+        path = Path(str(checkpoint_path))
+        if path.exists():
+            return path
+    model_name = str(conf.model.get("name") or training_result.get("model_name") or "tiny_unet_4ch")
+    fallback = store.run_dir / f"{model_name}.pt"
+    if fallback.exists():
+        return fallback
+    raise RuntimeError(f"Training checkpoint is missing: {checkpoint_path or fallback}")
+
+
+def _run_pseudolabel_pipeline(conf: AirflowExperimentConfig, store: AirflowRunStore) -> dict[str, Any]:
+    training_result = _read_training_result(store)
+    checkpoint_path = _checkpoint_path_for_pseudolabel(conf, store, training_result)
+    summary = store.read_summary()
+    mlflow_info = summary.get("mlflow") or training_result.get("mlflow") or {}
+    run_id = mlflow_info.get("run_id")
+    pipeline_config = load_config()
+    experiment_name = conf.mlflow.get("experiment") or pipeline_config.mlflow_default_experiment
+    job = _build_airflow_job(conf)
+    pseudolabel_cfg = dict(job.predict.get("pseudolabel") or {})
+    pseudolabel_cfg.setdefault("enabled", True)
+    pseudolabel_cfg["checkpoint_path"] = str(checkpoint_path)
+    pseudolabel_cfg["preserve_train_scenes"] = True
+    job.predict["pseudolabel"] = pseudolabel_cfg
+    job.predict["checkpoint_path"] = str(checkpoint_path)
+    job.predict["preserve_train_scenes"] = True
+    job.params["pseudolabel"] = pseudolabel_cfg
+    job.params["checkpoint_path"] = str(checkpoint_path)
+    job_log = store.run_dir / "airflow_pseudolabel.log"
+    tags = {
+        "job_id": conf.experiment_id,
+        "airflow_run_id": store.airflow_run_id,
+        "orchestrator": "airflow",
+        "queue_state": "airflow",
+        "task": conf.task,
+        "class_name": conf.class_name or "",
+    }
+    with MLflowJobRun(
+        pipeline_config,
+        experiment_name=experiment_name,
+        run_name=conf.experiment_id,
+        params={"pseudolabel.checkpoint_path": str(checkpoint_path)},
+        tags=tags,
+        run_id=run_id,
+    ) as mlflow_run:
+        prediction_result = PredictionPipeline().run_debug_pseudolabel(
+            pipeline_config,
+            job,
+            store.run_dir,
+            mlflow_run,
+            job_log,
+            _append_log,
+        )
+        prediction_result["mlflow"] = mlflow_run.result()
+        mlflow_run.set_tags({"job_status": "pseudolabel_completed", "airflow_pseudolabel_status": "success"})
+
+    merged = dict(training_result)
+    merged["pseudolabel_result"] = prediction_result
+    for key in [
+        "postprocess_metrics",
+        "pseudolabel",
+        "matched_scenes_count",
+        "total_matched_scenes_count",
+        "missing_scenes",
+        "ambiguous_scenes",
+        "warnings",
+    ]:
+        if key in prediction_result:
+            merged[key] = prediction_result[key]
+    timing = dict(merged.get("timing") or {})
+    timing.update({key: value for key, value in (prediction_result.get("timing") or {}).items() if key.endswith("pseudolabel_duration_sec") or key.endswith("postprocess_duration_sec")})
+    merged["timing"] = timing
+    merged["mlflow"] = prediction_result.get("mlflow") or mlflow_info
+    write_json(store.run_dir / "training_result.json", merged)
+    store.update_summary(training_result=merged, mlflow=merged.get("mlflow") or mlflow_info)
+    return prediction_result
 
 
 def _write_run_summaries(conf: AirflowExperimentConfig, store: AirflowRunStore) -> tuple[Path, Path]:
@@ -582,11 +679,11 @@ def run_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: str, sta
             training_result = _run_training_pipeline(conf, store)
             result = _stage_result(
                 "success",
-                summary="TrainingPipeline completed real MLSystem train/predict/postprocess run.",
+                summary="TrainingPipeline completed real MLSystem train-only run; pseudolabel is handled by predict_pseudolabel_scenes.",
                 mode=training_result.get("mode"),
                 epochs_completed=training_result.get("epochs_completed"),
                 best_val_iou=training_result.get("best_val_iou"),
-                pseudolabel_status=(training_result.get("pseudolabel") or {}).get("status"),
+                checkpoint_path=training_result.get("checkpoint_path"),
                 artifacts=_existing_artifacts(store),
             )
     elif stage == "evaluate_pixel_metrics":
@@ -604,15 +701,13 @@ def run_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: str, sta
             )
     elif stage == "predict_validation_scenes":
         training_result = _read_training_result(store)
-        pseudolabel = training_result.get("pseudolabel") or {}
-        if pseudolabel.get("status") != "done":
-            result = _stage_result("failed", error=f"Pseudolabel inference did not complete: {pseudolabel.get('status')}")
+        if not training_result.get("checkpoint_path"):
+            result = _stage_result("failed", error="Training checkpoint is missing; validation prediction cannot start.")
         else:
             result = _stage_result(
                 "success",
-                accepted_objects=pseudolabel.get("accepted_objects"),
-                accepted_geojson_mb=pseudolabel.get("accepted_geojson_mb"),
-                scenes=training_result.get("matched_scenes_count"),
+                summary="Validation prediction is included in the pseudolabel stage for the current compatibility pipeline.",
+                checkpoint_path=training_result.get("checkpoint_path"),
             )
     elif stage == "vectorize_validation_predictions":
         summary_path = store.run_dir / "pseudolabel_summary.json"
@@ -642,18 +737,21 @@ def run_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: str, sta
             smoke = _run_airflow_synthetic_pseudolabel_smoke(store)
             store.update_summary(pseudolabel_smoke=smoke)
             result = _stage_result("success", **smoke)
+        elif not conf.pseudolabel.get("enabled", False):
+            result = _stage_result("skipped", summary="pseudolabel.enabled=false")
         else:
-            coverage_path = store.run_dir / "coverage_report.json"
-            if not coverage_path.exists():
-                result = _stage_result("failed", error="coverage_report.json is missing after real inference.")
-            else:
-                coverage = read_json(coverage_path, default={}) or {}
-                result = _stage_result(
-                    "success",
-                    scenes_processed=coverage.get("scenes_processed"),
-                    total_predicted_windows=coverage.get("total_predicted_windows"),
-                    mean_coverage_fraction=coverage.get("mean_coverage_fraction"),
-                )
+            prediction_result = _run_pseudolabel_pipeline(conf, store)
+            coverage = read_json(store.run_dir / "coverage_report.json", default={}) or {}
+            pseudolabel = prediction_result.get("pseudolabel") or {}
+            result = _stage_result(
+                "success",
+                summary="PredictionPipeline completed real pseudolabel inference/stitch/vectorize/postprocess run.",
+                scenes_processed=coverage.get("scenes_processed"),
+                total_predicted_windows=coverage.get("total_predicted_windows"),
+                mean_coverage_fraction=coverage.get("mean_coverage_fraction"),
+                accepted_objects=pseudolabel.get("accepted_objects"),
+                accepted_geojson_mb=pseudolabel.get("accepted_geojson_mb"),
+            )
     elif stage == "stitch_probability_maps":
         coverage = read_json(store.run_dir / "coverage_report.json", default={}) or {}
         if not coverage:

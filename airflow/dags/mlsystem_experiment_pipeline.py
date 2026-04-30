@@ -10,7 +10,7 @@ from src.pipeline.airflow_tasks import MAIN_DAG_STAGES, run_airflow_stage
 
 
 AIRFLOW_STATE_DIR = Path("/opt/airflow/mlsystem_runs")
-GPU_POOL_STAGES = {"train_model"}
+GPU_POOL_STAGES = {"train_model", "predict_pseudolabel_scenes"}
 
 
 def _run_stage(stage: str, **context):
