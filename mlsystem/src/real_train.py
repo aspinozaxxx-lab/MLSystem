@@ -954,7 +954,26 @@ def run_real_train(
     )
     prepare_duration_sec = round(time.time() - prepare_started, 3)
 
-    device = torch.device("cuda" if torch.cuda.is_available() and not config.cpu_only else "cpu")
+    require_gpu = bool(job.train.get("require_gpu", False) or job.resources.requires_gpu)
+    cuda_available = bool(torch.cuda.is_available())
+    if require_gpu and (config.cpu_only or not cuda_available):
+        raise RuntimeError(
+            "GPU training was requested, but CUDA is not available "
+            f"(config.cpu_only={config.cpu_only}, torch.cuda.is_available={cuda_available})."
+        )
+    device = torch.device("cuda" if cuda_available and not config.cpu_only else "cpu")
+    gpu_name = torch.cuda.get_device_name(0) if device.type == "cuda" else None
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = True
+    mlflow_run.log_params(
+        {
+            "train.require_gpu": require_gpu,
+            "train.device": str(device),
+            "train.cuda_available": cuda_available,
+            "train.gpu_name": gpu_name or "",
+        }
+    )
+    log_fn(job_log, f"real_train device={device} cuda_available={cuda_available} gpu_name={gpu_name or 'none'}")
     model_name = str(model_cfg.get("name") or job.train.get("model_name") or "tiny_unet_4ch")
     model = _build_model(model_name, len(input_bands), 1, int(job.train.get("base_channels") or 8)).to(device)
     freeze_batchnorm_default = model_name.lower().startswith(("deeplab", "deeplabv3plus"))
@@ -1036,6 +1055,11 @@ def run_real_train(
                 "learning_rate": float(optimizer.param_groups[0]["lr"]),
                 "epoch_duration_sec": round(time.time() - epoch_started, 4),
             }
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+                row["system/cuda_memory_allocated_mb"] = round(torch.cuda.memory_allocated(device) / (1024 * 1024), 3)
+                row["system/cuda_memory_reserved_mb"] = round(torch.cuda.memory_reserved(device) / (1024 * 1024), 3)
+                row["system/gpu_train_confirmed"] = 1.0
             history.append(row)
             mlflow_run.log_metrics({key: value for key, value in row.items() if key != "epoch"}, step=epoch)
             log_fn(job_log, f"real_train epoch={epoch} val_iou={row['val/iou']:.6f} duration={row['epoch_duration_sec']}")
@@ -1118,6 +1142,9 @@ def run_real_train(
         "mode": "real_train",
         "model_name": model_name,
         "device": str(device),
+        "cuda_available": cuda_available,
+        "gpu_name": gpu_name,
+        "require_gpu": require_gpu,
         "timing": {
             "prepare_duration_sec": prepare_duration_sec,
             "train_duration_sec": train_duration_sec,

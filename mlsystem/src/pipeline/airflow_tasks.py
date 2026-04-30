@@ -218,6 +218,7 @@ def _build_airflow_job(conf: AirflowExperimentConfig) -> JobSpec:
             "enabled": bool(train_cfg["early_stopping"]),
             "patience": train_cfg.get("early_stopping_patience", 10),
         }
+    train_cfg.setdefault("require_gpu", True)
     train_cfg.setdefault("allow_train_val_sample_fallback", True)
     train_cfg.setdefault("model", model_cfg)
     train_cfg.setdefault("model_name", model_cfg.get("name") or "tiny_unet_4ch")
@@ -241,6 +242,7 @@ def _build_airflow_job(conf: AirflowExperimentConfig) -> JobSpec:
         train=train_cfg,
         predict={"pseudolabel": pseudolabel_cfg, "model": model_cfg},
         postprocess=conf.postprocess or {},
+        resources={"requires_gpu": bool(train_cfg.get("require_gpu", True))},
         mlflow={"experiment": conf.mlflow.get("experiment")} if conf.mlflow.get("experiment") else {},
     )
 
