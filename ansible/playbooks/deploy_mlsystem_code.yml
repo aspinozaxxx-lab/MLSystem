@@ -3,13 +3,10 @@
   hosts: gpu_mlserver
   gather_facts: false
   become: true
-  vars:
-    mlsystem_git_repo: https://github.com/aspinozaxxx-lab/MLSystem.git
-    mlsystem_git_version: main
   tasks:
-    - name: Ensure git is installed
+    - name: Ensure rsync is installed on target
       ansible.builtin.apt:
-        name: git
+        name: rsync
         state: present
         update_cache: true
 
@@ -19,13 +16,26 @@
         state: directory
         mode: "0755"
 
-    - name: Checkout MLSystem repository
-      ansible.builtin.git:
-        repo: "{{ mlsystem_git_repo }}"
-        dest: "{{ mlsystem_gpu_repo_root }}"
-        version: "{{ mlsystem_git_version }}"
-        force: true
-        update: true
+    - name: Ensure repo root exists
+      ansible.builtin.file:
+        path: "{{ mlsystem_gpu_repo_root }}"
+        state: directory
+        mode: "0755"
+
+    - name: Rsync checked-out repository from controller
+      ansible.builtin.command: >-
+        rsync -az --delete
+        --exclude .git
+        --exclude __pycache__
+        --exclude .pytest_cache
+        --exclude .tmp_*
+        --exclude results/reports/synthetic_pseudolabel_smoke
+        -e "ssh -o StrictHostKeyChecking=yes{% if ansible_ssh_private_key_file is defined %} -i {{ ansible_ssh_private_key_file }}{% endif %}"
+        "{{ playbook_dir }}/../../"
+        "{{ ansible_user | default('root') }}@{{ ansible_host | default(inventory_hostname) }}:{{ mlsystem_gpu_repo_root }}/"
+      delegate_to: localhost
+      become: false
+      changed_when: true
 
     - name: Remove Python cache directories from deployed repo
       ansible.builtin.command:
