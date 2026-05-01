@@ -45,6 +45,20 @@ class SceneMatchingTests(unittest.TestCase):
         self.assertEqual(report["ambiguous_count"], 0)
         self.assertEqual(report["matched"][0]["key"], images[0]["key"])
 
+    def test_preferred_prefix_resolves_exact_duplicates(self) -> None:
+        images = [
+            {"key": "images/kanopus/Oktyabrskij/scene_a.tif", "name": "scene_a.tif"},
+            {"key": "images/kanopus/wave_2_Upload_01/scene_a.tif", "name": "scene_a.tif"},
+        ]
+        report = build_scene_matching_report(
+            ["scene_a.tif"],
+            images,
+            preferred_key_prefixes=["images/kanopus/wave_2_Upload_01/"],
+        )
+        self.assertEqual(report["matched_count"], 1)
+        self.assertEqual(report["ambiguous_count"], 0)
+        self.assertEqual(report["matched"][0]["key"], "images/kanopus/wave_2_Upload_01/scene_a.tif")
+
     def test_missing_candidate(self) -> None:
         report = build_scene_matching_report(["missing.tif"], [{"key": "x/other.tif", "name": "other.tif"}])
         self.assertEqual(report["missing_count"], 1)

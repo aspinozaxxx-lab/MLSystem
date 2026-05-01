@@ -278,6 +278,7 @@ def _run_training_pipeline(conf: AirflowExperimentConfig, store: AirflowRunStore
         "queue_state": "airflow",
         "task": conf.task,
         "class_name": conf.class_name or "",
+        "mlsystem.class_name": conf.class_name or "",
     }
     params = {
         "experiment_id": conf.experiment_id,
@@ -348,6 +349,7 @@ def _run_pseudolabel_pipeline(conf: AirflowExperimentConfig, store: AirflowRunSt
         "queue_state": "airflow",
         "task": conf.task,
         "class_name": conf.class_name or "",
+        "mlsystem.class_name": conf.class_name or "",
     }
     with MLflowJobRun(
         pipeline_config,
@@ -602,8 +604,9 @@ def run_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: str, sta
         images = list_s3_objects(pipeline_config, conf.images_uri, suffixes=(".tif", ".tiff"))
         annotation_uri, scenes_uri = find_layout_files(pipeline_config, conf.layout_uri, conf.scenes_file, conf.annotation_file)
         entries = [line.strip() for line in read_s3_text(pipeline_config, scenes_uri).splitlines() if line.strip() and not line.strip().startswith("#")]
+        preferred_prefixes = list(conf.preprocess.get("scene_matching_prefer_prefixes") or [])
         report = {
-            **build_scene_matching_report(entries, images),
+            **build_scene_matching_report(entries, images, preferred_key_prefixes=preferred_prefixes),
             "images_uri": conf.images_uri,
             "layout_uri": conf.layout_uri,
             "annotation_uri": annotation_uri,

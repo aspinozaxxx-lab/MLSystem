@@ -94,12 +94,14 @@ def build_scene_matching_report(
     *,
     accept_threshold: float = 0.92,
     ambiguous_margin: float = 0.015,
+    preferred_key_prefixes: list[str] | None = None,
 ) -> dict[str, Any]:
     return scene_matching_mod.build_scene_matching_report(
         entries,
         images,
         accept_threshold=accept_threshold,
         ambiguous_margin=ambiguous_margin,
+        preferred_key_prefixes=preferred_key_prefixes,
     )
     normalized_images = [(item, _norm_scene_name(item["name"])) for item in images]
     matched: list[SceneMatch] = []
@@ -823,6 +825,7 @@ def run_debug_pseudolabel(
     pseudolabel_cfg = job.predict.get("pseudolabel") or job.params.get("pseudolabel") or {}
     run_on = str(pseudolabel_cfg.get("run_on") or "").lower()
     pseudolabel_images_uri = str(pseudolabel_cfg.get("images_uri") or images_uri)
+    preferred_prefixes = list(job.preprocess.get("scene_matching_prefer_prefixes") or data.get("scene_matching_prefer_prefixes") or [])
 
     prepare_started = time.time()
     with trace_stage("match_scenes", {"job_id": job.job_id, "images_uri": pseudolabel_images_uri, "layout_uri": layout_uri}):
@@ -865,8 +868,21 @@ def run_debug_pseudolabel(
                     for line in _read_s3_text(config, scenes_uri).splitlines()
                     if line.strip() and not line.strip().startswith("#")
                 ]
-            matching_report = build_scene_matching_report(entries, images)
+            matching_report = build_scene_matching_report(entries, images, preferred_key_prefixes=preferred_prefixes)
     matches = [SceneMatch(**item) for item in matching_report["matched"]]
+    if run_on in {"dataset_scenes_plus_extra", "dataset_and_extra_images", "dataset_plus_extra"}:
+        extra_images_uri = pseudolabel_cfg.get("extra_images_uri") or pseudolabel_cfg.get("additional_images_uri")
+        if extra_images_uri:
+            extra_images = _list_s3_objects(config, str(extra_images_uri), suffixes=(".tif", ".tiff"))
+            seen_keys = {match.key for match in matches}
+            for item in sorted(extra_images, key=lambda row: row["key"]):
+                if item["key"] in seen_keys:
+                    continue
+                matches.append(SceneMatch(entry=item["name"], key=item["key"], name=item["name"], score=1.0))
+                seen_keys.add(item["key"])
+            matching_report["extra_images_uri"] = str(extra_images_uri)
+            matching_report["extra_images_count"] = len(extra_images)
+            matching_report["selected_with_extra_count"] = len(matches)
     ambiguous = matching_report["ambiguous"]
     missing = matching_report["missing"]
     strict_matching = str(data.get("scene_name_matching") or "").lower() == "strict_after_fuzzy_validation"
@@ -1055,7 +1071,8 @@ def run_real_train(
         for line in _read_s3_text(config, scenes_uri).splitlines()
         if line.strip() and not line.strip().startswith("#")
     ]
-    matching_report = build_scene_matching_report(entries, images)
+    preferred_prefixes = list(job.preprocess.get("scene_matching_prefer_prefixes") or data.get("scene_matching_prefer_prefixes") or [])
+    matching_report = build_scene_matching_report(entries, images, preferred_key_prefixes=preferred_prefixes)
     matches = [SceneMatch(**item) for item in matching_report["matched"]]
     ambiguous = matching_report["ambiguous"]
     missing = matching_report["missing"]
@@ -1399,6 +1416,17 @@ def run_real_train(
         pseudolabel_matches = val_matches
     elif pseudolabel_run_on in {"train_scenes", "training_scenes", "train"}:
         pseudolabel_matches = train_matches
+    elif pseudolabel_run_on in {"dataset_scenes_plus_extra", "dataset_and_extra_images", "dataset_plus_extra"}:
+        extra_images_uri = pseudolabel_cfg.get("extra_images_uri") or pseudolabel_cfg.get("additional_images_uri")
+        if extra_images_uri:
+            extra_images = _list_s3_objects(config, str(extra_images_uri), suffixes=(".tif", ".tiff"))
+            seen_keys = {match.key for match in pseudolabel_matches}
+            for item in sorted(extra_images, key=lambda row: row["key"]):
+                if item["key"] in seen_keys:
+                    continue
+                pseudolabel_matches.append(SceneMatch(entry=item["name"], key=item["key"], name=item["name"], score=1.0))
+                seen_keys.add(item["key"])
+            mlflow_run.log_params({"pseudolabel.extra_images_uri": str(extra_images_uri)})
     elif pseudolabel_run_on in {"all_available_images", "all_images"}:
         pseudolabel_images_uri = str(pseudolabel_cfg.get("images_uri") or images_uri)
         pseudolabel_images = _list_s3_objects(config, pseudolabel_images_uri, suffixes=(".tif", ".tiff"))
@@ -1410,10 +1438,16 @@ def run_real_train(
     max_pseudolabel_scenes = pseudolabel_cfg.get("max_scenes")
     if max_pseudolabel_scenes is not None:
         pseudolabel_matches = pseudolabel_matches[: max(1, int(max_pseudolabel_scenes))]
-    object_metrics_prefix = "val" if pseudolabel_run_on not in {"all_available_images", "all_images"} else "pseudolabel"
+    object_metrics_prefix = (
+        "pseudolabel"
+        if pseudolabel_run_on in {"all_available_images", "all_images", "dataset_scenes_plus_extra", "dataset_and_extra_images", "dataset_plus_extra"}
+        else "val"
+    )
     metric_shapes = shapes
     if pseudolabel_run_on in {"validation_scenes", "val_scenes", "validation", "train_scenes", "training_scenes", "train"}:
         metric_shapes = _filter_shapes_to_matches(config, pseudolabel_matches, shapes)
+    elif pseudolabel_run_on in {"dataset_scenes_plus_extra", "dataset_and_extra_images", "dataset_plus_extra"}:
+        metric_shapes = None
     with trace_stage(
         "postprocess_vectors",
         {

@@ -51,6 +51,7 @@ def build_scene_matching_report(
     *,
     accept_threshold: float = 0.92,
     ambiguous_margin: float = 0.015,
+    preferred_key_prefixes: list[str] | None = None,
 ) -> dict[str, Any]:
     normalized_images = [(item, norm_scene_name(item["name"])) for item in images]
     matched: list[SceneMatch] = []
@@ -83,6 +84,36 @@ def build_scene_matching_report(
                 reason = exact_candidates[0]["reason"]
                 image = exact_candidates[0]["image"]
                 matched.append(SceneMatch(entry=entry, key=image["key"], name=image["name"], score=1.0))
+            elif len(exact_candidates) > 1 and preferred_key_prefixes:
+                preferred = [
+                    item
+                    for item in exact_candidates
+                    if any(str(item["image"].get("key") or "").startswith(prefix) for prefix in preferred_key_prefixes)
+                ]
+                if len(preferred) == 1:
+                    decision = "matched"
+                    reason = "preferred_exact_duplicate"
+                    image = preferred[0]["image"]
+                    matched.append(SceneMatch(entry=entry, key=image["key"], name=image["name"], score=1.0))
+                else:
+                    decision = "ambiguous"
+                    reason = "multiple_close_candidates"
+                    ambiguous.append(
+                        {
+                            "entry": entry,
+                            "normalized_scene_line": needle,
+                            "candidates": [
+                                {
+                                    "name": item["image"]["name"],
+                                    "key": item["image"]["key"],
+                                    "score": item["score"],
+                                    "reason": item["reason"],
+                                }
+                                for item in scored[:10]
+                                if item["score"] >= accept_threshold
+                            ],
+                        }
+                    )
             elif second and second["score"] >= accept_threshold and (best["score"] - second["score"]) <= ambiguous_margin:
                 decision = "ambiguous"
                 reason = "multiple_close_candidates"
@@ -149,6 +180,7 @@ def build_scene_matching_report(
         "total_images": len(images),
         "accept_threshold": accept_threshold,
         "ambiguous_margin": ambiguous_margin,
+        "preferred_key_prefixes": preferred_key_prefixes or [],
     }
 
 
