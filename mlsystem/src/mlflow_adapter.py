@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import os
 import platform
 import socket
 import sys
@@ -276,10 +277,15 @@ class MLflowJobRun:
         self.run_id: str | None = None
         self.started_at: str | None = None
         self.resource_start: dict[str, Any] | None = None
+        self._existing_param_keys: set[str] = set()
 
     def __enter__(self) -> "MLflowJobRun":
         import mlflow
+        from mlflow.tracking import MlflowClient
+
         self._mlflow = mlflow
+        os.environ.pop("MLFLOW_RUN_ID", None)
+        os.environ.pop("MLFLOW_EXPERIMENT_ID", None)
         mlflow.set_tracking_uri(self.config.mlflow_tracking_uri_internal)
         experiment = mlflow.set_experiment(self.experiment_name)
         self.experiment_id = experiment.experiment_id
@@ -296,6 +302,11 @@ class MLflowJobRun:
             else:
                 self._run = mlflow.start_run(run_name=self.run_name)
         self.run_id = self._run.info.run_id
+        if self.existing_run_id:
+            try:
+                self._existing_param_keys = set(MlflowClient().get_run(self.run_id).data.params)
+            except Exception:
+                self._existing_param_keys = set()
         mlflow.set_tags(
             {
                 "mlflow.runName": self.run_name,
@@ -341,7 +352,10 @@ class MLflowJobRun:
         if not self._mlflow:
             return
         for key, value in flatten_params(params).items():
+            if key in self._existing_param_keys:
+                continue
             self._mlflow.log_param(key, value)
+            self._existing_param_keys.add(key)
 
     def log_metrics(self, metrics: dict[str, float | int | None], step: int | None = None) -> None:
         if not self._mlflow:
