@@ -375,7 +375,8 @@ class MLflowJobRun:
         for artifact in artifacts:
             if artifact.name in MLFLOW_EXCLUDED_ARTIFACT_NAMES:
                 continue
-            if artifact.exists() and artifact.is_file() and artifact.stat().st_size < MAX_ARTIFACT_BYTES:
+            always_log = artifact.name.endswith(".accepted.geojson")
+            if artifact.exists() and artifact.is_file() and (always_log or artifact.stat().st_size < MAX_ARTIFACT_BYTES):
                 self._mlflow.log_artifact(str(artifact))
 
     def resource_summary(self) -> dict[str, Any]:

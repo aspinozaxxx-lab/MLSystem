@@ -6,4 +6,5 @@
 - Dobavleny lokalnye baseline-artefakty v `artifacts/baselines`.
 - V train loop vklyucheny realnye augmentatsii iz `train.augmentations`: flips, rot90, brightness_contrast/color_jitter, gamma, noise, blur, cutout/coarse_dropout.
 - Dobavlena podderzhka `pseudolabel.images_uri`, chtoby trenirovat model na deforest dataset, a itogovuyu psevdo-razmetku strogo stroitt po `images/kanopus/irkutsk/`.
+- Ispravleno logirovanie MLflow: `*.accepted.geojson` teper logiruetsya v artifacts nezavisimo ot lokalnogo limita razmera artifact.
 - Provereny lokalnye komandy `compileall` i `unittest`.
