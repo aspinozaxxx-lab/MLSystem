@@ -713,11 +713,27 @@ def run_debug_pseudolabel(
             }
         else:
             annotation_uri, scenes_uri = _find_layout_files(config, layout_uri, scenes_file, annotation_file)
-            entries = [
-                line.strip()
-                for line in _read_s3_text(config, scenes_uri).splitlines()
-                if line.strip() and not line.strip().startswith("#")
-            ]
+            configured_entries = pseudolabel_cfg.get("scene_entries") or pseudolabel_cfg.get("scenes")
+            if configured_entries:
+                entries = [str(item).strip() for item in configured_entries if str(item).strip()]
+            elif run_on in {"validation_scenes", "val_scenes", "validation"} and (experiment_dir / "val_scenes.txt").exists():
+                entries = [
+                    line.strip()
+                    for line in (experiment_dir / "val_scenes.txt").read_text(encoding="utf-8").splitlines()
+                    if line.strip() and not line.strip().startswith("#")
+                ]
+            elif run_on in {"train_scenes", "training_scenes", "train"} and (experiment_dir / "train_scenes.txt").exists():
+                entries = [
+                    line.strip()
+                    for line in (experiment_dir / "train_scenes.txt").read_text(encoding="utf-8").splitlines()
+                    if line.strip() and not line.strip().startswith("#")
+                ]
+            else:
+                entries = [
+                    line.strip()
+                    for line in _read_s3_text(config, scenes_uri).splitlines()
+                    if line.strip() and not line.strip().startswith("#")
+                ]
             matching_report = build_scene_matching_report(entries, images)
     matches = [SceneMatch(**item) for item in matching_report["matched"]]
     ambiguous = matching_report["ambiguous"]
@@ -796,6 +812,8 @@ def run_debug_pseudolabel(
         raise RuntimeError(f"Unsupported checkpoint payload at {checkpoint_path}")
     model.load_state_dict(state)
     gt_shapes = _load_shapes(config, annotation_uri) if annotation_uri else []
+    if gt_shapes and run_on not in {"all_available_images", "all_images"}:
+        gt_shapes = _filter_shapes_to_matches(config, matches, gt_shapes)
     prepare_duration_sec = round(time.time() - prepare_started, 3)
 
     postprocess_started = time.time()
