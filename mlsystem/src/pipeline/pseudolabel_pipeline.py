@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import time
 import json
+import gc
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -70,6 +72,15 @@ def run_pseudolabel_pipeline(
     max_geojson_mb = float(post_cfg.get("max_geojson_mb") or 20)
     auto_tune = bool(post_cfg.get("auto_tune", False))
     smooth_polygons = bool(post_cfg.get("smooth_polygons", False))
+    vectorization_workers = int(
+        post_cfg.get("vectorization_workers")
+        or pseudolabel_cfg.get("vectorization_workers")
+        or max(1, min(4, len(matches), os.cpu_count() or 1))
+    )
+    max_raw_features_for_candidate = post_cfg.get("max_raw_features_for_candidate")
+    if max_raw_features_for_candidate is None:
+        max_raw_features_for_candidate = 200000
+    max_raw_features_for_candidate = int(max_raw_features_for_candidate) if max_raw_features_for_candidate else 0
     full_scene = bool(pseudolabel_cfg.get("full_scene", True))
     max_windows_per_scene = pseudolabel_cfg.get("max_windows_per_scene")
     batch_size_raw = pseudolabel_cfg.get("batch_size") or pseudolabel_cfg.get("inference_batch_size")
@@ -155,6 +166,19 @@ def run_pseudolabel_pipeline(
             scene_results = [runner.run_scene(idx, match) for idx, match in enumerate(matches)]
     finally:
         torch.set_num_threads(previous_torch_threads)
+    if device.type == "cuda":
+        model.to("cpu")
+        torch.cuda.empty_cache()
+    gc.collect()
+    write_json(
+        experiment_dir / "pseudolabel_inference_complete.json",
+        {
+            "schema_version": 1,
+            "scene_count": len(scene_results),
+            "finished_at_sec": round(time.time() - started, 3),
+            "vectorization_workers": vectorization_workers,
+        },
+    )
 
     all_raw_features: list[dict[str, Any]] = []
     windows_preview_features: list[dict[str, Any]] = []
@@ -176,8 +200,21 @@ def run_pseudolabel_pipeline(
     def build_vectorization(threshold_value: float) -> VectorizationResult:
         raw_features: list[dict[str, Any]] = []
         raw_vertices = 0
-        for result in sorted(scene_results, key=lambda item: item.scene_index):
-            vectorized = vectorize_probability_map(result.probability_map, scene_name=result.scene_name, threshold=threshold_value)
+
+        def vectorize_scene(result: Any) -> VectorizationResult:
+            return vectorize_probability_map(result.probability_map, scene_name=result.scene_name, threshold=threshold_value)
+
+        sorted_results = sorted(scene_results, key=lambda item: item.scene_index)
+        if vectorization_workers > 1 and len(sorted_results) > 1:
+            vectorized_rows: list[VectorizationResult] = []
+            with ThreadPoolExecutor(max_workers=vectorization_workers) as executor:
+                futures = {executor.submit(vectorize_scene, result): result.scene_index for result in sorted_results}
+                for future in as_completed(futures):
+                    vectorized_rows.append(future.result())
+            vectorized_iter = vectorized_rows
+        else:
+            vectorized_iter = [vectorize_scene(result) for result in sorted_results]
+        for vectorized in vectorized_iter:
             raw_features.extend(vectorized.features_raw)
             raw_vertices += vectorized.vertices_before
         return VectorizationResult(
@@ -202,6 +239,22 @@ def run_pseudolabel_pipeline(
         simplify_values = simplify_values[:1]
     for threshold_candidate in threshold_values:
         vectorization_candidate = build_vectorization(threshold_candidate)
+        if (
+            not tune_with_object_f1
+            and max_raw_features_for_candidate
+            and vectorization_candidate.raw_count > max_raw_features_for_candidate
+        ):
+            candidates_checked.append(
+                {
+                    "threshold": threshold_candidate,
+                    "raw_count": vectorization_candidate.raw_count,
+                    "vertices_before": vectorization_candidate.vertices_before,
+                    "skipped": True,
+                    "skip_reason": "raw_feature_count_exceeds_limit",
+                    "max_raw_features_for_candidate": max_raw_features_for_candidate,
+                }
+            )
+            continue
         for min_area_candidate in min_area_values:
             for simplify_candidate in simplify_values:
                 result_candidate = postprocess_vectorization_result(
@@ -295,6 +348,8 @@ def run_pseudolabel_pipeline(
         "center_size": center_size,
         "context_bounds": context_bounds,
         "inference_batch_size": inference_batch_size,
+        "vectorization_workers": vectorization_workers,
+        "max_raw_features_for_candidate": max_raw_features_for_candidate,
         "scenes": tiling_debug_rows,
     }
     segformer_debug = {
@@ -327,6 +382,8 @@ def run_pseudolabel_pipeline(
     postprocess_debug["selection_metric"] = "object_f1" if tune_with_object_f1 else "geojson_size"
     postprocess_debug["smooth_polygons"] = smooth_polygons
     postprocess_debug["inference_batch_size"] = inference_batch_size
+    postprocess_debug["vectorization_workers"] = vectorization_workers
+    postprocess_debug["max_raw_features_for_candidate"] = max_raw_features_for_candidate
     postprocess_debug["candidates_checked"] = candidates_checked
     postprocess_debug_path = experiment_dir / "postprocess_debug.json"
     write_json(postprocess_debug_path, postprocess_debug)
@@ -359,6 +416,8 @@ def run_pseudolabel_pipeline(
         "torch_threads_per_worker": torch_threads_per_worker,
         "inference_batch_size": inference_batch_size,
         "gpu_forward_concurrency": gpu_forward_concurrency,
+        "vectorization_workers": vectorization_workers,
+        "max_raw_features_for_candidate": max_raw_features_for_candidate,
         "inference_duration_sec": round(time.time() - started, 3),
         "crop_mode": crop_mode,
         "stitch_mode": stitch_mode,
@@ -432,6 +491,8 @@ def run_pseudolabel_pipeline(
         "torch_threads_per_worker": torch_threads_per_worker,
         "inference_batch_size": inference_batch_size,
         "gpu_forward_concurrency": gpu_forward_concurrency,
+        "vectorization_workers": vectorization_workers,
+        "max_raw_features_for_candidate": max_raw_features_for_candidate,
         "top_limit_applied": float(max_objects is not None and postprocess_result.objects_after_filter > int(max_objects)),
         "top500_applied": float(max_objects == 500 and postprocess_result.objects_after_filter > 500),
         "pseudolabel/accepted_geojson_mb": geojson_mb,
