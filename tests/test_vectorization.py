@@ -29,6 +29,25 @@ class VectorizationTests(unittest.TestCase):
         self.assertEqual(result.raw_count, 1)
         self.assertGreater(result.vertices_before, 0)
 
+    def test_epsg4326_mask_is_reprojected_to_metric_crs(self) -> None:
+        prob = np.ones((4, 4), dtype="float32")
+        result = vectorize_probability_map(
+            ProbabilityMap(
+                scene_id="s",
+                prob=prob,
+                weight_sum=np.ones_like(prob),
+                coverage_mask=np.ones_like(prob, dtype=bool),
+                coverage_fraction=1.0,
+                transform=from_origin(42.0, 49.0, 0.0001, 0.0001),
+                crs="EPSG:4326",
+            ),
+            scene_name="s",
+            threshold=0.5,
+        )
+        self.assertEqual(result.crs, "EPSG:3857")
+        self.assertEqual(result.raw_count, 1)
+        self.assertGreater(result.features_raw[0]["properties"]["area_m2"], 1000)
+
 
 if __name__ == "__main__":
     unittest.main()

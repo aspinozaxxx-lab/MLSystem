@@ -232,9 +232,11 @@ def _load_shapes(config: PipelineConfig, annotation_uri: str) -> list[Any]:
 
 def _filter_shapes_to_matches(config: PipelineConfig, matches: list[SceneMatch], shapes: list[Any]) -> list[Any]:
     import rasterio
+    from rasterio.warp import transform_bounds
 
     if not matches or not shapes:
         return []
+    shape_crs = "EPSG:3857" if any(max(map(abs, geom.bounds)) > 1000 for geom in shapes if not geom.is_empty) else "EPSG:4326"
     selected: list[Any] = []
     seen: set[int] = set()
     aws = _aws_session(config)
@@ -242,7 +244,11 @@ def _filter_shapes_to_matches(config: PipelineConfig, matches: list[SceneMatch],
         for match in matches:
             path = s3_storage.raster_path_for_s3_key(config, match.key)
             with rasterio.open(path) as ds:
-                scene_bounds = box(*ds.bounds)
+                scene_crs = str(ds.crs) if ds.crs else shape_crs
+                bounds = tuple(ds.bounds)
+                if scene_crs != shape_crs:
+                    bounds = transform_bounds(scene_crs, shape_crs, *bounds, densify_pts=21)
+                scene_bounds = box(*bounds)
             for index, geom in enumerate(shapes):
                 if index in seen:
                     continue
