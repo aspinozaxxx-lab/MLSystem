@@ -8,11 +8,13 @@ from typing import Any
 
 import numpy as np
 import torch
+from shapely.geometry import shape
 
 from ..debug.pseudolabel_debug import build_postprocess_debug, write_probability_preview
 from ..inference.scene_inference import SceneInferenceConfig, SceneInferenceRunner
 from ..job_schema import JobSpec
 from ..metrics.object_metric_artifacts import write_object_metrics_artifacts
+from ..metrics.object_metrics import compute_object_f1
 from ..pipeline.contracts import VectorizationResult
 from ..pipeline_config import PipelineConfig
 from ..postprocessing.filtering import postprocess_vectorization_result
@@ -188,7 +190,9 @@ def run_pseudolabel_pipeline(
         )
 
     selected: tuple[VectorizationResult, Any, float, float, float, float] | None = None
+    selected_score: tuple[float, int, float, float] | None = None
     candidates_checked: list[dict[str, Any]] = []
+    tune_with_object_f1 = bool(gt_shapes)
     threshold_values = [float(item) for item in thresholds]
     min_area_values = [float(item) for item in min_area_candidates]
     simplify_values = [float(item) for item in simplify_candidates]
@@ -207,16 +211,54 @@ def run_pseudolabel_pipeline(
                     max_objects=max_objects,
                 )
                 candidate_size_mb = _features_geojson_size_mb(result_candidate.features)
-                candidates_checked.append(
-                    {
-                        "threshold": threshold_candidate,
-                        "min_object_area_m2": min_area_candidate,
-                        "simplify_tolerance_m": simplify_candidate,
-                        "object_count": len(result_candidate.features),
-                        "vertices_count": int(sum(vertex_count(item["geometry"]) for item in result_candidate.features)),
-                        "estimated_geojson_mb": candidate_size_mb,
-                    }
+                pred_geoms = [shape(item["geometry"]) for item in result_candidate.features]
+                object_metrics_candidate = (
+                    compute_object_f1(pred_geoms, gt_shapes, iou_threshold=0.5) if tune_with_object_f1 else None
                 )
+                candidate_row = {
+                    "threshold": threshold_candidate,
+                    "min_object_area_m2": min_area_candidate,
+                    "simplify_tolerance_m": simplify_candidate,
+                    "object_count": len(result_candidate.features),
+                    "vertices_count": int(sum(vertex_count(item["geometry"]) for item in result_candidate.features)),
+                    "estimated_geojson_mb": candidate_size_mb,
+                    "within_max_geojson_mb": candidate_size_mb <= max_geojson_mb,
+                }
+                if object_metrics_candidate:
+                    candidate_row.update(
+                        {
+                            "object_f1": float(object_metrics_candidate["object_f1"]),
+                            "object_precision": float(object_metrics_candidate["object_precision"]),
+                            "object_recall": float(object_metrics_candidate["object_recall"]),
+                            "object_tp": int(object_metrics_candidate["object_tp"]),
+                            "object_fp": int(object_metrics_candidate["object_fp"]),
+                            "object_fn": int(object_metrics_candidate["object_fn"]),
+                        }
+                    )
+                candidates_checked.append(candidate_row)
+
+                if tune_with_object_f1:
+                    # Prefer valid-size candidates with the best CHTZ object F1.
+                    # If none fit the size budget yet, still keep the best F1 candidate
+                    # but rank valid-size candidates above invalid ones.
+                    score = (
+                        1 if candidate_size_mb <= max_geojson_mb else 0,
+                        float((object_metrics_candidate or {}).get("object_f1") or 0.0),
+                        -candidate_size_mb,
+                        -float(len(result_candidate.features)),
+                    )
+                    if selected_score is None or score > selected_score:
+                        selected_score = score
+                        selected = (
+                            vectorization_candidate,
+                            result_candidate,
+                            threshold_candidate,
+                            min_area_candidate,
+                            simplify_candidate,
+                            candidate_size_mb,
+                        )
+                    continue
+
                 if selected is None or candidate_size_mb < selected[5]:
                     selected = (
                         vectorization_candidate,
@@ -227,18 +269,14 @@ def run_pseudolabel_pipeline(
                         candidate_size_mb,
                     )
                 if candidate_size_mb <= max_geojson_mb:
-                    selected = (
-                        vectorization_candidate,
-                        result_candidate,
-                        threshold_candidate,
-                        min_area_candidate,
-                        simplify_candidate,
-                        candidate_size_mb,
-                    )
                     break
             if selected and selected[5] <= max_geojson_mb:
+                if tune_with_object_f1:
+                    continue
                 break
         if selected and selected[5] <= max_geojson_mb:
+            if tune_with_object_f1:
+                continue
             break
     if selected is None:
         raise RuntimeError("Postprocess did not produce any candidate result")
@@ -286,6 +324,7 @@ def run_pseudolabel_pipeline(
     postprocess_debug["vertices_before"] = vertices_before
     postprocess_debug["vertices_after"] = vertices_after
     postprocess_debug["auto_tune"] = auto_tune
+    postprocess_debug["selection_metric"] = "object_f1" if tune_with_object_f1 else "geojson_size"
     postprocess_debug["smooth_polygons"] = smooth_polygons
     postprocess_debug["inference_batch_size"] = inference_batch_size
     postprocess_debug["candidates_checked"] = candidates_checked
