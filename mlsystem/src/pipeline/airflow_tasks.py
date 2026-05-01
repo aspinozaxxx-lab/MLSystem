@@ -305,6 +305,11 @@ def _run_training_pipeline(conf: AirflowExperimentConfig, store: AirflowRunStore
 
 
 def _checkpoint_path_for_pseudolabel(conf: AirflowExperimentConfig, store: AirflowRunStore, training_result: dict[str, Any]) -> Path:
+    configured_checkpoint = (conf.pseudolabel or {}).get("checkpoint_path") or (conf.predict or {}).get("checkpoint_path") or (conf.params or {}).get("checkpoint_path")
+    if configured_checkpoint:
+        path = Path(str(configured_checkpoint))
+        if path.exists():
+            return path
     checkpoint_path = training_result.get("checkpoint_path")
     if checkpoint_path:
         path = Path(str(checkpoint_path))
@@ -687,21 +692,25 @@ def run_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: str, sta
                 artifacts=_existing_artifacts(store),
             )
     elif stage == "evaluate_pixel_metrics":
-        training_result = _read_training_result(store)
-        last_metrics = training_result.get("last_epoch_metrics") or {}
-        if not last_metrics:
-            result = _stage_result("failed", error="No pixel metrics found in training_result.json.")
+        if not conf.train.get("enabled", True):
+            result = _stage_result("skipped", summary="train.enabled=false")
         else:
-            result = _stage_result(
-                "success",
-                train_loss=last_metrics.get("train/loss"),
-                val_pixel_iou=last_metrics.get("val/iou"),
-                val_pixel_dice=last_metrics.get("val/dice"),
-                val_pixel_f1=last_metrics.get("val/pixel_f1"),
-            )
+            training_result = _read_training_result(store)
+            last_metrics = training_result.get("last_epoch_metrics") or {}
+            if not last_metrics:
+                result = _stage_result("failed", error="No pixel metrics found in training_result.json.")
+            else:
+                result = _stage_result(
+                    "success",
+                    train_loss=last_metrics.get("train/loss"),
+                    val_pixel_iou=last_metrics.get("val/iou"),
+                    val_pixel_dice=last_metrics.get("val/dice"),
+                    val_pixel_f1=last_metrics.get("val/pixel_f1"),
+                )
     elif stage == "predict_validation_scenes":
         training_result = _read_training_result(store)
-        if not training_result.get("checkpoint_path"):
+        configured_checkpoint = (conf.pseudolabel or {}).get("checkpoint_path") or (conf.predict or {}).get("checkpoint_path") or (conf.params or {}).get("checkpoint_path")
+        if not training_result.get("checkpoint_path") and not configured_checkpoint:
             result = _stage_result("failed", error="Training checkpoint is missing; validation prediction cannot start.")
         else:
             result = _stage_result(

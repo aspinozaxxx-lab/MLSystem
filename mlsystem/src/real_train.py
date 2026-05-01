@@ -668,17 +668,35 @@ def run_debug_pseudolabel(
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
+    pseudolabel_cfg = job.predict.get("pseudolabel") or job.params.get("pseudolabel") or {}
+    run_on = str(pseudolabel_cfg.get("run_on") or "").lower()
 
     prepare_started = time.time()
     with trace_stage("match_scenes", {"job_id": job.job_id, "images_uri": images_uri, "layout_uri": layout_uri}):
         images = _list_s3_objects(config, images_uri, suffixes=(".tif", ".tiff"))
-        annotation_uri, scenes_uri = _find_layout_files(config, layout_uri, scenes_file, annotation_file)
-        entries = [
-            line.strip()
-            for line in _read_s3_text(config, scenes_uri).splitlines()
-            if line.strip() and not line.strip().startswith("#")
-        ]
-        matching_report = build_scene_matching_report(entries, images)
+        if run_on in {"all_available_images", "all_images"}:
+            annotation_uri = None
+            scenes_uri = None
+            entries = [str(item["name"]) for item in images]
+            matching_report = {
+                "matched": [
+                    {"entry": item["name"], "key": item["key"], "name": item["name"], "score": 1.0}
+                    for item in sorted(images, key=lambda row: row["key"])
+                ],
+                "missing": [],
+                "ambiguous": [],
+                "matched_count": len(images),
+                "missing_count": 0,
+                "ambiguous_count": 0,
+            }
+        else:
+            annotation_uri, scenes_uri = _find_layout_files(config, layout_uri, scenes_file, annotation_file)
+            entries = [
+                line.strip()
+                for line in _read_s3_text(config, scenes_uri).splitlines()
+                if line.strip() and not line.strip().startswith("#")
+            ]
+            matching_report = build_scene_matching_report(entries, images)
     matches = [SceneMatch(**item) for item in matching_report["matched"]]
     ambiguous = matching_report["ambiguous"]
     missing = matching_report["missing"]
@@ -691,9 +709,8 @@ def run_debug_pseudolabel(
     if not matches:
         raise RuntimeError("No scenes from scenes.txt matched available images")
 
-    pseudolabel_cfg = job.predict.get("pseudolabel") or job.params.get("pseudolabel") or {}
     total_matched_count = len(matches)
-    max_debug_scenes = pseudolabel_cfg.get("max_debug_scenes", job.predict.get("max_debug_scenes"))
+    max_debug_scenes = pseudolabel_cfg.get("max_debug_scenes", pseudolabel_cfg.get("max_scenes", job.predict.get("max_debug_scenes")))
     if max_debug_scenes is not None:
         matches = matches[: max(1, int(max_debug_scenes))]
     scene_report = {
@@ -756,7 +773,7 @@ def run_debug_pseudolabel(
     if not isinstance(state, dict):
         raise RuntimeError(f"Unsupported checkpoint payload at {checkpoint_path}")
     model.load_state_dict(state)
-    gt_shapes = _load_shapes(config, annotation_uri)
+    gt_shapes = _load_shapes(config, annotation_uri) if annotation_uri else []
     prepare_duration_sec = round(time.time() - prepare_started, 3)
 
     postprocess_started = time.time()
