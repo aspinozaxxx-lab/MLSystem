@@ -13,6 +13,7 @@ from typing import Any
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from rasterio.features import rasterize
 from shapely.geometry import box, mapping, shape
 from shapely.ops import transform as shapely_transform
@@ -425,6 +426,78 @@ def _dice_iou_precision_recall(logits: torch.Tensor, target: torch.Tensor) -> di
 
 def _loss_fn(logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     return segmentation_loss(logits, target)
+
+
+def _augmentation_profile(augmentations: Any) -> str:
+    if not isinstance(augmentations, dict):
+        return "none"
+    enabled = sorted(str(key) for key, value in augmentations.items() if bool(value))
+    return ",".join(enabled) if enabled else "none"
+
+
+def _apply_train_augmentations(
+    x: torch.Tensor,
+    y: torch.Tensor,
+    augmentations: Any,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if not isinstance(augmentations, dict) or not any(bool(value) for value in augmentations.values()):
+        return x, y
+
+    x = x.clone()
+    y = y.clone()
+    batch_size = int(x.shape[0])
+    device = x.device
+
+    if augmentations.get("flips"):
+        h_mask = torch.rand(batch_size, device=device) < 0.5
+        v_mask = torch.rand(batch_size, device=device) < 0.5
+        if bool(h_mask.any()):
+            x[h_mask] = torch.flip(x[h_mask], dims=(-1,))
+            y[h_mask] = torch.flip(y[h_mask], dims=(-1,))
+        if bool(v_mask.any()):
+            x[v_mask] = torch.flip(x[v_mask], dims=(-2,))
+            y[v_mask] = torch.flip(y[v_mask], dims=(-2,))
+
+    if augmentations.get("rot90"):
+        rotations = torch.randint(0, 4, (batch_size,), device=device)
+        for k in (1, 2, 3):
+            mask = rotations == k
+            if bool(mask.any()):
+                x[mask] = torch.rot90(x[mask], k, dims=(-2, -1))
+                y[mask] = torch.rot90(y[mask], k, dims=(-2, -1))
+
+    if augmentations.get("brightness_contrast") or augmentations.get("color_jitter"):
+        brightness = 1.0 + (torch.rand(batch_size, 1, 1, 1, device=device) - 0.5) * 0.18
+        contrast = 1.0 + (torch.rand(batch_size, 1, 1, 1, device=device) - 0.5) * 0.30
+        mean = x.mean(dim=(-2, -1), keepdim=True)
+        x = (x - mean) * contrast + mean
+        x = x * brightness
+
+    if augmentations.get("gamma"):
+        gamma = 0.80 + torch.rand(batch_size, 1, 1, 1, device=device) * 0.45
+        x = torch.clamp(x, 0.0, 1.0).pow(gamma)
+
+    if augmentations.get("noise"):
+        x = x + torch.randn_like(x) * 0.02
+
+    if augmentations.get("blur"):
+        blur_mask = torch.rand(batch_size, device=device) < 0.25
+        if bool(blur_mask.any()):
+            x[blur_mask] = F.avg_pool2d(x[blur_mask], kernel_size=3, stride=1, padding=1)
+
+    if augmentations.get("cutout") or augmentations.get("coarse_dropout"):
+        height = int(x.shape[-2])
+        width = int(x.shape[-1])
+        cut_h = max(8, height // 8)
+        cut_w = max(8, width // 8)
+        for idx in range(batch_size):
+            if float(torch.rand((), device=device)) >= 0.35:
+                continue
+            y0 = int(torch.randint(0, max(1, height - cut_h + 1), (1,), device=device).item())
+            x0 = int(torch.randint(0, max(1, width - cut_w + 1), (1,), device=device).item())
+            x[idx, :, y0 : y0 + cut_h, x0 : x0 + cut_w] = 0.0
+
+    return torch.clamp(x, 0.0, 1.0), y
 
 
 def _sample_windows(
@@ -1145,6 +1218,8 @@ def run_real_train(
             "train.max_tiles_per_scene": max_tiles_per_scene,
         }
     )
+    augmentations_cfg = job.train.get("augmentations") or {}
+    mlflow_run.log_params({"train.augmentations_profile": _augmentation_profile(augmentations_cfg)})
     epochs = int(job.train.get("epochs") or 20)
     time_limit_sec = int(job.train.get("time_limit_sec") or 600)
     early_cfg = job.train.get("early_stopping") or {}
@@ -1203,6 +1278,7 @@ def run_real_train(
                     idx = torch.as_tensor(batch_indices, dtype=torch.long, device=device)
                     x = train_x.index_select(0, idx)
                     y = train_y.index_select(0, idx)
+                    x, y = _apply_train_augmentations(x, y, augmentations_cfg)
                     optimizer.zero_grad(set_to_none=True)
                     logits = model(x)
                     loss = _loss_fn(logits, y)
@@ -1216,6 +1292,7 @@ def run_real_train(
                 for batch in make_batches(train_samples, shuffle=True):
                     x = torch.from_numpy(np.stack([item[0] for item in batch])).to(device)
                     y = torch.from_numpy(np.stack([item[1] for item in batch])).to(device)
+                    x, y = _apply_train_augmentations(x, y, augmentations_cfg)
                     optimizer.zero_grad(set_to_none=True)
                     logits = model(x)
                     loss = _loss_fn(logits, y)
