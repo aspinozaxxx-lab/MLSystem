@@ -48,9 +48,11 @@ def vectorize_mask(
     scene_name: str,
     threshold: float,
     source_crs: Any = None,
+    min_area_m2: float | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     features: list[dict[str, Any]] = []
     vertices = 0
+    min_area = float(min_area_m2 or 0)
     for geom, value in raster_shapes(mask, mask=mask.astype(bool), transform=transform):
         if value != 1:
             continue
@@ -62,19 +64,28 @@ def vectorize_mask(
             poly = poly.buffer(0)
         if poly.is_empty:
             continue
+        area_m2 = float(poly.area)
+        if min_area > 0 and area_m2 < min_area:
+            continue
         mapped = mapping(poly)
         vertices += vertex_count(mapped)
         features.append(
             {
                 "type": "Feature",
-                "properties": {"scene": scene_name, "threshold": float(threshold), "area_m2": float(poly.area)},
+                "properties": {"scene": scene_name, "threshold": float(threshold), "area_m2": area_m2},
                 "geometry": mapped,
             }
         )
     return features, vertices
 
 
-def vectorize_probability_map(probability_map: ProbabilityMap, *, scene_name: str, threshold: float) -> VectorizationResult:
+def vectorize_probability_map(
+    probability_map: ProbabilityMap,
+    *,
+    scene_name: str,
+    threshold: float,
+    min_area_m2: float | None = None,
+) -> VectorizationResult:
     mask = threshold_probability_map(probability_map.prob, threshold)
     features, vertices = vectorize_mask(
         mask,
@@ -82,6 +93,7 @@ def vectorize_probability_map(probability_map: ProbabilityMap, *, scene_name: st
         scene_name=scene_name,
         threshold=threshold,
         source_crs=probability_map.crs,
+        min_area_m2=min_area_m2,
     )
     return VectorizationResult(
         features_raw=features,
@@ -89,5 +101,9 @@ def vectorize_probability_map(probability_map: ProbabilityMap, *, scene_name: st
         vertices_before=vertices,
         threshold=float(threshold),
         crs=METRIC_CRS,
-        metadata={"coverage_fraction": probability_map.coverage_fraction, "source_crs": probability_map.crs},
+        metadata={
+            "coverage_fraction": probability_map.coverage_fraction,
+            "source_crs": probability_map.crs,
+            "min_area_m2_prefilter": float(min_area_m2 or 0),
+        },
     )

@@ -9,4 +9,7 @@
 - Ispravleno logirovanie MLflow: `*.accepted.geojson` teper logiruetsya v artifacts nezavisimo ot lokalnogo limita razmera artifact.
 - Dobavlena podderzhka segformer_b2/segformer_b3, kratkie epoch-metriki epoch/pixel_f1, epoch/pixel_iou, epoch/sec dlya grafikov MLflow.
 - Uskorena psevdo-razmetka: parallelizovana vektorizatsiya scen, dobavleno osvobozhdenie GPU posle inference i zashchita ot slishkom shumnyh raw polygon kandidatov.
+- Dobavleny Airflow resource pools `gpu_training`, `cpu_heavy`, `cpu_light`, `io_light`; DAG stages poluchili pool i pool_slots.
+- Dobavlen resource-monitoring dlya Airflow stages: CPU load, RAM i GPU snapshot pishutsya v stage resources JSON i task logs.
+- Optimizirovana postobrabotka psevdo-razmetki: dobavlen ranniy area-prefilter pri vectorization i bystryy poryadok candidate search dlya shumnyh fallback scen.
 - Provereny lokalnye komandy `compileall` i `unittest`.

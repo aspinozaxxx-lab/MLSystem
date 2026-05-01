@@ -10,12 +10,17 @@ from .simplification import simplify_features
 
 def filter_features_by_area(features: list[dict[str, Any]], min_area_m2: float) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
+    min_area = float(min_area_m2)
     for feature in features:
-        geom = shape(feature["geometry"])
-        if float(geom.area) < float(min_area_m2):
-            continue
         properties = dict(feature.get("properties") or {})
-        properties["area_m2"] = float(geom.area)
+        area_value = properties.get("area_m2")
+        if area_value is not None and float(area_value) < min_area:
+            continue
+        geom = shape(feature["geometry"])
+        area = float(geom.area)
+        if area < min_area:
+            continue
+        properties["area_m2"] = area
         out.append({"type": "Feature", "properties": properties, "geometry": mapping(geom)})
     return out
 

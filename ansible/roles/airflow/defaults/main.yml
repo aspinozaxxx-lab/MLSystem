@@ -29,3 +29,7 @@ mlsystem_data_root: /data
 mlsystem_airflow_network: mlsystem-airflow-net
 airflow_run_health_checks: true
 airflow_trigger_smoke: false
+airflow_gpu_slots: 1
+airflow_cpu_heavy_slots: 6
+airflow_cpu_light_slots: 12
+airflow_io_light_slots: 8

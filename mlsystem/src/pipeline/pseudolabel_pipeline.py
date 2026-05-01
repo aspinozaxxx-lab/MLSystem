@@ -197,12 +197,20 @@ def run_pseudolabel_pipeline(
             if preview:
                 preview_artifacts.append(preview)
 
+    min_area_values_for_prefilter = [float(item) for item in min_area_candidates]
+    min_area_prefilter = min(min_area_values_for_prefilter) if min_area_values_for_prefilter else 0.0
+
     def build_vectorization(threshold_value: float) -> VectorizationResult:
         raw_features: list[dict[str, Any]] = []
         raw_vertices = 0
 
         def vectorize_scene(result: Any) -> VectorizationResult:
-            return vectorize_probability_map(result.probability_map, scene_name=result.scene_name, threshold=threshold_value)
+            return vectorize_probability_map(
+                result.probability_map,
+                scene_name=result.scene_name,
+                threshold=threshold_value,
+                min_area_m2=min_area_prefilter,
+            )
 
         sorted_results = sorted(scene_results, key=lambda item: item.scene_index)
         if vectorization_workers > 1 and len(sorted_results) > 1:
@@ -261,8 +269,13 @@ def run_pseudolabel_pipeline(
             and max_raw_features_for_candidate
             and vectorization_candidate.raw_count > max_raw_features_for_candidate
         )
-        for min_area_candidate in min_area_values:
-            for simplify_candidate in simplify_values:
+        candidate_min_area_values = min_area_values
+        candidate_simplify_values = simplify_values
+        if forced_noisy_fallback and not tune_with_object_f1:
+            candidate_min_area_values = sorted(min_area_values, reverse=True)
+            candidate_simplify_values = sorted(simplify_values, reverse=True)
+        for min_area_candidate in candidate_min_area_values:
+            for simplify_candidate in candidate_simplify_values:
                 result_candidate = postprocess_vectorization_result(
                     vectorization_candidate,
                     min_area_m2=min_area_candidate,
@@ -357,6 +370,7 @@ def run_pseudolabel_pipeline(
         "inference_batch_size": inference_batch_size,
         "vectorization_workers": vectorization_workers,
         "max_raw_features_for_candidate": max_raw_features_for_candidate,
+        "min_area_m2_prefilter": min_area_prefilter,
         "scenes": tiling_debug_rows,
     }
     segformer_debug = {
@@ -391,6 +405,7 @@ def run_pseudolabel_pipeline(
     postprocess_debug["inference_batch_size"] = inference_batch_size
     postprocess_debug["vectorization_workers"] = vectorization_workers
     postprocess_debug["max_raw_features_for_candidate"] = max_raw_features_for_candidate
+    postprocess_debug["min_area_m2_prefilter"] = min_area_prefilter
     postprocess_debug["candidates_checked"] = candidates_checked
     postprocess_debug_path = experiment_dir / "postprocess_debug.json"
     write_json(postprocess_debug_path, postprocess_debug)
@@ -425,6 +440,7 @@ def run_pseudolabel_pipeline(
         "gpu_forward_concurrency": gpu_forward_concurrency,
         "vectorization_workers": vectorization_workers,
         "max_raw_features_for_candidate": max_raw_features_for_candidate,
+        "min_area_m2_prefilter": min_area_prefilter,
         "inference_duration_sec": round(time.time() - started, 3),
         "crop_mode": crop_mode,
         "stitch_mode": stitch_mode,
@@ -500,6 +516,7 @@ def run_pseudolabel_pipeline(
         "gpu_forward_concurrency": gpu_forward_concurrency,
         "vectorization_workers": vectorization_workers,
         "max_raw_features_for_candidate": max_raw_features_for_candidate,
+        "min_area_m2_prefilter": min_area_prefilter,
         "top_limit_applied": float(max_objects is not None and postprocess_result.objects_after_filter > int(max_objects)),
         "top500_applied": float(max_objects == 500 and postprocess_result.objects_after_filter > 500),
         "pseudolabel/accepted_geojson_mb": geojson_mb,

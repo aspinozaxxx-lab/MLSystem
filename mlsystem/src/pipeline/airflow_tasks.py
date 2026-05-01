@@ -4,6 +4,8 @@ import argparse
 import json
 import os
 import re
+import subprocess
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -161,6 +163,122 @@ class AirflowRunStore:
 
 def _stage_result(status: str = "success", **payload: Any) -> dict[str, Any]:
     return {"status": status, **payload}
+
+
+def _resource_snapshot() -> dict[str, Any]:
+    snapshot: dict[str, Any] = {"captured_at": utc_now()}
+    try:
+        load1, load5, load15 = os.getloadavg()
+        cpu_count = os.cpu_count() or 1
+        snapshot["cpu"] = {
+            "load1": round(load1, 3),
+            "load5": round(load5, 3),
+            "load15": round(load15, 3),
+            "cpu_count": cpu_count,
+            "load1_pct_of_cores": round(100.0 * load1 / cpu_count, 2),
+        }
+    except Exception as exc:
+        snapshot["cpu_error"] = f"{type(exc).__name__}: {exc}"
+    try:
+        meminfo: dict[str, int] = {}
+        for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
+            key, value = line.split(":", 1)
+            parts = value.strip().split()
+            if parts:
+                meminfo[key] = int(parts[0])
+        total_kb = meminfo.get("MemTotal") or 0
+        available_kb = meminfo.get("MemAvailable") or 0
+        snapshot["memory"] = {
+            "total_mb": round(total_kb / 1024, 1),
+            "available_mb": round(available_kb / 1024, 1),
+            "used_pct": round(100.0 * (total_kb - available_kb) / total_kb, 2) if total_kb else None,
+        }
+    except Exception as exc:
+        snapshot["memory_error"] = f"{type(exc).__name__}: {exc}"
+    try:
+        query = (
+            "index,name,utilization.gpu,utilization.memory,memory.used,memory.total,"
+            "power.draw,temperature.gpu"
+        )
+        proc = subprocess.run(
+            ["nvidia-smi", f"--query-gpu={query}", "--format=csv,noheader,nounits"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if proc.returncode == 0:
+            gpus = []
+            for row in proc.stdout.splitlines():
+                parts = [part.strip() for part in row.split(",")]
+                if len(parts) >= 8:
+                    gpus.append(
+                        {
+                            "index": parts[0],
+                            "name": parts[1],
+                            "gpu_util_pct": float(parts[2]),
+                            "memory_util_pct": float(parts[3]),
+                            "memory_used_mb": float(parts[4]),
+                            "memory_total_mb": float(parts[5]),
+                            "power_w": None if parts[6] in {"[N/A]", "N/A"} else float(parts[6]),
+                            "temperature_c": None if parts[7] in {"[N/A]", "N/A"} else float(parts[7]),
+                        }
+                    )
+            snapshot["gpu"] = gpus
+        else:
+            snapshot["gpu_error"] = proc.stderr.strip() or proc.stdout.strip()
+    except Exception as exc:
+        snapshot["gpu_error"] = f"{type(exc).__name__}: {exc}"
+    return snapshot
+
+
+class _StageResourceMonitor:
+    def __init__(self, path: Path, *, stage: str, interval_sec: float = 30.0) -> None:
+        self.path = path
+        self.stage = stage
+        self.interval_sec = interval_sec
+        self.samples: list[dict[str, Any]] = []
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name=f"resource-monitor-{stage}", daemon=True)
+
+    def start(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._thread.start()
+
+    def stop(self) -> dict[str, Any]:
+        self._stop.set()
+        self._thread.join(timeout=2)
+        payload = {"stage": self.stage, "finished_at": utc_now(), "samples": self.samples[-240:]}
+        write_json(self.path, payload)
+        return payload
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            sample = _resource_snapshot()
+            self.samples.append(sample)
+            if len(self.samples) > 240:
+                self.samples = self.samples[-240:]
+            payload = {"stage": self.stage, "updated_at": utc_now(), "latest": sample, "samples": self.samples}
+            try:
+                write_json(self.path, payload)
+                gpu_parts = []
+                for gpu in sample.get("gpu") or []:
+                    gpu_parts.append(
+                        f"{gpu.get('name')} util={gpu.get('gpu_util_pct')}% mem={gpu.get('memory_used_mb')}/{gpu.get('memory_total_mb')}MB"
+                    )
+                cpu = sample.get("cpu") or {}
+                memory = sample.get("memory") or {}
+                print(
+                    "[resource] "
+                    f"stage={self.stage} cpu_load1={cpu.get('load1')} "
+                    f"cpu_load1_pct={cpu.get('load1_pct_of_cores')} "
+                    f"mem_used_pct={memory.get('used_pct')} "
+                    f"gpu={' | '.join(gpu_parts) if gpu_parts else sample.get('gpu_error', 'none')}",
+                    flush=True,
+                )
+            except Exception:
+                pass
+            self._stop.wait(self.interval_sec)
 
 
 def _append_log(path: Path, message: str) -> None:
@@ -582,17 +700,25 @@ def _run_airflow_synthetic_pseudolabel_smoke(store: AirflowRunStore) -> dict[str
 
 def run_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: str, state_dir: Path) -> dict[str, Any]:
     started = time.time()
+    resources_before = _resource_snapshot()
     conf = AirflowExperimentConfig.model_validate(conf_payload)
     store = AirflowRunStore(state_dir, airflow_run_id, conf.model_dump())
     store.update_summary(
         status="running",
         experiment_config=conf.model_dump(),
         airflow={"dag_id": "mlsystem_experiment_pipeline", "run_id": airflow_run_id},
+        active_stage=stage,
+        active_stage_started_at=utc_now(),
+        active_stage_resources=resources_before,
     )
+    monitor = _StageResourceMonitor(store.stage_dir / f"{stage}.resources.json", stage=stage)
+    monitor.start()
 
     smoke_result = _smoke_or_skip(conf, stage)
     if smoke_result is not None:
         smoke_result["duration_sec"] = round(time.time() - started, 3)
+        monitor_payload = monitor.stop()
+        smoke_result["resources"] = {"before": resources_before, "after": _resource_snapshot(), "monitor": _safe_rel(store.stage_dir / f"{stage}.resources.json", store.run_dir), "sample_count": len(monitor_payload.get("samples") or [])}
         return store.write_stage(stage, smoke_result)
 
     if stage == "validate_experiment_config":
@@ -842,6 +968,8 @@ def run_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: str, sta
         raise ValueError(f"Unknown Airflow MLSystem stage: {stage}")
 
     result["duration_sec"] = round(time.time() - started, 3)
+    monitor_payload = monitor.stop()
+    result["resources"] = {"before": resources_before, "after": _resource_snapshot(), "monitor": _safe_rel(store.stage_dir / f"{stage}.resources.json", store.run_dir), "sample_count": len(monitor_payload.get("samples") or [])}
     return store.write_stage(stage, result)
 
 
