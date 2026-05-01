@@ -1,0 +1,324 @@
+﻿{
+  "schema_version": 1,
+  "baseline_id": "IRKUTSK-pseudolabel-unet-r50-t512-v4",
+  "accepted_geojson_path": "/data/mlsystem/airflow/status/IRKUTSK-pseudolabel-unet-r50-t512-v4/IRKUTSK-pseudolabel-unet-r50-t512-v4.accepted.geojson",
+  "accepted_geojson_size_bytes": 10115211,
+  "mlflow_experiment_name": "mlsystem-deforest-irkutsk",
+  "mlflow_experiment_id": "6",
+  "mlflow_run_id": "be71380e3b9b4e3a9004a6c9ea6165d9",
+  "mlflow_run_url": "http://31.192.104.147:5000/#/experiments/6/runs/be71380e3b9b4e3a9004a6c9ea6165d9",
+  "airflow_dag_id": "mlsystem_experiment_pipeline",
+  "airflow_dag_run_id": "manual__IRKUTSK-pseudolabel-unet-r50-t512-v4__20260501T_irkutsk_v4",
+  "model": {
+    "name": "unet_resnet50",
+    "architecture": "unet_resnet50",
+    "backbone": "resnet50",
+    "input_bands": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "preview_bands": [
+      4,
+      1,
+      2
+    ]
+  },
+  "checkpoint_path": "/opt/airflow/mlsystem_runs/Q2-deforest-unet-r50-t512-f1-v7/unet_resnet50.pt",
+  "data": {
+    "images_uri": "s3://mlsystems/images/kanopus/irkutsk/",
+    "layout_uri": "s3://mlsystems/layouts/deforest/",
+    "scenes_file": "scenes.txt",
+    "annotation_file": "auto",
+    "dataset_version": "layout_uri + scenes_file + matched S3 images",
+    "train_scenes": [],
+    "val_scenes": [],
+    "test_scenes": [],
+    "train_scene_count": null,
+    "val_scene_count": null,
+    "positive_scene_count": null,
+    "negative_scene_count": null,
+    "train_tile_count": null,
+    "val_tile_count": null,
+    "positive_tile_count": null,
+    "negative_tile_count": null,
+    "pseudolabel_scenes": [
+      "KV3_30861_31739-00_KANOPUS_20230826_035108_20.L2.PMS.SCN01.tif",
+      "KV3_30861_31739-00_KANOPUS_20230826_035108_20.L2.PMS.SCN02.tif",
+      "KV3_30861_31739-00_KANOPUS_20230826_035108_20.L2.PMS.SCN03.tif",
+      "KV3_30861_31739-00_KANOPUS_20230826_035108_20.L2.PMS.SCN04.tif",
+      "KV3_30861_31739-00_KANOPUS_20230826_035108_20.L2.PMS.SCN05.tif",
+      "KV3_30861_31739-00_KANOPUS_20230826_035108_20.L2.PMS.SCN06.tif",
+      "KV3_30861_31739-00_KANOPUS_20230826_035108_20.L2.PMS.SCN07.tif",
+      "KV3_30861_31739-00_KANOPUS_20230826_035108_20.L2.PMS.SCN08.tif",
+      "KV3_30937_31845-00_KANOPUS_20230831_034637_15.L2.PMS.SCN01.tif",
+      "KV3_30937_31845-00_KANOPUS_20230831_034637_15.L2.PMS.SCN02.tif",
+      "KV3_30937_31845-00_KANOPUS_20230831_034637_15.L2.PMS.SCN03.tif",
+      "KV3_30937_31845-00_KANOPUS_20230831_034637_15.L2.PMS.SCN04.tif",
+      "KV3_30937_31845-00_KANOPUS_20230831_034637_15.L2.PMS.SCN05.tif",
+      "KV3_30937_31845-00_KANOPUS_20230831_034637_15.L2.PMS.SCN06.tif",
+      "KV3_30937_31845-00_KANOPUS_20230831_034637_15.L2.PMS.SCN07.tif",
+      "KV3_30937_31845-00_KANOPUS_20230831_034637_15.L2.PMS.SCN08.tif",
+      "KV3_30937_31845-00_KANOPUS_20230831_034637_15.L2.PMS.SCN09.tif",
+      "KV3_30937_31845-00_KANOPUS_20230831_034637_15.L2.PMS.SCN10.tif",
+      "KV5_24818_25736-01_KANOPUS_20230618_035304_20.L2.PMS.SCN01.tif",
+      "KV5_24818_25736-01_KANOPUS_20230618_035304_20.L2.PMS.SCN02.tif",
+      "KV5_24818_25736-01_KANOPUS_20230618_035304_20.L2.PMS.SCN03.tif",
+      "KV5_24818_25736-01_KANOPUS_20230618_035304_20.L2.PMS.SCN04.tif",
+      "KV5_24818_25736-01_KANOPUS_20230618_035304_20.L2.PMS.SCN05.tif",
+      "KV5_24818_25736-01_KANOPUS_20230618_035304_20.L2.PMS.SCN06.tif",
+      "KV5_24818_25736-01_KANOPUS_20230618_035304_20.L2.PMS.SCN07.tif",
+      "KV6_04481_03264-00_KANOPUS_20191018_033654_20.L2.PMS.SCN01.tif",
+      "KV6_04481_03264-00_KANOPUS_20191018_033654_20.L2.PMS.SCN03.tif",
+      "KV6_04481_03264-00_KANOPUS_20191018_033654_20.L2.PMS.SCN04.tif",
+      "KV6_04481_03264-00_KANOPUS_20191018_033654_20.L2.PMS.SCN05.tif",
+      "KV6_04481_03264-00_KANOPUS_20191018_033654_20.L2.PMS.SCN06.tif",
+      "KV6_04481_03264-00_KANOPUS_20191018_033654_20.L2.PMS.SCN07.tif",
+      "KV6_04481_03264-00_KANOPUS_20191018_033654_20.L2.PMS.SCN08.tif",
+      "KV6_04481_03264-00_KANOPUS_20191018_033654_20.L2.PMS.SCN09.tif",
+      "KV6_24864_25424-01_KANOPUS_20230621_035215_8.L2.PMS.SCN01.tif",
+      "KV6_24864_25424-01_KANOPUS_20230621_035215_8.L2.PMS.SCN02.tif",
+      "KV6_24864_25424-01_KANOPUS_20230621_035215_8.L2.PMS.SCN03.tif",
+      "KV6_24864_25424-01_KANOPUS_20230621_035215_8.L2.PMS.SCN04.tif",
+      "KV6_24864_25424-01_KANOPUS_20230621_035215_8.L2.PMS.SCN05.tif",
+      "KV6_24864_25424-01_KANOPUS_20230621_035215_8.L2.PMS.SCN06.tif",
+      "KV6_32220_35760-00_KANOPUS_20241016_034919_8.L2.PMS.SCN01.tif",
+      "KV6_32220_35760-00_KANOPUS_20241016_034919_8.L2.PMS.SCN02.tif",
+      "KV6_32220_35760-00_KANOPUS_20241016_034919_8.L2.PMS.SCN03.tif",
+      "KV6_32220_35760-00_KANOPUS_20241016_034919_8.L2.PMS.SCN05.tif",
+      "KV6_32220_35760-00_KANOPUS_20241016_034919_8.L2.PMS.SCN06.tif",
+      "KV6_32220_35760-00_KANOPUS_20241016_034919_8.L2.PMS.SCN07.tif",
+      "KV6_32220_35760-00_KANOPUS_20241016_034919_8.L2.PMS.SCN08.tif",
+      "KV6_32220_35760-00_KANOPUS_20241016_034919_8.L2.PMS.SCN09.tif",
+      "KV6_32220_35760-00_KANOPUS_20241016_034919_8.L2.PMS.SCN10.tif",
+      "KV6_32220_35760-00_KANOPUS_20241016_034919_8.L2.PMS.SCN11.tif",
+      "KV6_32220_35760-00_KANOPUS_20241016_034919_8.L2.PMS.SCN12.tif",
+      "KV6_32220_35760-00_KANOPUS_20241016_034919_8.L2.PMS.SCN13.tif",
+      "KV6_32220_35760-00_KANOPUS_20241016_034919_8.L2.PMS.SCN14.tif",
+      "KV6_32220_35760-00_KANOPUS_20241016_034919_8.L2.PMS.SCN15.tif",
+      "KVI_33499_32578-00_KANOPUS_20230729_035151_12.L2.PMS.SCN01.tif",
+      "KVI_33499_32578-00_KANOPUS_20230729_035151_12.L2.PMS.SCN02.tif",
+      "KVI_33499_32578-00_KANOPUS_20230729_035151_12.L2.PMS.SCN03.tif",
+      "KVI_33499_32578-00_KANOPUS_20230729_035151_12.L2.PMS.SCN04.tif",
+      "KVI_33499_32578-00_KANOPUS_20230729_035151_12.L2.PMS.SCN05.tif",
+      "KVI_33499_32578-00_KANOPUS_20230729_035151_12.L2.PMS.SCN06.tif",
+      "KVI_33499_32578-00_KANOPUS_20230729_035151_12.L2.PMS.SCN07.tif",
+      "KVI_33499_32578-00_KANOPUS_20230729_035151_12.L2.PMS.SCN08.tif"
+    ]
+  },
+  "preprocess": {
+    "tile_size": 512,
+    "stride": 384,
+    "context": 64,
+    "include_negative_scenes": null,
+    "use_all_matched_scenes": null
+  },
+  "train": {
+    "enabled": false,
+    "epochs_planned": null,
+    "epochs_completed": null,
+    "batch_size": null,
+    "optimizer": null,
+    "learning_rate": null,
+    "scheduler": null,
+    "loss": null,
+    "augmentations": null,
+    "early_stopping": null,
+    "early_stopping_patience": null,
+    "time_limit_sec": null
+  },
+  "inference": {
+    "run_on": "all_available_images",
+    "full_scene": true,
+    "inference_batch_size": 128,
+    "gpu_forward_concurrency": 2,
+    "max_workers": 8,
+    "inference_time_sec": 354.75
+  },
+  "postprocess": {
+    "threshold_used": 0.7,
+    "min_object_area_m2": 70000.0,
+    "simplify_tolerance_m": 18.0,
+    "smooth_polygons": true,
+    "max_geojson_mb": 20.0,
+    "max_objects": null,
+    "top500_applied": 0.0,
+    "auto_tune": false,
+    "candidates_checked_count": 1
+  },
+  "metrics": {
+    "pixel": {},
+    "object": {},
+    "pseudolabel": {
+      "object_count": 7092,
+      "vertices_count": 210918,
+      "accepted_geojson_mb": 9.64661693572998,
+      "coverage_fraction": 0.7619547605067737
+    }
+  },
+  "timing": {
+    "train_time_sec": null,
+    "inference_time_sec": 354.75,
+    "epoch_time_avg_sec": null,
+    "gpu_max_memory_allocated_mb": null,
+    "gpu_max_memory_reserved_mb": null
+  },
+  "raw_sources": {
+    "status_dir": "/data/mlsystem/airflow/status/IRKUTSK-pseudolabel-unet-r50-t512-v4",
+    "run_summary": "/data/mlsystem/airflow/status/IRKUTSK-pseudolabel-unet-r50-t512-v4/run_summary.json",
+    "summary": "/data/mlsystem/airflow/status/IRKUTSK-pseudolabel-unet-r50-t512-v4/summary.json",
+    "pseudolabel_summary": "/data/mlsystem/airflow/status/IRKUTSK-pseudolabel-unet-r50-t512-v4/pseudolabel_summary.json",
+    "object_metrics": null,
+    "postprocess_debug": "/data/mlsystem/airflow/status/IRKUTSK-pseudolabel-unet-r50-t512-v4/postprocess_debug.json",
+    "coverage_report": "/data/mlsystem/airflow/status/IRKUTSK-pseudolabel-unet-r50-t512-v4/coverage_report.json"
+  },
+  "notes": [
+    "This accepted GeoJSON is predict-only; training parameters come from source_training_run checkpoint."
+  ],
+  "source_training_baseline_id": "Q2-deforest-unet-r50-t512-f1-v7",
+  "source_training_run": {
+    "baseline_id": "Q2-deforest-unet-r50-t512-f1-v7",
+    "mlflow_experiment_name": "mlsystem-deforest-quality",
+    "mlflow_experiment_id": "3",
+    "mlflow_run_id": "dda5fc17f36449118aad07dee3e39bdd",
+    "mlflow_run_url": "http://31.192.104.147:5000/#/experiments/3/runs/dda5fc17f36449118aad07dee3e39bdd",
+    "airflow_dag_run_id": "manual__Q2-deforest-unet-r50-t512-f1-v7__20260501T_quality_v7",
+    "model": {
+      "name": "unet_resnet50",
+      "architecture": "unet_resnet50",
+      "backbone": "resnet50",
+      "input_bands": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "preview_bands": [
+        4,
+        1,
+        2
+      ]
+    },
+    "checkpoint_path": "/opt/airflow/mlsystem_runs/Q2-deforest-unet-r50-t512-f1-v7/unet_resnet50.pt",
+    "data": {
+      "images_uri": "s3://mlsystems/images/kanopus/",
+      "layout_uri": "s3://mlsystems/layouts/deforest/",
+      "scenes_file": "scenes.txt",
+      "annotation_file": "auto",
+      "dataset_version": "layout_uri + scenes_file + matched S3 images",
+      "train_scenes": [
+        "KV3_30861_31739-00_KANOPUS_20230826_035108_20.L2.PMS.SCN04.tif",
+        "KVI_33499_32578-00_KANOPUS_20230729_035151_12.L2.PMS.SCN06.tif",
+        "KVI_33499_32578-00_KANOPUS_20230729_035151_12.L2.PMS.SCN05.tif",
+        "KV3_30861_31739-00_KANOPUS_20230826_035108_20.L2.PMS.SCN03.tif",
+        "KVI_33499_32578-00_KANOPUS_20230729_035151_12.L2.PMS.SCN03.tif",
+        "KV5_31621_35243-01_KANOPUS_20240907_075653_8.L2.PMS.SCN01.tif",
+        "KV5_31621_35243-01_KANOPUS_20240907_075653_8.L2.PMS.SCN02.tif",
+        "KV4_18254_14029-01_KANOPUS_20210518_080116_20.L2.PMS.SCN01.tif",
+        "KV5_31621_35243-01_KANOPUS_20240907_075653_8.L2.PMS.SCN03.tif",
+        "KV5_13775_10997-01_KANOPUS_20210621_075153_83.L2.PMS.SCN01.tif",
+        "KV6_29676_31877-02_KANOPUS_20240502_075932_8.L2.PMS.SCN01.tif",
+        "KV5_24775_25670-02_KANOPUS_20230615_075909_7.L2.PMS.SCN02.tif",
+        "KV6_29676_31877-02_KANOPUS_20240502_075932_8.L2.PMS.SCN02.tif",
+        "KV4_18254_14029-01_KANOPUS_20210518_080116_20.L2.PMS.SCN03.tif",
+        "KV5_24775_25670-02_KANOPUS_20230615_075909_7.L2.PMS.SCN03.tif",
+        "KV6_25931_26639-01_KANOPUS_20230830_075057_8.L2.PMS.SCN02.tif",
+        "KV4_18254_14029-01_KANOPUS_20210518_080116_20.L2.PMS.SCN02.tif"
+      ],
+      "val_scenes": [
+        "KV3_30861_31739-00_KANOPUS_20230826_035108_20.L2.PMS.SCN07.tif",
+        "KVI_33499_32578-00_KANOPUS_20230729_035151_12.L2.PMS.SCN04.tif",
+        "KV5_24775_25670-02_KANOPUS_20230615_075909_7.L2.PMS.SCN01.tif",
+        "KV6_29676_31877-02_KANOPUS_20240502_075932_8.L2.PMS.SCN03.tif",
+        "KV6_25931_26639-01_KANOPUS_20230830_075057_8.L2.PMS.SCN01.tif",
+        "KV5_13775_10997-01_KANOPUS_20210621_075153_83.L2.PMS.SCN03.tif",
+        "KV5_13775_10997-01_KANOPUS_20210621_075153_83.L2.PMS.SCN02.tif"
+      ],
+      "test_scenes": [],
+      "train_scene_count": 17,
+      "val_scene_count": 7,
+      "positive_scene_count": 7,
+      "negative_scene_count": 17,
+      "train_tile_count": 1172,
+      "val_tile_count": 255,
+      "positive_tile_count": 245,
+      "negative_tile_count": 1182,
+      "pseudolabel_scenes": [
+        "KV3_30861_31739-00_KANOPUS_20230826_035108_20.L2.PMS.SCN07.tif",
+        "KVI_33499_32578-00_KANOPUS_20230729_035151_12.L2.PMS.SCN04.tif",
+        "KV5_24775_25670-02_KANOPUS_20230615_075909_7.L2.PMS.SCN01.tif",
+        "KV6_29676_31877-02_KANOPUS_20240502_075932_8.L2.PMS.SCN03.tif",
+        "KV6_25931_26639-01_KANOPUS_20230830_075057_8.L2.PMS.SCN01.tif",
+        "KV5_13775_10997-01_KANOPUS_20210621_075153_83.L2.PMS.SCN03.tif",
+        "KV5_13775_10997-01_KANOPUS_20210621_075153_83.L2.PMS.SCN02.tif"
+      ]
+    },
+    "preprocess": {
+      "tile_size": 512,
+      "stride": 384,
+      "context": 64,
+      "include_negative_scenes": true,
+      "use_all_matched_scenes": true
+    },
+    "train": {
+      "enabled": true,
+      "epochs_planned": 220,
+      "epochs_completed": 28,
+      "batch_size": 28,
+      "optimizer": "adamw",
+      "learning_rate": 0.0003,
+      "scheduler": null,
+      "loss": null,
+      "augmentations": {
+        "brightness_contrast": true,
+        "flips": true,
+        "rot90": true
+      },
+      "early_stopping": true,
+      "early_stopping_patience": 18,
+      "time_limit_sec": 21600
+    },
+    "metrics": {
+      "pixel": {
+        "val/iou": 0.7106344067189967,
+        "train/loss": 0.48606930602164494,
+        "val/dice": 0.7605192532412595,
+        "val/loss": 0.9509961605072021,
+        "val/pixel_dice": 0.7605192532412595,
+        "val/pixel_f1": 0.760519275162714,
+        "val/pixel_iou": 0.7106344067189967
+      },
+      "object": {
+        "object_f1": 0.07401812688821752,
+        "object_fn": 89,
+        "object_fp": 1137,
+        "object_precision": 0.04131534569983136,
+        "object_recall": 0.35507246376811596,
+        "object_tp": 49
+      },
+      "pseudolabel": {
+        "object_count": 1186,
+        "vertices_count": 24425,
+        "accepted_geojson_mb": 1.1917667388916016,
+        "coverage_fraction": 0.7177553703033462
+      }
+    },
+    "timing": {
+      "train_time_sec": 323.118,
+      "inference_time_sec": 297.127,
+      "epoch_time_avg_sec": 11.480114285714286,
+      "gpu_max_memory_allocated_mb": 7660.064,
+      "gpu_max_memory_reserved_mb": 29884.0
+    },
+    "raw_sources": {
+      "status_dir": "/data/mlsystem/airflow/status/Q2-deforest-unet-r50-t512-f1-v7",
+      "run_summary": "/data/mlsystem/airflow/status/Q2-deforest-unet-r50-t512-f1-v7/run_summary.json",
+      "summary": "/data/mlsystem/airflow/status/Q2-deforest-unet-r50-t512-f1-v7/summary.json",
+      "pseudolabel_summary": "/data/mlsystem/airflow/status/Q2-deforest-unet-r50-t512-f1-v7/pseudolabel_summary.json",
+      "object_metrics": "/data/mlsystem/airflow/status/Q2-deforest-unet-r50-t512-f1-v7/object_metrics.json",
+      "postprocess_debug": "/data/mlsystem/airflow/status/Q2-deforest-unet-r50-t512-f1-v7/postprocess_debug.json",
+      "coverage_report": "/data/mlsystem/airflow/status/Q2-deforest-unet-r50-t512-f1-v7/coverage_report.json"
+    }
+  }
+}
