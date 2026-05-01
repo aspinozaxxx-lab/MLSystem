@@ -258,6 +258,49 @@ def _filter_shapes_to_matches(config: PipelineConfig, matches: list[SceneMatch],
     return selected
 
 
+def _split_train_val_matches(
+    config: PipelineConfig,
+    matches: list[SceneMatch],
+    shapes: list[Any],
+    *,
+    train_fraction: float,
+    seed: int,
+    stratify_positive: bool,
+) -> tuple[list[SceneMatch], list[SceneMatch]]:
+    if not stratify_positive or len(matches) <= 1:
+        split_idx = max(1, int(math.ceil(len(matches) * train_fraction)))
+        return matches[:split_idx], matches[split_idx:] or matches[-1:]
+
+    rng = random.Random(seed)
+    positive: list[SceneMatch] = []
+    negative: list[SceneMatch] = []
+    for match in matches:
+        if _filter_shapes_to_matches(config, [match], shapes):
+            positive.append(match)
+        else:
+            negative.append(match)
+
+    rng.shuffle(positive)
+    rng.shuffle(negative)
+
+    def split_group(group: list[SceneMatch]) -> tuple[list[SceneMatch], list[SceneMatch]]:
+        if not group:
+            return [], []
+        if len(group) == 1:
+            return group, []
+        train_count = max(1, min(len(group) - 1, int(math.ceil(len(group) * train_fraction))))
+        return group[:train_count], group[train_count:]
+
+    train_positive, val_positive = split_group(positive)
+    train_negative, val_negative = split_group(negative)
+    train_matches = train_positive + train_negative
+    val_matches = val_positive + val_negative
+    if not val_matches:
+        val_matches = train_matches[-1:]
+        train_matches = train_matches[:-1] or train_matches
+    return train_matches, val_matches
+
+
 class TinyUNet(torch.nn.Module):
     def __init__(self, in_channels: int = 4, out_channels: int = 1, base: int = 8) -> None:
         super().__init__()
@@ -977,9 +1020,14 @@ def run_real_train(
     with trace_stage("prepare_dataset", {"job_id": job.job_id, "scene_count": len(matches), "tile_size": patch_size}):
         shapes = _load_shapes(config, annotation_uri)
 
-    split_idx = max(1, int(math.ceil(len(matches) * 0.75)))
-    train_matches = matches[:split_idx]
-    val_matches = matches[split_idx:] or matches[-1:]
+    train_matches, val_matches = _split_train_val_matches(
+        config,
+        matches,
+        shapes,
+        train_fraction=float(job.preprocess.get("train_fraction") or 0.75),
+        seed=seed,
+        stratify_positive=bool(job.preprocess.get("stratify_positive_validation", True)),
+    )
     train_samples, train_report = _read_samples(
         config,
         train_matches,
