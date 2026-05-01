@@ -814,10 +814,11 @@ def run_debug_pseudolabel(
     torch.manual_seed(seed)
     pseudolabel_cfg = job.predict.get("pseudolabel") or job.params.get("pseudolabel") or {}
     run_on = str(pseudolabel_cfg.get("run_on") or "").lower()
+    pseudolabel_images_uri = str(pseudolabel_cfg.get("images_uri") or images_uri)
 
     prepare_started = time.time()
-    with trace_stage("match_scenes", {"job_id": job.job_id, "images_uri": images_uri, "layout_uri": layout_uri}):
-        images = _list_s3_objects(config, images_uri, suffixes=(".tif", ".tiff"))
+    with trace_stage("match_scenes", {"job_id": job.job_id, "images_uri": pseudolabel_images_uri, "layout_uri": layout_uri}):
+        images = _list_s3_objects(config, pseudolabel_images_uri, suffixes=(".tif", ".tiff"))
         if run_on in {"all_available_images", "all_images"}:
             annotation_uri = None
             scenes_uri = None
@@ -875,7 +876,7 @@ def run_debug_pseudolabel(
         matches = matches[: max(1, int(max_debug_scenes))]
     scene_report = {
         **matching_report,
-        "images_uri": images_uri,
+        "images_uri": pseudolabel_images_uri,
         "layout_uri": layout_uri,
         "annotation_uri": annotation_uri,
         "scenes_uri": scenes_uri,
@@ -905,6 +906,7 @@ def run_debug_pseudolabel(
             "scene_ambiguous_count": len(ambiguous),
             "annotation_uri": annotation_uri,
             "scenes_uri": scenes_uri,
+            "pseudolabel.images_uri": pseudolabel_images_uri,
             "debug_pseudolabel": True,
         }
     )
@@ -1383,10 +1385,13 @@ def run_real_train(
     elif pseudolabel_run_on in {"train_scenes", "training_scenes", "train"}:
         pseudolabel_matches = train_matches
     elif pseudolabel_run_on in {"all_available_images", "all_images"}:
+        pseudolabel_images_uri = str(pseudolabel_cfg.get("images_uri") or images_uri)
+        pseudolabel_images = _list_s3_objects(config, pseudolabel_images_uri, suffixes=(".tif", ".tiff"))
         pseudolabel_matches = [
             SceneMatch(entry=item["name"], key=item["key"], name=item["name"], score=1.0)
-            for item in sorted(images, key=lambda row: row["key"])
+            for item in sorted(pseudolabel_images, key=lambda row: row["key"])
         ]
+        mlflow_run.log_params({"pseudolabel.images_uri": pseudolabel_images_uri})
     max_pseudolabel_scenes = pseudolabel_cfg.get("max_scenes")
     if max_pseudolabel_scenes is not None:
         pseudolabel_matches = pseudolabel_matches[: max(1, int(max_pseudolabel_scenes))]
