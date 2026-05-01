@@ -5,7 +5,7 @@ import json
 import gc
 import os
 from types import SimpleNamespace
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -204,6 +204,17 @@ def _load_scene_result(row: dict[str, Any]) -> Any:
         tile_insert_debug_rows=meta.get("tile_insert_debug_rows") or [],
         debug_row=meta.get("debug_row") or {},
         scene_duration_sec=float(meta.get("scene_duration_sec") or 0.0),
+    )
+
+
+def _vectorize_scene_result_row(args: tuple[dict[str, Any], float, float]) -> VectorizationResult:
+    row, threshold_value, min_area_prefilter = args
+    result = _load_scene_result(row)
+    return vectorize_probability_map(
+        result.probability_map,
+        scene_name=result.scene_name,
+        threshold=threshold_value,
+        min_area_m2=min_area_prefilter,
     )
 
 
@@ -421,7 +432,7 @@ def run_pseudolabel_postprocess_stage(
     max_geojson_mb = float(post_cfg.get("max_geojson_mb") or 20)
     auto_tune = bool(post_cfg.get("auto_tune", False))
     smooth_polygons = bool(post_cfg.get("smooth_polygons", False))
-    vectorization_workers = int(post_cfg.get("vectorization_workers") or max(1, min(4, len(scene_rows), os.cpu_count() or 1)))
+    vectorization_workers = int(post_cfg.get("vectorization_workers") or max(1, min(8, len(scene_rows), os.cpu_count() or 1)))
     max_raw_features_for_candidate = post_cfg.get("max_raw_features_for_candidate")
     if max_raw_features_for_candidate is None:
         max_raw_features_for_candidate = 200000
@@ -444,24 +455,22 @@ def run_pseudolabel_postprocess_stage(
         raw_features: list[dict[str, Any]] = []
         raw_vertices = 0
 
-        def vectorize_scene(row: dict[str, Any]) -> VectorizationResult:
-            result = _load_scene_result(row)
-            return vectorize_probability_map(
-                result.probability_map,
-                scene_name=result.scene_name,
-                threshold=threshold_value,
-                min_area_m2=min_area_prefilter,
-            )
-
+        print(
+            "[pseudolabel-postprocess] vectorize "
+            f"threshold={threshold_value} scenes={len(scene_rows)} workers={vectorization_workers} "
+            f"min_area_prefilter={min_area_prefilter}",
+            flush=True,
+        )
         if vectorization_workers > 1 and len(scene_rows) > 1:
             vectorized_rows: list[VectorizationResult] = []
-            with ThreadPoolExecutor(max_workers=vectorization_workers) as executor:
-                futures = {executor.submit(vectorize_scene, row): int(row.get("scene_index") or 0) for row in scene_rows}
+            work_items = [(row, threshold_value, min_area_prefilter) for row in scene_rows]
+            with ProcessPoolExecutor(max_workers=vectorization_workers) as executor:
+                futures = {executor.submit(_vectorize_scene_result_row, item): int(item[0].get("scene_index") or 0) for item in work_items}
                 for future in as_completed(futures):
                     vectorized_rows.append(future.result())
             vectorized_iter = vectorized_rows
         else:
-            vectorized_iter = [vectorize_scene(row) for row in scene_rows]
+            vectorized_iter = [_vectorize_scene_result_row((row, threshold_value, min_area_prefilter)) for row in scene_rows]
         for vectorized in vectorized_iter:
             raw_features.extend(vectorized.features_raw)
             raw_vertices += vectorized.vertices_before
