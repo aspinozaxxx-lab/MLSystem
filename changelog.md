@@ -13,5 +13,6 @@
 - Dobavlen resource-monitoring dlya Airflow stages: CPU load, RAM i GPU snapshot pishutsya v stage resources JSON i task logs.
 - Optimizirovana postobrabotka psevdo-razmetki: dobavlen ranniy area-prefilter pri vectorization i bystryy poryadok candidate search dlya shumnyh fallback scen.
 - Psevdo-razmetka razdelena na Airflow stages: GPU inference pishet per-scene probability maps, CPU vectorize/postprocess chitaet ih iz run-dir i bolshe ne derzhit GPU slot.
+- Per-scene probability maps sohranyayutsya bez compression, chtoby GPU stage ne blokiroval GPU slot na dolgoy CPU-kompressii.
 - Dlya MLflow experiments dobavleny experiment tags `class_name` i `mlsystem.class_name`, chtoby klass byl viden na urovne Experiments.
 - Provereny lokalnye komandy `compileall` i `unittest`.

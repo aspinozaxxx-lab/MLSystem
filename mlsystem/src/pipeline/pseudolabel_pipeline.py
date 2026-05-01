@@ -126,7 +126,9 @@ def _save_scene_result(result: Any, out_dir: Path) -> dict[str, Any]:
     meta_path = out_dir / f"{stem}.json"
     probability_map = result.probability_map
     transform_values = list(probability_map.transform)[:6] if probability_map.transform is not None else None
-    np.savez_compressed(
+    # Keep this uncompressed: compression is CPU-heavy, holds the Airflow GPU
+    # slot after inference, and delays downstream queued GPU work.
+    np.savez(
         npz_path,
         prob=probability_map.prob.astype(np.float32, copy=False),
         weight_sum=probability_map.weight_sum.astype(np.float32, copy=False),
