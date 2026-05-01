@@ -72,6 +72,15 @@ def _predict_probability_batch(model: torch.nn.Module, device: torch.device, arr
     return probs, model_output_shape
 
 
+def _is_cuda_oom(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return (
+        isinstance(exc, torch.cuda.OutOfMemoryError)
+        or "out of memory" in text
+        or "cudaerrormemoryallocation" in text
+    )
+
+
 def _window_feature(ds: Any, window: Any, props: dict[str, Any]) -> dict[str, Any]:
     return {"type": "Feature", "properties": props, "geometry": mapping(box(*ds.window_bounds(window)))}
 
@@ -126,7 +135,9 @@ class SceneInferenceRunner:
                         try:
                             probs, model_output_shape = _predict_probability_batch(self.model, self.device, arrays)
                             effective_batch_size = len(arrays)
-                        except torch.cuda.OutOfMemoryError:
+                        except Exception as exc:
+                            if not _is_cuda_oom(exc):
+                                raise
                             if self.device.type == "cuda":
                                 torch.cuda.empty_cache()
                             probs_rows: list[np.ndarray] = []
@@ -137,7 +148,9 @@ class SceneInferenceRunner:
                                 chunk = arrays[start : start + fallback_batch_size]
                                 try:
                                     chunk_probs, model_output_shape = _predict_probability_batch(self.model, self.device, chunk)
-                                except torch.cuda.OutOfMemoryError:
+                                except Exception as chunk_exc:
+                                    if not _is_cuda_oom(chunk_exc):
+                                        raise
                                     if self.device.type == "cuda":
                                         torch.cuda.empty_cache()
                                     if fallback_batch_size <= 1:
