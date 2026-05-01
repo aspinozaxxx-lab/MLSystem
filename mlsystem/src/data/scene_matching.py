@@ -85,11 +85,15 @@ def build_scene_matching_report(
                 image = exact_candidates[0]["image"]
                 matched.append(SceneMatch(entry=entry, key=image["key"], name=image["name"], score=1.0))
             elif len(exact_candidates) > 1 and preferred_key_prefixes:
-                preferred = [
-                    item
-                    for item in exact_candidates
-                    if any(str(item["image"].get("key") or "").startswith(prefix) for prefix in preferred_key_prefixes)
-                ]
+                preferred = []
+                for prefix in preferred_key_prefixes:
+                    preferred = [
+                        item
+                        for item in exact_candidates
+                        if str(item["image"].get("key") or "").startswith(prefix)
+                    ]
+                    if preferred:
+                        break
                 if len(preferred) == 1:
                     decision = "matched"
                     reason = "preferred_exact_duplicate"
