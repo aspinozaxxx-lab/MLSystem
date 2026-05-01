@@ -356,6 +356,8 @@ def _build_model(model_name: str, in_channels: int, out_channels: int, base_chan
     segformer_encoders = {
         "segformer_b0": "mit_b0",
         "segformer_b1": "mit_b1",
+        "segformer_b2": "mit_b2",
+        "segformer_b3": "mit_b3",
     }
     if normalized in segformer_encoders:
         import segmentation_models_pytorch as smp
@@ -391,6 +393,8 @@ def _build_model(model_name: str, in_channels: int, out_channels: int, base_chan
             "unet_resnet50",
             "segformer_b0",
             "segformer_b1",
+            "segformer_b2",
+            "segformer_b3",
             "deeplabv3plus_resnet34",
             "deeplabv3plus_resnet50",
         ]
@@ -644,6 +648,10 @@ def _auto_batch_size(model_name: str, patch_size: int, device: torch.device) -> 
     if device.type != "cuda":
         return 1
     name = model_name.lower()
+    if "segformer_b3" in name:
+        return 1 if patch_size >= 1024 else 2
+    if "segformer_b2" in name:
+        return 2 if patch_size >= 1024 else 4
     if patch_size <= 512:
         return 16
     if patch_size <= 768:
@@ -1345,6 +1353,13 @@ def run_real_train(
                 "learning_rate": float(optimizer.param_groups[0]["lr"]),
                 "epoch_duration_sec": round(time.time() - epoch_started, 4),
             }
+            row.update(
+                {
+                    "epoch/pixel_f1": row["val/pixel_f1"],
+                    "epoch/pixel_iou": row["val/pixel_iou"],
+                    "epoch/sec": row["epoch_duration_sec"],
+                }
+            )
             if device.type == "cuda":
                 torch.cuda.synchronize()
                 row["system/cuda_memory_allocated_mb"] = round(torch.cuda.memory_allocated(device) / (1024 * 1024), 3)
@@ -1428,7 +1443,8 @@ def run_real_train(
                 key: value
                 for key, value in postprocess_metrics.items()
                 if isinstance(value, (int, float, bool))
-            }
+            },
+            step=len(history) if history else None,
         )
         artifacts.extend(postprocess_artifacts)
     mlflow_run.log_artifacts(artifacts)
