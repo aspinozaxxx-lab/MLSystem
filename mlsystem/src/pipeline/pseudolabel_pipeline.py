@@ -4,8 +4,10 @@ import time
 import json
 import gc
 import os
+import subprocess
+import sys
 from types import SimpleNamespace
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -216,6 +218,46 @@ def _vectorize_scene_result_row(args: tuple[dict[str, Any], float, float]) -> Ve
         threshold=threshold_value,
         min_area_m2=min_area_prefilter,
     )
+
+
+def vectorization_result_to_dict(result: VectorizationResult) -> dict[str, Any]:
+    return {
+        "features_raw": result.features_raw,
+        "raw_count": int(result.raw_count),
+        "vertices_before": int(result.vertices_before),
+        "threshold": float(result.threshold),
+        "crs": result.crs,
+        "metadata": result.metadata,
+    }
+
+
+def vectorization_result_from_dict(payload: dict[str, Any]) -> VectorizationResult:
+    return VectorizationResult(
+        features_raw=payload.get("features_raw") or [],
+        raw_count=int(payload.get("raw_count") or 0),
+        vertices_before=int(payload.get("vertices_before") or 0),
+        threshold=float(payload.get("threshold") or 0.0),
+        crs=payload.get("crs") or "EPSG:3857",
+        metadata=payload.get("metadata") or {},
+    )
+
+
+def _run_vectorize_worker(payload_path: Path, output_path: Path, log_path: Path) -> VectorizationResult:
+    cmd = [
+        sys.executable,
+        "-m",
+        "mlsystem.src.pipeline.pseudolabel_vectorize_worker",
+        "--input",
+        str(payload_path),
+        "--output",
+        str(output_path),
+    ]
+    with log_path.open("w", encoding="utf-8") as log_file:
+        completed = subprocess.run(cmd, stdout=log_file, stderr=subprocess.STDOUT, text=True)
+    if completed.returncode != 0:
+        tail = log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-40:]
+        raise RuntimeError(f"Vectorization worker failed for {payload_path}: {' | '.join(tail)}")
+    return vectorization_result_from_dict(json.loads(output_path.read_text(encoding="utf-8-sig")))
 
 
 def run_pseudolabel_inference_stage(
@@ -463,9 +505,25 @@ def run_pseudolabel_postprocess_stage(
         )
         if vectorization_workers > 1 and len(scene_rows) > 1:
             vectorized_rows: list[VectorizationResult] = []
-            work_items = [(row, threshold_value, min_area_prefilter) for row in scene_rows]
-            with ProcessPoolExecutor(max_workers=vectorization_workers) as executor:
-                futures = {executor.submit(_vectorize_scene_result_row, item): int(item[0].get("scene_index") or 0) for item in work_items}
+            work_dir = experiment_dir / "vectorization_work" / f"thr_{str(threshold_value).replace('.', '_')}_area_{int(min_area_prefilter)}"
+            work_dir.mkdir(parents=True, exist_ok=True)
+            tasks: list[tuple[Path, Path, Path]] = []
+            for row in scene_rows:
+                scene_index = int(row.get("scene_index") or 0)
+                payload_path = work_dir / f"scene_{scene_index:04d}.input.json"
+                output_path = work_dir / f"scene_{scene_index:04d}.output.json"
+                log_path = work_dir / f"scene_{scene_index:04d}.log"
+                write_json(
+                    payload_path,
+                    {
+                        "row": row,
+                        "threshold": threshold_value,
+                        "min_area_prefilter": min_area_prefilter,
+                    },
+                )
+                tasks.append((payload_path, output_path, log_path))
+            with ThreadPoolExecutor(max_workers=vectorization_workers) as executor:
+                futures = {executor.submit(_run_vectorize_worker, *item): item[0] for item in tasks}
                 for future in as_completed(futures):
                     vectorized_rows.append(future.result())
             vectorized_iter = vectorized_rows
