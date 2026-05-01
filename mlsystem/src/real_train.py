@@ -230,6 +230,28 @@ def _load_shapes(config: PipelineConfig, annotation_uri: str) -> list[Any]:
     return [shape(feature["geometry"]) for feature in features if feature.get("geometry")]
 
 
+def _filter_shapes_to_matches(config: PipelineConfig, matches: list[SceneMatch], shapes: list[Any]) -> list[Any]:
+    import rasterio
+
+    if not matches or not shapes:
+        return []
+    selected: list[Any] = []
+    seen: set[int] = set()
+    aws = _aws_session(config)
+    with rasterio.Env(aws, AWS_HTTPS="NO", AWS_VIRTUAL_HOSTING="FALSE"):
+        for match in matches:
+            path = s3_storage.raster_path_for_s3_key(config, match.key)
+            with rasterio.open(path) as ds:
+                scene_bounds = box(*ds.bounds)
+            for index, geom in enumerate(shapes):
+                if index in seen:
+                    continue
+                if geom.is_valid and not geom.is_empty and geom.intersects(scene_bounds):
+                    selected.append(geom)
+                    seen.add(index)
+    return selected
+
+
 class TinyUNet(torch.nn.Module):
     def __init__(self, in_channels: int = 4, out_channels: int = 1, base: int = 8) -> None:
         super().__init__()
@@ -1205,8 +1227,13 @@ def run_real_train(
     if device.type == "cuda":
         torch.cuda.empty_cache()
     pseudolabel_cfg = job.predict.get("pseudolabel") or job.params.get("pseudolabel") or {}
+    pseudolabel_run_on = str(pseudolabel_cfg.get("run_on") or "").lower()
     pseudolabel_matches = matches
-    if str(pseudolabel_cfg.get("run_on") or "").lower() in {"all_available_images", "all_images"}:
+    if pseudolabel_run_on in {"validation_scenes", "val_scenes", "validation"}:
+        pseudolabel_matches = val_matches
+    elif pseudolabel_run_on in {"train_scenes", "training_scenes", "train"}:
+        pseudolabel_matches = train_matches
+    elif pseudolabel_run_on in {"all_available_images", "all_images"}:
         pseudolabel_matches = [
             SceneMatch(entry=item["name"], key=item["key"], name=item["name"], score=1.0)
             for item in sorted(images, key=lambda row: row["key"])
@@ -1214,7 +1241,10 @@ def run_real_train(
     max_pseudolabel_scenes = pseudolabel_cfg.get("max_scenes")
     if max_pseudolabel_scenes is not None:
         pseudolabel_matches = pseudolabel_matches[: max(1, int(max_pseudolabel_scenes))]
-    object_metrics_prefix = "val" if str(pseudolabel_cfg.get("run_on") or "").lower() not in {"all_available_images", "all_images"} else "pseudolabel"
+    object_metrics_prefix = "val" if pseudolabel_run_on not in {"all_available_images", "all_images"} else "pseudolabel"
+    metric_shapes = shapes
+    if pseudolabel_run_on in {"validation_scenes", "val_scenes", "validation", "train_scenes", "training_scenes", "train"}:
+        metric_shapes = _filter_shapes_to_matches(config, pseudolabel_matches, shapes)
     with trace_stage(
         "postprocess_vectors",
         {
@@ -1235,7 +1265,7 @@ def run_real_train(
             patch_size,
             float((job.postprocess.get("thresholds") or [0.5])[0]),
             seed,
-            gt_shapes=shapes,
+            gt_shapes=metric_shapes,
             object_metrics_prefix=object_metrics_prefix,
         )
     if postprocess_metrics.get("pseudolabel_enabled"):
