@@ -68,7 +68,14 @@ def _pseudolabel_runtime_options(
     elif patch_size <= 768:
         inference_batch_size = 32 if "deeplab" in model_name else 48
     else:
-        inference_batch_size = 24 if model_name.startswith("segformer") else 32
+        if model_name.startswith("segformer_b3"):
+            inference_batch_size = 4
+        elif model_name.startswith("segformer_b2"):
+            inference_batch_size = 8
+        elif model_name.startswith("segformer"):
+            inference_batch_size = 16
+        else:
+            inference_batch_size = 32
     center_size_value = pseudolabel_cfg.get("center_size") or pseudolabel_cfg.get("sample_size") or job.params.get("center_size") or job.params.get("sample_size")
     center_size = int(center_size_value) if center_size_value is not None else None
     context_value = pseudolabel_cfg.get("context_bounds") or pseudolabel_cfg.get("bounds") or job.params.get("context_bounds") or job.params.get("bounds")
@@ -92,7 +99,7 @@ def _pseudolabel_runtime_options(
         int(
             parallel_cfg.get("gpu_forward_concurrency")
             or parallel_cfg.get("max_concurrent_forwards")
-            or (2 if parallel_enabled and max_workers > 1 else 1)
+            or (1 if model_name.startswith("segformer") and patch_size >= 1024 else (2 if parallel_enabled and max_workers > 1 else 1))
         ),
     )
     return {
@@ -750,7 +757,14 @@ def run_pseudolabel_pipeline(
     elif patch_size <= 768:
         inference_batch_size = 32 if "deeplab" in model_name else 48
     else:
-        inference_batch_size = 24 if model_name.startswith("segformer") else 32
+        if model_name.startswith("segformer_b3"):
+            inference_batch_size = 4
+        elif model_name.startswith("segformer_b2"):
+            inference_batch_size = 8
+        elif model_name.startswith("segformer"):
+            inference_batch_size = 16
+        else:
+            inference_batch_size = 32
 
     started = time.time()
     model.eval()
@@ -764,7 +778,7 @@ def run_pseudolabel_pipeline(
         int(
             parallel_cfg.get("gpu_forward_concurrency")
             or parallel_cfg.get("max_concurrent_forwards")
-            or (2 if parallel_enabled and device.type == "cuda" and max_workers > 1 else 1)
+            or (1 if model_name.startswith("segformer") and patch_size >= 1024 else (2 if parallel_enabled and device.type == "cuda" and max_workers > 1 else 1))
         ),
     )
     torch.set_num_threads(torch_threads_per_worker)

@@ -78,6 +78,8 @@ def _is_cuda_oom(exc: BaseException) -> bool:
         isinstance(exc, torch.cuda.OutOfMemoryError)
         or "out of memory" in text
         or "cudaerrormemoryallocation" in text
+        or "cublas_status_alloc_failed" in text
+        or "memory allocation" in text
     )
 
 
