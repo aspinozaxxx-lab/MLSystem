@@ -74,10 +74,16 @@ def build_scene_matching_report(
         scored.sort(key=lambda item: item["score"], reverse=True)
         best = scored[0] if scored else None
         second = scored[1] if len(scored) > 1 else None
+        exact_candidates = [item for item in scored if item["score"] == 1.0 and item["reason"] == "normalized_exact"]
         decision = "missing"
         reason = "no_reliable_candidate"
         if best and best["score"] >= accept_threshold:
-            if second and second["score"] >= accept_threshold and (best["score"] - second["score"]) <= ambiguous_margin:
+            if len(exact_candidates) == 1:
+                decision = "matched"
+                reason = exact_candidates[0]["reason"]
+                image = exact_candidates[0]["image"]
+                matched.append(SceneMatch(entry=entry, key=image["key"], name=image["name"], score=1.0))
+            elif second and second["score"] >= accept_threshold and (best["score"] - second["score"]) <= ambiguous_margin:
                 decision = "ambiguous"
                 reason = "multiple_close_candidates"
                 ambiguous.append(

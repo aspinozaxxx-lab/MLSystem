@@ -26,6 +26,25 @@ class SceneMatchingTests(unittest.TestCase):
         report = build_scene_matching_report(["scene_a.tif"], images)
         self.assertEqual(report["ambiguous_count"], 1)
 
+    def test_unique_exact_candidate_wins_over_close_signature(self) -> None:
+        images = [
+            {
+                "key": "a/KV3_35352_37872-01_KANOPUS_20240616_074631_7.L2.PMS.SCN01.tif",
+                "name": "KV3_35352_37872-01_KANOPUS_20240616_074631_7.L2.PMS.SCN01.tif",
+            },
+            {
+                "key": "a/KV3_35352_37872-01_KANOPUS_20240616_074631_7.L2.PMS.SCN05 (1).tif",
+                "name": "KV3_35352_37872-01_KANOPUS_20240616_074631_7.L2.PMS.SCN05 (1).tif",
+            },
+        ]
+        report = build_scene_matching_report(
+            ["KV3_35352_37872-01_KANOPUS_20240616_074631_7.L2.PMS.SCN01"],
+            images,
+        )
+        self.assertEqual(report["matched_count"], 1)
+        self.assertEqual(report["ambiguous_count"], 0)
+        self.assertEqual(report["matched"][0]["key"], images[0]["key"])
+
     def test_missing_candidate(self) -> None:
         report = build_scene_matching_report(["missing.tif"], [{"key": "x/other.tif", "name": "other.tif"}])
         self.assertEqual(report["missing_count"], 1)
