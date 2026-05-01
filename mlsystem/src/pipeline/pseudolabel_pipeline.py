@@ -92,7 +92,14 @@ def _pseudolabel_runtime_options(
         stitch_mode = "weighted_overlap" if model_name.startswith("segformer") else "hard_insert"
     parallel_cfg = ((job.predict.get("inference") or {}).get("parallel") or (job.params.get("inference") or {}).get("parallel") or {})
     parallel_enabled = bool(parallel_cfg.get("enabled", True))
-    max_workers = max(1, int(parallel_cfg.get("max_workers") or (4 if parallel_enabled else 1)))
+    default_max_workers = 4 if parallel_enabled else 1
+    if model_name.startswith("segformer") and patch_size >= 1024:
+        # Large SegFormer scenes keep very large probability maps in memory.
+        # Running several scenes concurrently causes long CPU/IO stalls while
+        # the Airflow GPU slot is still held, so keep the default conservative
+        # unless a job explicitly opts into more workers.
+        default_max_workers = 1
+    max_workers = max(1, int(parallel_cfg.get("max_workers") or default_max_workers))
     torch_threads_per_worker = max(1, int(parallel_cfg.get("torch_threads_per_worker") or max(1, torch.get_num_threads() // max_workers)))
     gpu_forward_concurrency = max(
         1,
@@ -137,8 +144,8 @@ def _save_scene_result(result: Any, out_dir: Path) -> dict[str, Any]:
     # slot after inference, and delays downstream queued GPU work.
     np.savez(
         npz_path,
-        prob=probability_map.prob.astype(np.float32, copy=False),
-        weight_sum=probability_map.weight_sum.astype(np.float32, copy=False),
+        prob=probability_map.prob.astype(np.float16, copy=False),
+        weight_sum=probability_map.weight_sum.astype(np.float16, copy=False),
         coverage_mask=probability_map.coverage_mask.astype(np.uint8, copy=False),
     )
     meta = {
@@ -251,7 +258,15 @@ def run_pseudolabel_inference_stage(
                 futures = {executor.submit(runner.run_scene, idx, match): idx for idx, match in enumerate(matches)}
                 for future in as_completed(futures):
                     result = future.result()
-                    scene_rows.append(_save_scene_result(result, out_dir))
+                    row = _save_scene_result(result, out_dir)
+                    scene_rows.append(row)
+                    print(
+                        "[pseudolabel-inference] saved "
+                        f"{len(scene_rows)}/{len(matches)} scene={row['scene_name']} "
+                        f"coverage={row['coverage_fraction']:.4f} "
+                        f"duration_sec={row['scene_duration_sec']:.1f}",
+                        flush=True,
+                    )
                     if not preview_artifacts:
                         preview = write_probability_preview(result.probability_map.prob, result.scene_name, experiment_dir)
                         if preview:
@@ -261,7 +276,15 @@ def run_pseudolabel_inference_stage(
         else:
             for idx, match in enumerate(matches):
                 result = runner.run_scene(idx, match)
-                scene_rows.append(_save_scene_result(result, out_dir))
+                row = _save_scene_result(result, out_dir)
+                scene_rows.append(row)
+                print(
+                    "[pseudolabel-inference] saved "
+                    f"{len(scene_rows)}/{len(matches)} scene={row['scene_name']} "
+                    f"coverage={row['coverage_fraction']:.4f} "
+                    f"duration_sec={row['scene_duration_sec']:.1f}",
+                    flush=True,
+                )
                 if not preview_artifacts:
                     preview = write_probability_preview(result.probability_map.prob, result.scene_name, experiment_dir)
                     if preview:
@@ -771,7 +794,10 @@ def run_pseudolabel_pipeline(
     previous_torch_threads = torch.get_num_threads()
     parallel_cfg = ((job.predict.get("inference") or {}).get("parallel") or (job.params.get("inference") or {}).get("parallel") or {})
     parallel_enabled = bool(parallel_cfg.get("enabled", device.type == "cuda"))
-    max_workers = max(1, int(parallel_cfg.get("max_workers") or (4 if parallel_enabled else 1)))
+    default_max_workers = 4 if parallel_enabled else 1
+    if model_name.startswith("segformer") and patch_size >= 1024:
+        default_max_workers = 1
+    max_workers = max(1, int(parallel_cfg.get("max_workers") or default_max_workers))
     torch_threads_per_worker = max(1, int(parallel_cfg.get("torch_threads_per_worker") or max(1, torch.get_num_threads() // max_workers)))
     gpu_forward_concurrency = max(
         1,
