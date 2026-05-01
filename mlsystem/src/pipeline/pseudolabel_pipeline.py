@@ -243,6 +243,9 @@ def vectorization_result_from_dict(payload: dict[str, Any]) -> VectorizationResu
 
 
 def _run_vectorize_worker(payload_path: Path, output_path: Path, log_path: Path) -> VectorizationResult:
+    env = os.environ.copy()
+    package_root = str(Path(__file__).resolve().parents[3])
+    env["PYTHONPATH"] = package_root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     cmd = [
         sys.executable,
         "-m",
@@ -253,7 +256,7 @@ def _run_vectorize_worker(payload_path: Path, output_path: Path, log_path: Path)
         str(output_path),
     ]
     with log_path.open("w", encoding="utf-8") as log_file:
-        completed = subprocess.run(cmd, stdout=log_file, stderr=subprocess.STDOUT, text=True)
+        completed = subprocess.run(cmd, stdout=log_file, stderr=subprocess.STDOUT, text=True, env=env)
     if completed.returncode != 0:
         tail = log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-40:]
         raise RuntimeError(f"Vectorization worker failed for {payload_path}: {' | '.join(tail)}")
