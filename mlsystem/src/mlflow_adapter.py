@@ -42,16 +42,18 @@ def _resource_snapshot() -> dict[str, Any]:
 def trace_stage(name: str, attributes: dict[str, Any] | None = None):
     """MLflow trace/span wrapper that records only compact scalar attributes."""
     attributes = attributes or {}
+    start_span = None
     try:
         import mlflow
-        if hasattr(mlflow, "start_span"):
-            with mlflow.start_span(name=name) as span:
-                if hasattr(span, "set_attributes"):
-                    span.set_attributes({key: str(value) for key, value in attributes.items() if value is not None})
-                yield
-            return
+        start_span = getattr(mlflow, "start_span", None)
     except Exception:
-        pass
+        start_span = None
+    if start_span:
+        with start_span(name=name) as span:
+            if hasattr(span, "set_attributes"):
+                span.set_attributes({key: str(value) for key, value in attributes.items() if value is not None})
+            yield
+        return
     yield
 
 def compact_run_label(job_id: str, model_name: str | None = None, tile_size: int | str | None = None) -> str:

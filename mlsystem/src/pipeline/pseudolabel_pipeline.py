@@ -237,12 +237,13 @@ def run_pseudolabel_pipeline(
         threshold_values = threshold_values[:1]
         min_area_values = min_area_values[:1]
         simplify_values = simplify_values[:1]
-    for threshold_candidate in threshold_values:
+    for threshold_index, threshold_candidate in enumerate(threshold_values):
         vectorization_candidate = build_vectorization(threshold_candidate)
         if (
             not tune_with_object_f1
             and max_raw_features_for_candidate
             and vectorization_candidate.raw_count > max_raw_features_for_candidate
+            and threshold_index < len(threshold_values) - 1
         ):
             candidates_checked.append(
                 {
@@ -255,6 +256,11 @@ def run_pseudolabel_pipeline(
                 }
             )
             continue
+        forced_noisy_fallback = (
+            not tune_with_object_f1
+            and max_raw_features_for_candidate
+            and vectorization_candidate.raw_count > max_raw_features_for_candidate
+        )
         for min_area_candidate in min_area_values:
             for simplify_candidate in simplify_values:
                 result_candidate = postprocess_vectorization_result(
@@ -272,6 +278,7 @@ def run_pseudolabel_pipeline(
                     "threshold": threshold_candidate,
                     "min_object_area_m2": min_area_candidate,
                     "simplify_tolerance_m": simplify_candidate,
+                    "forced_noisy_fallback": forced_noisy_fallback,
                     "object_count": len(result_candidate.features),
                     "vertices_count": int(sum(vertex_count(item["geometry"]) for item in result_candidate.features)),
                     "estimated_geojson_mb": candidate_size_mb,
