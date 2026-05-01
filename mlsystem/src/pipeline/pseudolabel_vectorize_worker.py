@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import pickle
 from pathlib import Path
 
 from ..storage.local_io import write_json
@@ -22,7 +23,13 @@ def main() -> int:
             float(payload.get("min_area_prefilter") or 0),
         )
     )
-    write_json(Path(args.output), vectorization_result_to_dict(result))
+    output_path = Path(args.output)
+    if output_path.suffix == ".pkl":
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with output_path.open("wb") as handle:
+            pickle.dump(vectorization_result_to_dict(result), handle, protocol=pickle.HIGHEST_PROTOCOL)
+    else:
+        write_json(output_path, vectorization_result_to_dict(result))
     return 0
 
 

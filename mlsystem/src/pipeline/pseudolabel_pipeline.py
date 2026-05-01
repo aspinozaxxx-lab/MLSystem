@@ -6,6 +6,7 @@ import gc
 import os
 import subprocess
 import sys
+import pickle
 from types import SimpleNamespace
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path, PurePosixPath
@@ -260,6 +261,9 @@ def _run_vectorize_worker(payload_path: Path, output_path: Path, log_path: Path)
     if completed.returncode != 0:
         tail = log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-40:]
         raise RuntimeError(f"Vectorization worker failed for {payload_path}: {' | '.join(tail)}")
+    if output_path.suffix == ".pkl":
+        with output_path.open("rb") as handle:
+            return vectorization_result_from_dict(pickle.load(handle))
     return vectorization_result_from_dict(json.loads(output_path.read_text(encoding="utf-8-sig")))
 
 
@@ -514,7 +518,7 @@ def run_pseudolabel_postprocess_stage(
             for row in scene_rows:
                 scene_index = int(row.get("scene_index") or 0)
                 payload_path = work_dir / f"scene_{scene_index:04d}.input.json"
-                output_path = work_dir / f"scene_{scene_index:04d}.output.json"
+                output_path = work_dir / f"scene_{scene_index:04d}.output.pkl"
                 log_path = work_dir / f"scene_{scene_index:04d}.log"
                 write_json(
                     payload_path,
@@ -555,7 +559,11 @@ def run_pseudolabel_postprocess_stage(
         threshold_values = threshold_values[:1]
         min_area_values = min_area_values[:1]
         simplify_values = simplify_values[:1]
+    run_on = str((job.predict.get("pseudolabel") or job.params.get("pseudolabel") or {}).get("run_on") or "").lower()
     min_area_prefilter = min(min_area_values) if min_area_values else 0.0
+    if not tune_with_object_f1 and auto_tune and run_on in {"all_available_images", "all_images"} and len(scene_rows) > 20 and min_area_values:
+        min_area_prefilter = max(min_area_values)
+        min_area_values = [value for value in min_area_values if value >= min_area_prefilter]
     for threshold_index, threshold_candidate in enumerate(threshold_values):
         vectorization_candidate = build_vectorization(threshold_candidate, min_area_prefilter)
         if (

@@ -948,7 +948,11 @@ def run_debug_pseudolabel(
     stage_mode = str(pseudolabel_cfg.get("_airflow_stage_mode") or pseudolabel_cfg.get("_stage_mode") or "full").lower()
     if stage_mode in {"postprocess", "vectorize"}:
         gt_shapes = _load_shapes(config, annotation_uri) if annotation_uri else []
-        if gt_shapes and run_on not in {"all_available_images", "all_images"}:
+        if run_on in {"all_available_images", "all_images"}:
+            # Full-pool pseudolabel targets do not have a one-to-one GT scene set;
+            # using dataset GT here makes object-F1 tuning both misleading and slow.
+            gt_shapes = []
+        elif gt_shapes:
             gt_shapes = _filter_shapes_to_matches(config, matches, gt_shapes)
         prepare_duration_sec = round(time.time() - prepare_started, 3)
         postprocess_started = time.time()
@@ -1035,7 +1039,9 @@ def run_debug_pseudolabel(
         raise RuntimeError(f"Unsupported checkpoint payload at {checkpoint_path}")
     model.load_state_dict(state)
     gt_shapes = _load_shapes(config, annotation_uri) if annotation_uri else []
-    if gt_shapes and run_on not in {"all_available_images", "all_images"}:
+    if run_on in {"all_available_images", "all_images"}:
+        gt_shapes = []
+    elif gt_shapes:
         gt_shapes = _filter_shapes_to_matches(config, matches, gt_shapes)
     prepare_duration_sec = round(time.time() - prepare_started, 3)
 
