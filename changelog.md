@@ -12,4 +12,6 @@
 - Dobavleny Airflow resource pools `gpu_training`, `cpu_heavy`, `cpu_light`, `io_light`; DAG stages poluchili pool i pool_slots.
 - Dobavlen resource-monitoring dlya Airflow stages: CPU load, RAM i GPU snapshot pishutsya v stage resources JSON i task logs.
 - Optimizirovana postobrabotka psevdo-razmetki: dobavlen ranniy area-prefilter pri vectorization i bystryy poryadok candidate search dlya shumnyh fallback scen.
+- Psevdo-razmetka razdelena na Airflow stages: GPU inference pishet per-scene probability maps, CPU vectorize/postprocess chitaet ih iz run-dir i bolshe ne derzhit GPU slot.
+- Dlya MLflow experiments dobavleny experiment tags `class_name` i `mlsystem.class_name`, chtoby klass byl viden na urovne Experiments.
 - Provereny lokalnye komandy `compileall` i `unittest`.

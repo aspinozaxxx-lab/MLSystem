@@ -441,7 +441,7 @@ def _checkpoint_path_for_pseudolabel(conf: AirflowExperimentConfig, store: Airfl
     raise RuntimeError(f"Training checkpoint is missing: {checkpoint_path or fallback}")
 
 
-def _run_pseudolabel_pipeline(conf: AirflowExperimentConfig, store: AirflowRunStore) -> dict[str, Any]:
+def _run_pseudolabel_pipeline(conf: AirflowExperimentConfig, store: AirflowRunStore, *, stage_mode: str = "full") -> dict[str, Any]:
     training_result = _read_training_result(store)
     checkpoint_path = _checkpoint_path_for_pseudolabel(conf, store, training_result)
     summary = store.read_summary()
@@ -454,6 +454,7 @@ def _run_pseudolabel_pipeline(conf: AirflowExperimentConfig, store: AirflowRunSt
     pseudolabel_cfg.setdefault("enabled", True)
     pseudolabel_cfg["checkpoint_path"] = str(checkpoint_path)
     pseudolabel_cfg["preserve_train_scenes"] = True
+    pseudolabel_cfg["_airflow_stage_mode"] = stage_mode
     job.predict["pseudolabel"] = pseudolabel_cfg
     job.predict["checkpoint_path"] = str(checkpoint_path)
     job.predict["preserve_train_scenes"] = True
@@ -486,7 +487,8 @@ def _run_pseudolabel_pipeline(conf: AirflowExperimentConfig, store: AirflowRunSt
             _append_log,
         )
         prediction_result["mlflow"] = mlflow_run.result()
-        mlflow_run.set_tags({"job_status": "pseudolabel_completed", "airflow_pseudolabel_status": "success"})
+        status_tag = "pseudolabel_inference_completed" if stage_mode in {"inference", "infer"} else "pseudolabel_completed"
+        mlflow_run.set_tags({"job_status": status_tag, "airflow_pseudolabel_status": "success", "airflow_pseudolabel_stage_mode": stage_mode})
 
     merged = dict(training_result)
     merged["pseudolabel_result"] = prediction_result
@@ -594,6 +596,12 @@ def _create_mlflow_run(conf: AirflowExperimentConfig, store: AirflowRunStore) ->
         mlflow.set_tracking_uri(pipeline_config.mlflow_tracking_uri_internal)
         experiment_name = conf.mlflow.get("experiment") or pipeline_config.mlflow_default_experiment
         mlflow.set_experiment(experiment_name)
+        experiment = mlflow.get_experiment_by_name(experiment_name)
+        if experiment and conf.class_name:
+            client = mlflow.tracking.MlflowClient()
+            client.set_experiment_tag(experiment.experiment_id, "class_name", conf.class_name)
+            client.set_experiment_tag(experiment.experiment_id, "mlsystem.class_name", conf.class_name)
+            client.set_experiment_tag(experiment.experiment_id, "task", conf.task)
         with mlflow.start_run(run_name=conf.experiment_id) as run:
             mlflow.set_tags(
                 {
@@ -604,6 +612,7 @@ def _create_mlflow_run(conf: AirflowExperimentConfig, store: AirflowRunStore) ->
                     "queue_state": "airflow",
                     "task": conf.task,
                     "class_name": conf.class_name or "",
+                    "mlsystem.class_name": conf.class_name or "",
                 }
             )
             mlflow.log_params(
@@ -884,17 +893,18 @@ def run_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: str, sta
         elif not conf.pseudolabel.get("enabled", False):
             result = _stage_result("skipped", summary="pseudolabel.enabled=false")
         else:
-            prediction_result = _run_pseudolabel_pipeline(conf, store)
+            prediction_result = _run_pseudolabel_pipeline(conf, store, stage_mode="inference")
             coverage = read_json(store.run_dir / "coverage_report.json", default={}) or {}
             pseudolabel = prediction_result.get("pseudolabel") or {}
             result = _stage_result(
                 "success",
-                summary="PredictionPipeline completed real pseudolabel inference/stitch/vectorize/postprocess run.",
+                summary="PredictionPipeline completed real GPU pseudolabel inference and wrote per-scene probability maps.",
                 scenes_processed=coverage.get("scenes_processed"),
                 total_predicted_windows=coverage.get("total_predicted_windows"),
                 mean_coverage_fraction=coverage.get("mean_coverage_fraction"),
                 accepted_objects=pseudolabel.get("accepted_objects"),
                 accepted_geojson_mb=pseudolabel.get("accepted_geojson_mb"),
+                scene_results_manifest=str(store.run_dir / "pseudolabel_scene_results_manifest.json"),
             )
     elif stage == "stitch_probability_maps":
         coverage = read_json(store.run_dir / "coverage_report.json", default={}) or {}
@@ -911,7 +921,20 @@ def run_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: str, sta
     elif stage == "vectorize_pseudolabel":
         accepted = store.run_dir / f"{conf.experiment_id}.accepted.geojson"
         if not accepted.exists():
-            result = _stage_result("failed", error=f"{accepted.name} is missing.")
+            if not conf.pseudolabel.get("enabled", False):
+                result = _stage_result("skipped", summary="pseudolabel.enabled=false")
+            else:
+                prediction_result = _run_pseudolabel_pipeline(conf, store, stage_mode="postprocess")
+                coverage = read_json(store.run_dir / "coverage_report.json", default={}) or {}
+                pseudolabel = prediction_result.get("pseudolabel") or {}
+                result = _stage_result(
+                    "success",
+                    summary="CPU vectorization/postprocess completed from saved probability maps.",
+                    scenes_processed=coverage.get("scenes_processed"),
+                    accepted_objects=pseudolabel.get("accepted_objects"),
+                    accepted_geojson_mb=pseudolabel.get("accepted_geojson_mb"),
+                    accepted_geojson=str(accepted),
+                )
         else:
             result = _stage_result("success", accepted_geojson=str(accepted), size_bytes=accepted.stat().st_size)
     elif stage == "postprocess_pseudolabel":

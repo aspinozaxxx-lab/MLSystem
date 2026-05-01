@@ -25,7 +25,11 @@ from .mlflow_adapter import MLflowJobRun, trace_stage
 from .models.factory import build_model as build_model_mod
 from .models.factory import set_batchnorm_eval as set_batchnorm_eval_mod
 from .object_metrics import compute_object_f1
-from .pipeline.pseudolabel_pipeline import run_pseudolabel_pipeline
+from .pipeline.pseudolabel_pipeline import (
+    run_pseudolabel_inference_stage,
+    run_pseudolabel_pipeline,
+    run_pseudolabel_postprocess_stage,
+)
 from .pipeline_config import PipelineConfig
 from .preprocessing.normalization import normalize_image as normalize_image_mod
 from .reporting.prediction_examples import write_prediction_examples_report as write_prediction_examples_report_mod
@@ -939,6 +943,79 @@ def run_debug_pseudolabel(
     input_bands = job.params.get("input_bands") or model_cfg.get("input_bands") or [1, 2, 3, 4]
     input_bands = [int(band) for band in input_bands]
     patch_size = int(job.preprocess.get("tile_size") or job.train.get("patch_size") or 1024)
+    model_name = str(model_cfg.get("name") or job.predict.get("model_name") or "tiny_unet_4ch")
+    checkpoint_path = pseudolabel_cfg.get("checkpoint_path") or job.predict.get("checkpoint_path") or job.params.get("checkpoint_path")
+    stage_mode = str(pseudolabel_cfg.get("_airflow_stage_mode") or pseudolabel_cfg.get("_stage_mode") or "full").lower()
+    if stage_mode in {"postprocess", "vectorize"}:
+        gt_shapes = _load_shapes(config, annotation_uri) if annotation_uri else []
+        if gt_shapes and run_on not in {"all_available_images", "all_images"}:
+            gt_shapes = _filter_shapes_to_matches(config, matches, gt_shapes)
+        prepare_duration_sec = round(time.time() - prepare_started, 3)
+        postprocess_started = time.time()
+        with trace_stage(
+            "postprocess_vectors",
+            {"job_id": job.job_id, "stage_mode": stage_mode, "scene_count": len(matches), "tile_size": patch_size},
+        ):
+            postprocess_metrics, artifacts = run_pseudolabel_postprocess_stage(
+                config,
+                job,
+                experiment_dir,
+                float((job.postprocess.get("thresholds") or [0.5])[0]),
+                gt_shapes=gt_shapes,
+                object_metrics_prefix="val",
+            )
+        numeric_metrics = {key: value for key, value in postprocess_metrics.items() if isinstance(value, (int, float, bool))}
+        if numeric_metrics:
+            mlflow_run.log_metrics(numeric_metrics)
+        mlflow_run.log_artifacts(artifacts)
+        postprocess_duration_sec = round(time.time() - postprocess_started, 3)
+        selected_postprocess_params = {
+            "threshold": postprocess_metrics.get("threshold_used"),
+            "min_object_area_m2": postprocess_metrics.get("min_object_area_m2_used"),
+            "simplify_tolerance_m": postprocess_metrics.get("simplify_tolerance_m_used"),
+            "max_objects": job.postprocess.get("max_objects"),
+        }
+        return {
+            "status": "done",
+            "mode": "debug_pseudolabel_postprocess",
+            "model_name": model_name,
+            "device": "cpu",
+            "checkpoint_path": str(checkpoint_path),
+            "timing": {
+                "prepare_duration_sec": prepare_duration_sec,
+                "train_duration_sec": 0,
+                "eval_duration_sec": None,
+                "pseudolabel_duration_sec": postprocess_duration_sec,
+                "postprocess_duration_sec": postprocess_duration_sec,
+            },
+            "postprocess_metrics": postprocess_metrics,
+            "pseudolabel": {
+                "status": "done",
+                "accepted_objects": postprocess_metrics.get("accepted_objects"),
+                "accepted_geojson_mb": postprocess_metrics.get("accepted_geojson_mb"),
+                "total_vertices": postprocess_metrics.get("total_vertices"),
+                "total_area_m2": postprocess_metrics.get("total_area_m2"),
+                "selected_postprocess_params": selected_postprocess_params,
+                "mlflow_artifacts": {
+                    "accepted_geojson": f"{job.job_id}.accepted.geojson",
+                    "coverage_report": "coverage_report.json",
+                    "inference_timing_report": "inference_timing_report.json",
+                    "tiling_debug": "tiling_debug.json",
+                    "postprocess_debug": "postprocess_debug.json",
+                    "pseudolabel_summary": "pseudolabel_summary.json",
+                    "object_metrics": "object_metrics.json",
+                    "object_matches": "object_matches.csv",
+                    "prediction_examples": "prediction_examples.html",
+                    "pseudolabel_scenes": "pseudolabel_scenes.txt",
+                },
+            },
+            "matched_scenes_count": len(matches),
+            "total_matched_scenes_count": total_matched_count,
+            "missing_scenes": missing,
+            "ambiguous_scenes": ambiguous,
+            "scenes_match_report": str(scenes_report_path),
+            "warnings": [f"{len(missing)} scenes from scenes.txt were not matched"] if missing else [],
+        }
     require_gpu = bool(job.train.get("require_gpu", False) or job.resources.requires_gpu)
     cuda_available = bool(torch.cuda.is_available())
     if require_gpu and not cuda_available:
@@ -948,10 +1025,8 @@ def run_debug_pseudolabel(
         )
     cpu_only_effective = bool(config.cpu_only) and not require_gpu
     device = torch.device("cuda" if cuda_available and not cpu_only_effective else "cpu")
-    model_name = str(model_cfg.get("name") or job.predict.get("model_name") or "tiny_unet_4ch")
     base_channels = int(model_cfg.get("base_channels") or job.train.get("base_channels") or 8)
     model = _build_model(model_name, len(input_bands), int(model_cfg.get("out_channels") or 1), base_channels).to(device)
-    checkpoint_path = pseudolabel_cfg.get("checkpoint_path") or job.predict.get("checkpoint_path") or job.params.get("checkpoint_path")
     if not checkpoint_path:
         raise RuntimeError("Debug pseudolabel job requires predict.pseudolabel.checkpoint_path")
     checkpoint = torch.load(str(checkpoint_path), map_location=device)
@@ -969,20 +1044,34 @@ def run_debug_pseudolabel(
         "postprocess_vectors",
         {"job_id": job.job_id, "model_name": model_name, "scene_count": len(matches), "tile_size": patch_size},
     ):
-        postprocess_metrics, artifacts = _write_pseudolabel_outputs(
-            config,
-            job,
-            experiment_dir,
-            model,
-            device,
-            matches,
-            input_bands,
-            patch_size,
-            float((job.postprocess.get("thresholds") or [0.5])[0]),
-            seed,
-            gt_shapes=gt_shapes,
-            object_metrics_prefix="val",
-        )
+        if stage_mode in {"inference", "infer"}:
+            postprocess_metrics, artifacts = run_pseudolabel_inference_stage(
+                config,
+                job,
+                experiment_dir,
+                model,
+                device,
+                matches,
+                input_bands,
+                patch_size,
+                float((job.postprocess.get("thresholds") or [0.5])[0]),
+                seed,
+            )
+        else:
+            postprocess_metrics, artifacts = _write_pseudolabel_outputs(
+                config,
+                job,
+                experiment_dir,
+                model,
+                device,
+                matches,
+                input_bands,
+                patch_size,
+                float((job.postprocess.get("thresholds") or [0.5])[0]),
+                seed,
+                gt_shapes=gt_shapes,
+                object_metrics_prefix="val",
+            )
     numeric_metrics = {key: value for key, value in postprocess_metrics.items() if isinstance(value, (int, float, bool))}
     if numeric_metrics:
         mlflow_run.log_metrics(numeric_metrics)
