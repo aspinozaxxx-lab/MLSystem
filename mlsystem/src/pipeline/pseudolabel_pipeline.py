@@ -49,6 +49,92 @@ def _features_geojson_size_mb(features: list[dict[str, Any]]) -> float:
     return len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) / (1024 * 1024)
 
 
+def _scene_area_m2(row: dict[str, Any]) -> float:
+    width = float(row.get("width") or 0)
+    height = float(row.get("height") or 0)
+    transform = row.get("transform") or []
+    if width <= 0 or height <= 0 or len(transform) < 6:
+        return 0.0
+    a, b, _c, d, e, _f = [float(item) for item in transform[:6]]
+    pixel_area = abs(a * e - b * d)
+    return width * height * pixel_area
+
+
+def _effective_max_geojson_mb(
+    post_cfg: dict[str, Any],
+    scene_rows: list[dict[str, Any]],
+    configured_max_geojson_mb: float,
+) -> tuple[float, dict[str, Any]]:
+    adaptive_cfg = post_cfg.get("adaptive_max_geojson_mb") or post_cfg.get("adaptive_geojson_limit")
+    if not adaptive_cfg:
+        return configured_max_geojson_mb, {"enabled": False, "configured_max_geojson_mb": configured_max_geojson_mb}
+    if adaptive_cfg is True:
+        adaptive_cfg = {}
+    if not isinstance(adaptive_cfg, dict):
+        return configured_max_geojson_mb, {
+            "enabled": False,
+            "configured_max_geojson_mb": configured_max_geojson_mb,
+            "warning": "adaptive_max_geojson_mb must be a boolean or object",
+        }
+
+    reference_mb = float(adaptive_cfg.get("reference_max_geojson_mb") or configured_max_geojson_mb or 20)
+    coefficient = float(
+        adaptive_cfg.get("area_scale_coefficient")
+        or adaptive_cfg.get("coefficient")
+        or post_cfg.get("geojson_area_scale_coefficient")
+        or 1.0
+    )
+    target_area_m2 = sum(_scene_area_m2(row) for row in scene_rows)
+    reference_area_m2_raw = adaptive_cfg.get("reference_area_m2")
+    reference_area_m2 = float(reference_area_m2_raw) if reference_area_m2_raw else 0.0
+    reference_match = str(
+        adaptive_cfg.get("reference_uri_contains")
+        or adaptive_cfg.get("reference_area_uri_contains")
+        or adaptive_cfg.get("reference_area_match")
+        or "/irkutsk/"
+    ).lower()
+    if reference_area_m2 <= 0 and reference_match:
+        reference_area_m2 = sum(
+            _scene_area_m2(row)
+            for row in scene_rows
+            if reference_match in str(row.get("image_uri") or row.get("scene_id") or "").lower()
+        )
+
+    if reference_area_m2 <= 0 or target_area_m2 <= 0:
+        return configured_max_geojson_mb, {
+            "enabled": True,
+            "configured_max_geojson_mb": configured_max_geojson_mb,
+            "effective_max_geojson_mb": configured_max_geojson_mb,
+            "reference_max_geojson_mb": reference_mb,
+            "area_scale_coefficient": coefficient,
+            "target_area_m2": target_area_m2,
+            "reference_area_m2": reference_area_m2,
+            "reference_uri_contains": reference_match,
+            "warning": "adaptive reference or target area is empty; fixed max_geojson_mb was used",
+        }
+
+    effective = reference_mb * coefficient * (target_area_m2 / reference_area_m2)
+    min_mb = adaptive_cfg.get("min_geojson_mb")
+    max_mb = adaptive_cfg.get("max_geojson_mb_cap") or adaptive_cfg.get("max_geojson_mb")
+    if min_mb is not None:
+        effective = max(float(min_mb), effective)
+    if max_mb is not None:
+        effective = min(float(max_mb), effective)
+    return effective, {
+        "enabled": True,
+        "configured_max_geojson_mb": configured_max_geojson_mb,
+        "effective_max_geojson_mb": effective,
+        "reference_max_geojson_mb": reference_mb,
+        "area_scale_coefficient": coefficient,
+        "target_area_m2": target_area_m2,
+        "reference_area_m2": reference_area_m2,
+        "area_ratio": target_area_m2 / reference_area_m2,
+        "reference_uri_contains": reference_match,
+        "min_geojson_mb": min_mb,
+        "max_geojson_mb_cap": max_mb,
+    }
+
+
 def _pseudolabel_runtime_options(
     job: JobSpec,
     matches: list[Any],
@@ -478,7 +564,7 @@ def run_pseudolabel_postprocess_stage(
     max_objects = None if max_objects_raw is None else int(max_objects_raw)
     min_area_candidates = post_cfg.get("min_object_area_m2_candidates") or [1000]
     simplify_candidates = post_cfg.get("simplify_tolerance_m_candidates") or [5]
-    max_geojson_mb = float(post_cfg.get("max_geojson_mb") or 20)
+    configured_max_geojson_mb = float(post_cfg.get("max_geojson_mb") or 20)
     auto_tune = bool(post_cfg.get("auto_tune", False))
     smooth_polygons = bool(post_cfg.get("smooth_polygons", False))
     vectorization_workers = int(post_cfg.get("vectorization_workers") or max(1, min(8, len(scene_rows), os.cpu_count() or 1)))
@@ -499,6 +585,11 @@ def run_pseudolabel_postprocess_stage(
         tile_insert_features.extend(meta.get("tile_insert_features") or [])
         tile_insert_debug_rows.extend(meta.get("tile_insert_debug_rows") or [])
         tiling_debug_rows.append(meta.get("debug_row") or {})
+    max_geojson_mb, adaptive_geojson_limit = _effective_max_geojson_mb(
+        post_cfg,
+        tiling_debug_rows,
+        configured_max_geojson_mb,
+    )
 
     def build_vectorization(threshold_value: float, min_area_prefilter: float) -> VectorizationResult:
         raw_features: list[dict[str, Any]] = []
@@ -670,6 +761,7 @@ def run_pseudolabel_postprocess_stage(
         "vectorization_workers": vectorization_workers,
         "max_raw_features_for_candidate": max_raw_features_for_candidate,
         "min_area_m2_prefilter": min_area_prefilter,
+        "adaptive_geojson_limit": adaptive_geojson_limit,
         "scenes": tiling_debug_rows,
     }
     segformer_debug = {
@@ -706,6 +798,9 @@ def run_pseudolabel_postprocess_stage(
             "vectorization_workers": vectorization_workers,
             "max_raw_features_for_candidate": max_raw_features_for_candidate,
             "min_area_m2_prefilter": min_area_prefilter,
+            "configured_max_geojson_mb": configured_max_geojson_mb,
+            "effective_max_geojson_mb": max_geojson_mb,
+            "adaptive_geojson_limit": adaptive_geojson_limit,
             "candidates_checked": candidates_checked,
         }
     )
@@ -725,6 +820,8 @@ def run_pseudolabel_postprocess_stage(
             "top500_applied": max_objects == 500 and postprocess_result.objects_after_filter > 500,
             "max_objects": max_objects,
             "max_geojson_mb": max_geojson_mb,
+            "configured_max_geojson_mb": configured_max_geojson_mb,
+            "adaptive_geojson_limit": adaptive_geojson_limit,
             "smooth_polygons": smooth_polygons,
             "vectorization_workers": vectorization_workers,
             "max_raw_features_for_candidate": max_raw_features_for_candidate,
@@ -767,6 +864,9 @@ def run_pseudolabel_postprocess_stage(
         "pseudolabel/object_count": len(postprocess_result.features),
         "pseudolabel/vertices_count": vertices_after,
         "pseudolabel/max_geojson_mb": max_geojson_mb,
+        "pseudolabel/configured_max_geojson_mb": configured_max_geojson_mb,
+        "pseudolabel/adaptive_geojson_limit_enabled": float(bool(adaptive_geojson_limit.get("enabled"))),
+        "pseudolabel/adaptive_area_ratio": adaptive_geojson_limit.get("area_ratio"),
     }
     metrics.update(object_metric_values)
     pseudolabel_summary = {
@@ -782,6 +882,9 @@ def run_pseudolabel_postprocess_stage(
             "min_object_area_m2": min_area,
             "simplify_tolerance_m": simplify_tolerance,
             "max_objects": max_objects,
+            "max_geojson_mb": max_geojson_mb,
+            "configured_max_geojson_mb": configured_max_geojson_mb,
+            "adaptive_geojson_limit": adaptive_geojson_limit,
         },
     }
     pseudolabel_summary_path = experiment_dir / "pseudolabel_summary.json"
@@ -815,7 +918,7 @@ def run_pseudolabel_pipeline(
     max_objects = None if max_objects_raw is None else int(max_objects_raw)
     min_area_candidates = post_cfg.get("min_object_area_m2_candidates") or [1000]
     simplify_candidates = post_cfg.get("simplify_tolerance_m_candidates") or [5]
-    max_geojson_mb = float(post_cfg.get("max_geojson_mb") or 20)
+    configured_max_geojson_mb = float(post_cfg.get("max_geojson_mb") or 20)
     auto_tune = bool(post_cfg.get("auto_tune", False))
     smooth_polygons = bool(post_cfg.get("smooth_polygons", False))
     vectorization_workers = int(
@@ -952,6 +1055,11 @@ def run_pseudolabel_pipeline(
             preview = write_probability_preview(result.probability_map.prob, result.scene_name, experiment_dir)
             if preview:
                 preview_artifacts.append(preview)
+    max_geojson_mb, adaptive_geojson_limit = _effective_max_geojson_mb(
+        post_cfg,
+        tiling_debug_rows,
+        configured_max_geojson_mb,
+    )
 
     min_area_values_for_prefilter = [float(item) for item in min_area_candidates]
     min_area_prefilter = min(min_area_values_for_prefilter) if min_area_values_for_prefilter else 0.0
@@ -1127,6 +1235,7 @@ def run_pseudolabel_pipeline(
         "vectorization_workers": vectorization_workers,
         "max_raw_features_for_candidate": max_raw_features_for_candidate,
         "min_area_m2_prefilter": min_area_prefilter,
+        "adaptive_geojson_limit": adaptive_geojson_limit,
         "scenes": tiling_debug_rows,
     }
     segformer_debug = {
@@ -1162,6 +1271,9 @@ def run_pseudolabel_pipeline(
     postprocess_debug["vectorization_workers"] = vectorization_workers
     postprocess_debug["max_raw_features_for_candidate"] = max_raw_features_for_candidate
     postprocess_debug["min_area_m2_prefilter"] = min_area_prefilter
+    postprocess_debug["configured_max_geojson_mb"] = configured_max_geojson_mb
+    postprocess_debug["effective_max_geojson_mb"] = max_geojson_mb
+    postprocess_debug["adaptive_geojson_limit"] = adaptive_geojson_limit
     postprocess_debug["candidates_checked"] = candidates_checked
     postprocess_debug_path = experiment_dir / "postprocess_debug.json"
     write_json(postprocess_debug_path, postprocess_debug)
@@ -1188,6 +1300,8 @@ def run_pseudolabel_pipeline(
         "top500_applied": max_objects == 500 and postprocess_result.objects_after_filter > 500,
         "max_objects": max_objects,
         "max_geojson_mb": max_geojson_mb,
+        "configured_max_geojson_mb": configured_max_geojson_mb,
+        "adaptive_geojson_limit": adaptive_geojson_limit,
         "smooth_polygons": smooth_polygons,
         "inference_parallel_enabled": parallel_enabled,
         "inference_max_workers": max_workers,
@@ -1279,6 +1393,9 @@ def run_pseudolabel_pipeline(
         "pseudolabel/object_count": len(postprocess_result.features),
         "pseudolabel/vertices_count": vertices_after,
         "pseudolabel/max_geojson_mb": max_geojson_mb,
+        "pseudolabel/configured_max_geojson_mb": configured_max_geojson_mb,
+        "pseudolabel/adaptive_geojson_limit_enabled": float(bool(adaptive_geojson_limit.get("enabled"))),
+        "pseudolabel/adaptive_area_ratio": adaptive_geojson_limit.get("area_ratio"),
     }
     metrics.update(object_metric_values)
     if tiling_debug_rows:
