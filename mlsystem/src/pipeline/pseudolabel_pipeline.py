@@ -197,6 +197,16 @@ def _pseudolabel_runtime_options(
             or (1 if model_name.startswith("segformer") and patch_size >= 1024 else (2 if parallel_enabled and max_workers > 1 else 1))
         ),
     )
+    tile_read_workers = max(
+        1,
+        int(
+            parallel_cfg.get("tile_read_workers")
+            or parallel_cfg.get("reader_workers")
+            or parallel_cfg.get("window_read_workers")
+            or (min(8, os.cpu_count() or 1) if model_name.startswith("segformer") and patch_size >= 1024 else 1)
+        ),
+    )
+    tile_prefetch_batches = max(1, int(parallel_cfg.get("tile_prefetch_batches") or parallel_cfg.get("prefetch_batches") or 4))
     return {
         "pseudolabel_cfg": pseudolabel_cfg,
         "post_cfg": post_cfg,
@@ -214,6 +224,8 @@ def _pseudolabel_runtime_options(
         "max_workers": max_workers,
         "torch_threads_per_worker": torch_threads_per_worker,
         "gpu_forward_concurrency": gpu_forward_concurrency,
+        "tile_read_workers": tile_read_workers,
+        "tile_prefetch_batches": tile_prefetch_batches,
     }
 
 
@@ -392,6 +404,8 @@ def run_pseudolabel_inference_stage(
             batch_size=options["inference_batch_size"],
             collect_debug_features=options["debug_mode"],
             gpu_forward_concurrency=options["gpu_forward_concurrency"],
+            tile_read_workers=options["tile_read_workers"],
+            tile_prefetch_batches=options["tile_prefetch_batches"],
         ),
     )
     scene_rows: list[dict[str, Any]] = []
@@ -476,6 +490,8 @@ def run_pseudolabel_inference_stage(
         "torch_threads_per_worker": options["torch_threads_per_worker"],
         "inference_batch_size": options["inference_batch_size"],
         "gpu_forward_concurrency": options["gpu_forward_concurrency"],
+        "tile_read_workers": options["tile_read_workers"],
+        "tile_prefetch_batches": options["tile_prefetch_batches"],
         "inference_duration_sec": round(time.time() - started, 3),
         "crop_mode": options["crop_mode"],
         "stitch_mode": options["stitch_mode"],
@@ -498,6 +514,8 @@ def run_pseudolabel_inference_stage(
                 "torch_threads_per_worker": options["torch_threads_per_worker"],
                 "batch_size": options["inference_batch_size"],
                 "gpu_forward_concurrency": options["gpu_forward_concurrency"],
+                "tile_read_workers": options["tile_read_workers"],
+                "tile_prefetch_batches": options["tile_prefetch_batches"],
             },
             "total_inference_duration_sec": coverage_report["inference_duration_sec"],
             "per_scene": [
@@ -532,6 +550,8 @@ def run_pseudolabel_inference_stage(
         "torch_threads_per_worker": options["torch_threads_per_worker"],
         "inference_batch_size": options["inference_batch_size"],
         "gpu_forward_concurrency": options["gpu_forward_concurrency"],
+        "tile_read_workers": options["tile_read_workers"],
+        "tile_prefetch_batches": options["tile_prefetch_batches"],
         "expected_window_count": coverage_report["total_expected_windows"],
         "actual_predicted_window_count": coverage_report["total_predicted_windows"],
         "coverage_fraction": coverage_report["mean_coverage_fraction"],
