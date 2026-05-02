@@ -40,13 +40,23 @@ Footprints GeoJSON:
 http://31.192.104.147:8082/static/kanopus_footprints.geojson
 ```
 
+These footprints are built from the COG valid-data mask, not from rectangular COG bounds. They are simplified for QGIS use.
+
 Labels GeoJSON:
 
 ```text
 http://31.192.104.147:8082/static/kanopus_labels.geojson
 ```
 
-In QGIS, add the labels GeoJSON as a vector layer, open layer properties, enable labels, and use the `label` field.
+Labels are representative points inside the valid footprint. In QGIS, add the labels GeoJSON as a vector layer, open layer properties, enable labels, and use the `label` field.
+
+Overlap zones GeoJSON:
+
+```text
+http://31.192.104.147:8082/static/kanopus_overlap_zones.geojson
+```
+
+Overlap zones are calculated from valid-data footprints.
 
 ## QGIS Steps
 
@@ -55,7 +65,8 @@ In QGIS, add the labels GeoJSON as a vector layer, open layer properties, enable
 3. Connect and add `kanopus_all_nrg` or `kanopus_all_rgb`.
 4. Add footprints as a vector URL layer from the GeoJSON URL.
 5. Add labels as a vector URL layer from the GeoJSON URL.
-6. Enable labels on the labels layer using the `label` field.
+6. Optionally add overlap zones as a vector URL layer.
+7. Enable labels on the labels layer using the `label` field.
 
 ## Server Notes
 
@@ -65,5 +76,7 @@ In QGIS, add the labels GeoJSON as a vector layer, open layer properties, enable
 - Spatial index: `/data/mlsystem/mapservice2/index/kanopus_tileindex.shp` with `.qix`.
 - Cache directory: `/data/mlsystem/mapservice2/cache`.
 - Report: `/data/mlsystem/mapservice2/reports/wms_service_report.md`.
+- Valid footprints report: `/data/mlsystem/mapservice2/reports/kanopus_footprints_valid_report.md`.
+- Overlap report: `/data/mlsystem/mapservice2/reports/kanopus_overlap_report.md`.
 
 Current limitation: the service has no authentication and port `8082` is exposed. Put it behind VPN, basic auth, or an IP allowlist before wider access.
