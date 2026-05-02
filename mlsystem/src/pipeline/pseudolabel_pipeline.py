@@ -183,11 +183,10 @@ def _pseudolabel_runtime_options(
     parallel_enabled = bool(parallel_cfg.get("enabled", True))
     default_max_workers = 4 if parallel_enabled else 1
     if model_name.startswith("segformer") and patch_size >= 1024:
-        # Large SegFormer scenes keep very large probability maps in memory.
-        # Running several scenes concurrently causes long CPU/IO stalls while
-        # the Airflow GPU slot is still held, so keep the default conservative
-        # unless a job explicitly opts into more workers.
-        default_max_workers = 1
+        # Keep GPU forwards serialized by default, but let several scene
+        # feeders read and normalize tiles in parallel. Otherwise one CPU
+        # thread becomes the bottleneck and the GPU waits between batches.
+        default_max_workers = min(4, max(1, len(matches)))
     max_workers = max(1, int(parallel_cfg.get("max_workers") or default_max_workers))
     torch_threads_per_worker = max(1, int(parallel_cfg.get("torch_threads_per_worker") or max(1, torch.get_num_threads() // max_workers)))
     gpu_forward_concurrency = max(
@@ -977,7 +976,7 @@ def run_pseudolabel_pipeline(
     parallel_enabled = bool(parallel_cfg.get("enabled", device.type == "cuda"))
     default_max_workers = 4 if parallel_enabled else 1
     if model_name.startswith("segformer") and patch_size >= 1024:
-        default_max_workers = 1
+        default_max_workers = min(4, max(1, len(matches)))
     max_workers = max(1, int(parallel_cfg.get("max_workers") or default_max_workers))
     torch_threads_per_worker = max(1, int(parallel_cfg.get("torch_threads_per_worker") or max(1, torch.get_num_threads() // max_workers)))
     gpu_forward_concurrency = max(
