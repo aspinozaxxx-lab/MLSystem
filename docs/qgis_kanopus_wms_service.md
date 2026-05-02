@@ -21,9 +21,9 @@ Layers:
   `Toguchinskij_nrg`, `Toguchinskij_rgb`, `irkutsk_nrg`, `irkutsk_rgb`,
   `wave_2_Upload_01_nrg`, `wave_2_Upload_01_rgb`.
 
-## WMS Fallback
+## WMS
 
-Use WMS if QGIS needs arbitrary BBOX/CRS requests instead of cached WebMercator tiles.
+Use WMS for the full layer tree, including per-scene checkbox layers.
 
 WMS GetCapabilities:
 
@@ -36,8 +36,41 @@ WMS layer names:
 - `kanopus_all_nrg`
 - `kanopus_all_rgb`
 - the delivery layers listed above
+- 932 per-scene NRG layers named `scene_<safe_scene_id>_nrg`
 - `kanopus_footprints_full`
 - `kanopus_labels`
+- `kanopus_overlap_zones`
+
+WMS groups:
+
+- `/Kanopus/All`
+- `/Kanopus/Deliveries/<delivery>/NRG`
+- `/Kanopus/Deliveries/<delivery>/RGB`
+- `/Kanopus/Scenes/<delivery>/NRG`
+- `/Kanopus/Overlays`
+
+Per-scene RGB layers are not published. RGB is available for all and delivery layers.
+
+## QGIS Project
+
+Ready-to-open project and layer definition:
+
+```text
+http://31.192.104.147:8082/static/qgis_kanopus_project.qgs
+http://31.192.104.147:8082/static/qgis_kanopus_layers.qlr
+```
+
+The project groups layers as:
+
+```text
+Kanopus
+  Общие слои
+  Контуры и подписи
+  Поставки
+  Снимки
+```
+
+`All NRG` and `Footprints full` are enabled by default. Per-scene layers are unchecked by default, so QGIS does not request all scenes at startup.
 
 ## Overlays
 
@@ -74,15 +107,25 @@ http://31.192.104.147:8082/static/kanopus_scene_catalog.json
 
 ## QGIS Steps
 
+Fast manual setup:
+
 1. Open `Layer` -> `Add Layer` -> `Add WMS/WMTS Layer`.
-2. Create a new connection with the WMTS URL above.
-3. Connect and add `kanopus_all_nrg` or `kanopus_all_rgb`.
+2. Create a new connection with the WMS URL above.
+3. Connect and add `kanopus_all_nrg`, `kanopus_all_rgb`, delivery layers, or individual `scene_*_nrg` layers.
 4. To switch deliveries independently, add the corresponding `*_nrg` or `*_rgb` delivery layer.
 5. Add full footprints as a vector URL layer from the GeoJSON URL.
 6. Add labels as a vector URL layer from the GeoJSON URL.
 7. Optionally add overlap zones as a vector URL layer.
 8. Enable labels on the labels layer using the `label` field.
 9. To determine which scene is under a point, use QGIS `Identify Features` on the full footprints layer and read `delivery`, `file_name`, `scene_id`, and `s3_uri`.
+
+Recommended setup for cartographers:
+
+1. Open `qgis_kanopus_project.qgs`, or add `qgis_kanopus_layers.qlr`.
+2. Keep `All NRG` on for context.
+3. Expand `Снимки` -> delivery name.
+4. Enable specific scene checkboxes as needed.
+5. Use `Identify Features` on `Footprints full` to see exact scene metadata.
 
 ## Server Notes
 
@@ -93,10 +136,11 @@ http://31.192.104.147:8082/static/kanopus_scene_catalog.json
 - Delivery spatial indexes: `/data/mlsystem/mapservice2/index/deliveries/*_tileindex.shp`.
 - Cache directory: `/data/mlsystem/mapservice2/cache`.
 - Cache backend: one MapCache disk root, separated internally by tileset/layer directories such as `kanopus_all_nrg/`, `kanopus_all_rgb/`, `Kachugskij_nrg/`.
+- Per-scene layers are WMS only. They are not preseeded and are not added as 932 MapCache tilesets.
 - Report: `/data/mlsystem/mapservice2/reports/wms_service_report.md`.
 - Valid footprints report: `/data/mlsystem/mapservice2/reports/kanopus_footprints_valid_report.md`.
 - Full footprints report: `/data/mlsystem/mapservice2/reports/footprints_full_report.md`.
 - Overlap report: `/data/mlsystem/mapservice2/reports/kanopus_overlap_report.md`.
-- Per-scene WMS layers are not published by default. Publishing 932 layers would make GetCapabilities, MapCache config, and the QGIS layer tree heavy. Use full footprints and the scene catalog for per-scene discovery.
+- WMS GetCapabilities with scene layers is about 1.24 MB and responds in about 1.9 seconds on the server test.
 
 Current limitation: the service has no authentication and port `8082` is exposed. Put it behind VPN, basic auth, or an IP allowlist before wider access.
