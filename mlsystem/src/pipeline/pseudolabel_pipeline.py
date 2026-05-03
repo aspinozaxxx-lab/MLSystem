@@ -8,7 +8,7 @@ import subprocess
 import sys
 import pickle
 from types import SimpleNamespace
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -19,6 +19,7 @@ from shapely.geometry import shape
 
 from ..debug.pseudolabel_debug import build_postprocess_debug, write_probability_preview
 from ..inference.scene_inference import SceneInferenceConfig, SceneInferenceRunner
+from ..inference.triton_client import TritonEndpoint, triton_ready
 from ..job_schema import JobSpec
 from ..metrics.object_metric_artifacts import write_object_metrics_artifacts
 from ..metrics.object_metrics import compute_object_f1
@@ -180,6 +181,28 @@ def _pseudolabel_runtime_options(
     if not stitch_mode:
         stitch_mode = "weighted_overlap" if model_name.startswith("segformer") else "hard_insert"
     parallel_cfg = ((job.predict.get("inference") or {}).get("parallel") or (job.params.get("inference") or {}).get("parallel") or {})
+    inference_cfg = (job.predict.get("inference") or job.params.get("inference") or {})
+    inference_backend = str(inference_cfg.get("backend") or inference_cfg.get("inference_backend") or job.predict.get("inference_backend") or "").lower()
+    disable_s3_file_cache = bool(
+        inference_cfg.get("disable_s3_file_cache")
+        or inference_cfg.get("stream_s3")
+        or inference_cfg.get("use_vsis3")
+    )
+    purge_s3_file_cache_after_scene = bool(
+        inference_cfg.get("purge_s3_file_cache_after_scene")
+        or inference_cfg.get("delete_cached_s3_after_scene")
+        or (inference_backend == "triton" and pseudolabel_cfg.get("run_on") == "all_available_images")
+    )
+    triton_cfg = inference_cfg.get("triton") if isinstance(inference_cfg.get("triton"), dict) else {}
+    triton_endpoint: TritonEndpoint | None = None
+    if inference_backend == "triton":
+        triton_endpoint = TritonEndpoint(
+            url=str(triton_cfg.get("url") or inference_cfg.get("triton_url") or job.predict.get("triton_url") or os.getenv("MLSYSTEM_TRITON_URL") or "http://triton:8000"),
+            model_name=str(triton_cfg.get("model_name") or inference_cfg.get("triton_model_name") or job.predict.get("triton_model_name") or model_name),
+            model_version=str(triton_cfg.get("model_version") or inference_cfg.get("triton_model_version") or job.predict.get("triton_model_version") or "") or None,
+        )
+        if not triton_ready(triton_endpoint.url, timeout_sec=10):
+            raise RuntimeError(f"Triton is not ready: {triton_endpoint.url}")
     parallel_enabled = bool(parallel_cfg.get("enabled", True))
     default_max_workers = 4 if parallel_enabled else 1
     if model_name.startswith("segformer") and patch_size >= 1024:
@@ -226,6 +249,10 @@ def _pseudolabel_runtime_options(
         "gpu_forward_concurrency": gpu_forward_concurrency,
         "tile_read_workers": tile_read_workers,
         "tile_prefetch_batches": tile_prefetch_batches,
+        "inference_backend": inference_backend or "pytorch",
+        "triton_endpoint": triton_endpoint,
+        "disable_s3_file_cache": disable_s3_file_cache,
+        "purge_s3_file_cache_after_scene": purge_s3_file_cache_after_scene,
     }
 
 
@@ -240,13 +267,14 @@ def _save_scene_result(result: Any, out_dir: Path) -> dict[str, Any]:
     meta_path = out_dir / f"{stem}.json"
     probability_map = result.probability_map
     transform_values = list(probability_map.transform)[:6] if probability_map.transform is not None else None
-    # Keep this uncompressed: compression is CPU-heavy, holds the Airflow GPU
-    # slot after inference, and delays downstream queued GPU work.
+    prob_uint8 = np.clip(probability_map.prob, 0.0, 1.0)
+    prob_uint8 = np.rint(prob_uint8 * 255.0).astype(np.uint8, copy=False)
+    # Keep this uncompressed: compression is CPU-heavy and can hold the
+    # Airflow GPU slot after inference. Quantizing probabilities keeps the
+    # all-images intermediate set bounded while preserving threshold tuning.
     np.savez(
         npz_path,
-        prob=probability_map.prob.astype(np.float16, copy=False),
-        weight_sum=probability_map.weight_sum.astype(np.float16, copy=False),
-        coverage_mask=probability_map.coverage_mask.astype(np.uint8, copy=False),
+        prob_uint8=prob_uint8,
     )
     meta = {
         "scene_index": int(result.scene_index),
@@ -276,6 +304,50 @@ def _save_scene_result(result: Any, out_dir: Path) -> dict[str, Any]:
     }
 
 
+def _iter_scene_results_bounded(
+    runner: SceneInferenceRunner,
+    matches: list[Any],
+    max_workers: int,
+):
+    """Run scene inference without retaining completed Future results."""
+    match_iter = iter(enumerate(matches))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures: dict[Any, tuple[int, Any]] = {}
+
+        def submit_next() -> bool:
+            try:
+                idx, match = next(match_iter)
+            except StopIteration:
+                return False
+            futures[executor.submit(runner.run_scene, idx, match)] = (idx, match)
+            return True
+
+        for _ in range(max_workers):
+            if not submit_next():
+                break
+
+        while futures:
+            done, _pending = wait(futures, return_when=FIRST_COMPLETED)
+            for future in done:
+                idx, match = futures.pop(future)
+                try:
+                    yield idx, match, future.result(), None
+                except BaseException as exc:
+                    yield idx, match, None, exc
+                submit_next()
+
+
+def _failed_scene_row(idx: int, match: Any, exc: BaseException) -> dict[str, Any]:
+    return {
+        "scene_index": int(idx),
+        "scene_id": getattr(match, "name", "") or getattr(match, "key", ""),
+        "scene_name": getattr(match, "name", "") or getattr(match, "key", ""),
+        "image_uri": f"s3://{getattr(match, 'bucket', '')}/{getattr(match, 'key', '')}".replace("s3:///","s3://"),
+        "error_type": type(exc).__name__,
+        "error": str(exc),
+    }
+
+
 def _load_scene_result(row: dict[str, Any]) -> Any:
     meta_path = Path(str(row.get("meta_path") or ""))
     meta = json.loads(meta_path.read_text(encoding="utf-8-sig"))
@@ -283,12 +355,17 @@ def _load_scene_result(row: dict[str, Any]) -> Any:
     payload = np.load(npz_path)
     transform_values = meta.get("transform")
     transform = Affine(*transform_values[:6]) if transform_values else None
-    prob = payload["prob"]
+    if "prob_uint8" in payload.files:
+        prob = payload["prob_uint8"].astype(np.float32) / 255.0
+    else:
+        prob = payload["prob"]
+    weight_sum = payload["weight_sum"] if "weight_sum" in payload.files else np.ones(prob.shape, dtype=np.float16)
+    coverage_mask = payload["coverage_mask"].astype(bool) if "coverage_mask" in payload.files else np.ones(prob.shape, dtype=bool)
     probability_map = ProbabilityMap(
         scene_id=meta["scene_id"],
         prob=prob,
-        weight_sum=payload["weight_sum"],
-        coverage_mask=payload["coverage_mask"].astype(bool),
+        weight_sum=weight_sum,
+        coverage_mask=coverage_mask,
         coverage_fraction=float(meta.get("coverage_fraction") or 0.0),
         transform=transform,
         crs=meta.get("crs"),
@@ -383,7 +460,16 @@ def run_pseudolabel_inference_stage(
     pseudolabel_scenes_path = write_scene_list(experiment_dir / "pseudolabel_scenes.txt", matches)
     options = _pseudolabel_runtime_options(job, matches, patch_size, threshold)
     thresholds = options["thresholds"]
+    previous_s3_cache_env = os.environ.get("MLSYSTEM_DISABLE_S3_FILE_CACHE")
+    if options.get("disable_s3_file_cache"):
+        os.environ["MLSYSTEM_DISABLE_S3_FILE_CACHE"] = "1"
+    previous_s3_purge_env = os.environ.get("MLSYSTEM_PURGE_S3_CACHE_AFTER_SCENE")
+    if options.get("purge_s3_file_cache_after_scene"):
+        os.environ["MLSYSTEM_PURGE_S3_CACHE_AFTER_SCENE"] = "1"
     model.eval()
+    if options.get("triton_endpoint") is not None and device.type == "cuda":
+        model.to("cpu")
+        torch.cuda.empty_cache()
     previous_torch_threads = torch.get_num_threads()
     torch.set_num_threads(options["torch_threads_per_worker"])
     runner = SceneInferenceRunner(
@@ -406,35 +492,57 @@ def run_pseudolabel_inference_stage(
             gpu_forward_concurrency=options["gpu_forward_concurrency"],
             tile_read_workers=options["tile_read_workers"],
             tile_prefetch_batches=options["tile_prefetch_batches"],
+            triton_endpoint=options["triton_endpoint"],
         ),
     )
     scene_rows: list[dict[str, Any]] = []
+    failed_scene_rows: list[dict[str, Any]] = []
     preview_artifacts: list[Path] = []
     out_dir = _scene_result_dir(experiment_dir)
     try:
         if options["parallel_enabled"] and options["max_workers"] > 1 and len(matches) > 1:
-            with ThreadPoolExecutor(max_workers=options["max_workers"]) as executor:
-                futures = {executor.submit(runner.run_scene, idx, match): idx for idx, match in enumerate(matches)}
-                for future in as_completed(futures):
-                    result = future.result()
-                    row = _save_scene_result(result, out_dir)
-                    scene_rows.append(row)
+            for idx, match, result, exc in _iter_scene_results_bounded(runner, matches, options["max_workers"]):
+                if exc is not None:
+                    row = _failed_scene_row(idx, match, exc)
+                    failed_scene_rows.append(row)
                     print(
-                        "[pseudolabel-inference] saved "
-                        f"{len(scene_rows)}/{len(matches)} scene={row['scene_name']} "
-                        f"coverage={row['coverage_fraction']:.4f} "
-                        f"duration_sec={row['scene_duration_sec']:.1f}",
+                        "[pseudolabel-inference] skipped "
+                        f"{len(failed_scene_rows)} scene={row['scene_name']} "
+                        f"error={row['error_type']}: {row['error']}",
                         flush=True,
                     )
-                    if not preview_artifacts:
-                        preview = write_probability_preview(result.probability_map.prob, result.scene_name, experiment_dir)
-                        if preview:
-                            preview_artifacts.append(preview)
-                    del result
-                    gc.collect()
+                    continue
+                if result is None:
+                    continue
+                row = _save_scene_result(result, out_dir)
+                scene_rows.append(row)
+                print(
+                    "[pseudolabel-inference] saved "
+                    f"{len(scene_rows)}/{len(matches)} scene={row['scene_name']} "
+                    f"coverage={row['coverage_fraction']:.4f} "
+                    f"duration_sec={row['scene_duration_sec']:.1f}",
+                    flush=True,
+                )
+                if not preview_artifacts:
+                    preview = write_probability_preview(result.probability_map.prob, result.scene_name, experiment_dir)
+                    if preview:
+                        preview_artifacts.append(preview)
+                del result
+                gc.collect()
         else:
             for idx, match in enumerate(matches):
-                result = runner.run_scene(idx, match)
+                try:
+                    result = runner.run_scene(idx, match)
+                except BaseException as exc:
+                    row = _failed_scene_row(idx, match, exc)
+                    failed_scene_rows.append(row)
+                    print(
+                        "[pseudolabel-inference] skipped "
+                        f"{len(failed_scene_rows)} scene={row['scene_name']} "
+                        f"error={row['error_type']}: {row['error']}",
+                        flush=True,
+                    )
+                    continue
                 row = _save_scene_result(result, out_dir)
                 scene_rows.append(row)
                 print(
@@ -451,6 +559,14 @@ def run_pseudolabel_inference_stage(
                 del result
                 gc.collect()
     finally:
+        if previous_s3_cache_env is None:
+            os.environ.pop("MLSYSTEM_DISABLE_S3_FILE_CACHE", None)
+        else:
+            os.environ["MLSYSTEM_DISABLE_S3_FILE_CACHE"] = previous_s3_cache_env
+        if previous_s3_purge_env is None:
+            os.environ.pop("MLSYSTEM_PURGE_S3_CACHE_AFTER_SCENE", None)
+        else:
+            os.environ["MLSYSTEM_PURGE_S3_CACHE_AFTER_SCENE"] = previous_s3_purge_env
         torch.set_num_threads(previous_torch_threads)
     if device.type == "cuda":
         model.to("cpu")
@@ -466,9 +582,16 @@ def run_pseudolabel_inference_stage(
             "job_id": job.job_id,
             "created_at": time.time(),
             "scene_count": len(scene_rows),
+            "failed_scene_count": len(failed_scene_rows),
             "scene_result_dir": str(out_dir),
             "scenes": scene_rows,
-            "options": {key: value for key, value in options.items() if key not in {"pseudolabel_cfg", "post_cfg"}},
+            "failed_scenes": failed_scene_rows,
+            "options": {key: value for key, value in options.items() if key not in {"pseudolabel_cfg", "post_cfg", "triton_endpoint"}},
+            "triton": (
+                {"url": options["triton_endpoint"].url, "model_name": options["triton_endpoint"].model_name, "model_version": options["triton_endpoint"].model_version}
+                if options.get("triton_endpoint")
+                else None
+            ),
             "preview_artifacts": [str(path) for path in preview_artifacts],
         },
     )
@@ -479,7 +602,7 @@ def run_pseudolabel_inference_stage(
         "job_id": job.job_id,
         "stage": "inference",
         "scenes_processed": len(tiling_debug_rows),
-        "scenes_failed": 0,
+        "scenes_failed": len(failed_scene_rows),
         "total_expected_windows": int(sum(int(row.get("expected_window_count") or 0) for row in tiling_debug_rows)),
         "total_predicted_windows": int(sum(int(row.get("actual_predicted_window_count") or 0) for row in tiling_debug_rows)),
         "total_skipped_windows": int(sum(int(row.get("skipped_window_count") or 0) for row in tiling_debug_rows)),
@@ -492,12 +615,15 @@ def run_pseudolabel_inference_stage(
         "gpu_forward_concurrency": options["gpu_forward_concurrency"],
         "tile_read_workers": options["tile_read_workers"],
         "tile_prefetch_batches": options["tile_prefetch_batches"],
+        "inference_backend": options["inference_backend"],
+        "triton_model_name": options["triton_endpoint"].model_name if options.get("triton_endpoint") else None,
         "inference_duration_sec": round(time.time() - started, 3),
         "crop_mode": options["crop_mode"],
         "stitch_mode": options["stitch_mode"],
         "center_size": options["center_size"],
         "context_bounds": options["context_bounds"],
         "scenes": tiling_debug_rows,
+        "failed_scenes": failed_scene_rows,
     }
     coverage_report_path = experiment_dir / "coverage_report.json"
     write_json(coverage_report_path, coverage_report)
@@ -516,6 +642,8 @@ def run_pseudolabel_inference_stage(
                 "gpu_forward_concurrency": options["gpu_forward_concurrency"],
                 "tile_read_workers": options["tile_read_workers"],
                 "tile_prefetch_batches": options["tile_prefetch_batches"],
+                "backend": options["inference_backend"],
+                "triton_model_name": options["triton_endpoint"].model_name if options.get("triton_endpoint") else None,
             },
             "total_inference_duration_sec": coverage_report["inference_duration_sec"],
             "per_scene": [
@@ -536,6 +664,7 @@ def run_pseudolabel_inference_stage(
         {
             "schema_version": 1,
             "scene_count": len(scene_rows),
+            "failed_scene_count": len(failed_scene_rows),
             "finished_at_sec": round(time.time() - started, 3),
             "vectorization_workers": int((job.postprocess or {}).get("vectorization_workers") or 0),
             "manifest_path": str(manifest_path),
@@ -552,11 +681,13 @@ def run_pseudolabel_inference_stage(
         "gpu_forward_concurrency": options["gpu_forward_concurrency"],
         "tile_read_workers": options["tile_read_workers"],
         "tile_prefetch_batches": options["tile_prefetch_batches"],
+        "inference_backend": 1.0 if options["inference_backend"] == "triton" else 0.0,
         "expected_window_count": coverage_report["total_expected_windows"],
         "actual_predicted_window_count": coverage_report["total_predicted_windows"],
         "coverage_fraction": coverage_report["mean_coverage_fraction"],
         "matched_scene_count": len(scene_rows),
         "scenes_processed": len(scene_rows),
+        "scenes_failed": len(failed_scene_rows),
     }
     artifacts = [pseudolabel_scenes_path, manifest_path, coverage_report_path, inference_timing_path, complete_path, *preview_artifacts]
     return metrics, artifacts

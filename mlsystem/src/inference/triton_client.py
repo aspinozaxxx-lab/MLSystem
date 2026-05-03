@@ -36,6 +36,24 @@ def infer_identity_smoke(endpoint: TritonEndpoint, values: np.ndarray | None = N
     return result.as_numpy("OUTPUT0")
 
 
+def infer_segmentation_batch(endpoint: TritonEndpoint, batch: np.ndarray) -> np.ndarray:
+    """Run a BCHW float32 segmentation batch and return raw logits as BCHW."""
+    import tritonclient.http as httpclient
+
+    payload = np.asarray(batch, dtype=np.float32)
+    if payload.ndim != 4:
+        raise ValueError(f"Triton segmentation input must be BCHW, got shape={payload.shape}")
+    client = httpclient.InferenceServerClient(url=endpoint.url.replace("http://", "").replace("https://", ""))
+    infer_input = httpclient.InferInput("INPUT__0", payload.shape, "FP32")
+    infer_input.set_data_from_numpy(payload)
+    output = httpclient.InferRequestedOutput("OUTPUT__0")
+    result = client.infer(endpoint.model_name, model_version=endpoint.model_version or "", inputs=[infer_input], outputs=[output])
+    logits = result.as_numpy("OUTPUT__0")
+    if logits is None:
+        raise RuntimeError(f"Triton model {endpoint.model_name} did not return OUTPUT__0")
+    return np.asarray(logits, dtype=np.float32)
+
+
 def build_triton_config(job_predict: dict[str, Any] | None = None) -> TritonEndpoint | None:
     predict = job_predict or {}
     if str(predict.get("inference_backend") or "").lower() != "triton":

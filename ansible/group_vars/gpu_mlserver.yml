@@ -23,7 +23,7 @@ mlsystem_gpu_mlflow_image: ghcr.io/mlflow/mlflow:v3.11.1
 mlsystem_gpu_minio_image: minio/minio:RELEASE.2024-01-11T07-46-16Z
 mlsystem_gpu_postgres_image: postgres:15
 mlsystem_gpu_airflow_uid: "50000"
-mlsystem_gpu_airflow_pip_requirements: "pydantic PyYAML mlflow boto3 numpy shapely rasterio pillow pika tritonclient[http] segmentation-models-pytorch torch torchvision --index-url https://download.pytorch.org/whl/cu128 --extra-index-url https://pypi.org/simple"
+mlsystem_gpu_airflow_pip_requirements: "pydantic PyYAML mlflow boto3 numpy shapely rasterio pillow pika onnx onnxscript tritonclient[http] segmentation-models-pytorch torch torchvision --index-url https://download.pytorch.org/whl/cu128 --extra-index-url https://pypi.org/simple"
 mlsystem_gpu_install_nvidia_driver: true
 mlsystem_gpu_nvidia_driver_package: nvidia-driver-580-open
 mlsystem_gpu_open_firewall: true

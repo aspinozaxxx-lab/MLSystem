@@ -18,3 +18,13 @@
 - Dlya bolshih SegFormer 1024 inference default batch i gpu_forward_concurrency sdelany konservativnee, chtoby b2/b3 ne padali po CUBLAS/CUDA allocation.
 - Dlya MLflow experiments dobavleny experiment tags `class_name` i `mlsystem.class_name`, chtoby klass byl viden na urovne Experiments.
 - Provereny lokalnye komandy `compileall` i `unittest`.
+
+## 2026-05-03
+
+- Dobavlen realny Triton ONNX export dlya segmentatsionnyh modeley i batch inference client dlya Triton HTTP.
+- Psevdo-razmetka all-images dlya deforest perevedena na Triton backend s `deforest_segformer_b1_t1024`.
+- Ispravlena utechka RAM v Airflow inference: bounded scene futures bolshe ne derzhat probability maps zavershennyh scen.
+- Dobavlen skip failed scenes v pseudolabel inference, chtoby odin pustoy/bitiy TIFF ne valil ves DAG; failed scenes pishutsya v coverage report.
+- S3 cache dlya all-images inference teper ochishchaetsya posle kazhdoy sceny, a probability intermediates sohranyayutsya kak compact uint8.
+- Dobavlen env-flag `MLSYSTEM_DISABLE_S3_FILE_CACHE` dlya otdelnyh streaming scenariev, no osnovnoy all-images put ispolzuet rabochiy boto3 cache s purge.
+- Provereny lokalnye komandy `compileall` i `unittest`.

@@ -76,6 +76,8 @@ def cached_s3_object_path(config: PipelineConfig, bucket: str, key: str) -> Path
 
 def raster_path_for_s3_key(config: PipelineConfig, key: str) -> str:
     if str(config.storage.heavy_backend).lower() == "s3":
+        if str(os.getenv("MLSYSTEM_DISABLE_S3_FILE_CACHE") or "").lower() in {"1", "true", "yes", "on"}:
+            return f"/vsis3/{config.storage.s3_bucket}/{key}"
         cached = cached_s3_object_path(config, config.storage.s3_bucket, key)
         return str(cached)
     return f"/vsis3/{config.storage.s3_bucket}/{key}"
