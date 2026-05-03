@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -315,6 +316,43 @@ def _existing_artifacts(store: AirflowRunStore) -> dict[str, str]:
 
 def _forbidden_logged_artifacts(store: AirflowRunStore) -> list[str]:
     return sorted(name for name in MLFLOW_EXCLUDED_ARTIFACT_NAMES if (store.run_dir / name).exists())
+
+
+def _cleanup_runtime_intermediates(conf: AirflowExperimentConfig, store: AirflowRunStore) -> dict[str, Any]:
+    cleanup_cfg = conf.pseudolabel.get("cleanup_intermediates", True)
+    if cleanup_cfg is False or conf.pseudolabel.get("keep_intermediates"):
+        return {"enabled": False, "reason": "disabled_by_config"}
+    allowed_names = {"pseudolabel_scene_results", "vectorization_work"}
+    deleted_dirs: list[dict[str, Any]] = []
+    deleted_bytes = 0
+    deleted_files = 0
+    run_root = store.run_dir.resolve()
+    for name in sorted(allowed_names):
+        target = (store.run_dir / name).resolve()
+        if not target.exists():
+            continue
+        if run_root not in target.parents or target.name not in allowed_names:
+            continue
+        file_count = 0
+        total_size = 0
+        for path in target.rglob("*"):
+            if path.is_file():
+                try:
+                    total_size += path.stat().st_size
+                    file_count += 1
+                except FileNotFoundError:
+                    pass
+        shutil.rmtree(target)
+        deleted_files += file_count
+        deleted_bytes += total_size
+        deleted_dirs.append({"path": _safe_rel(target, store.run_dir), "files": file_count, "bytes": total_size})
+    return {
+        "enabled": True,
+        "deleted_dirs": deleted_dirs,
+        "deleted_files": deleted_files,
+        "deleted_bytes": deleted_bytes,
+        "deleted_gb": round(deleted_bytes / 1024**3, 3),
+    }
 
 
 def _read_training_result(store: AirflowRunStore) -> dict[str, Any]:
@@ -652,19 +690,20 @@ def _finalize_mlflow_run(conf: AirflowExperimentConfig, store: AirflowRunStore) 
     summary = store.read_summary()
     mlflow_info = summary.get("mlflow") or {}
     run_id = mlflow_info.get("run_id")
+    cleanup = _cleanup_runtime_intermediates(conf, store)
     if not run_id or str(run_id).startswith("smoke-"):
-        store.update_summary(status="success", finished_at=utc_now())
-        return _stage_result("success", summary="No real MLflow run to finalize.")
+        store.update_summary(status="success", finished_at=utc_now(), runtime_cleanup=cleanup)
+        return _stage_result("success", summary="No real MLflow run to finalize.", cleanup=cleanup)
     try:
         import mlflow
 
         pipeline_config = load_config()
         mlflow.set_tracking_uri(pipeline_config.mlflow_tracking_uri_internal)
+        store.update_summary(status="success", finished_at=utc_now(), runtime_cleanup=cleanup)
         with mlflow.start_run(run_id=run_id):
             mlflow.set_tags({"job_status": "success", "airflow_status": "success"})
             mlflow.log_artifact(str(store.summary_path))
-        store.update_summary(status="success", finished_at=utc_now())
-        return _stage_result("success", mlflow_run_id=run_id)
+        return _stage_result("success", mlflow_run_id=run_id, cleanup=cleanup)
     except Exception as exc:
         return _stage_result("failed", error=f"{type(exc).__name__}: {exc}")
 

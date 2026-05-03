@@ -29,4 +29,5 @@
 - Dobavlen env-flag `MLSYSTEM_DISABLE_S3_FILE_CACHE` dlya otdelnyh streaming scenariev, no osnovnoy all-images put ispolzuet rabochiy boto3 cache s purge.
 - Triton pereveden v explicit model-control mode: tyazhelaya model zagruzhaetsya pered inference stage i vygruzhaetsya posle nego, chtoby osvobozhdat VRAM mezhdu rabotami.
 - Ochishcheny bolshie Airflow intermediates `pseudolabel_scene_results` i `vectorization_work` na GPU servere; finalnye geojson/summaries/checkpoints ne udalalis.
+- V `finalize_mlflow_run` dobavlena avtomaticheskaya ochistka runtime intermediates posle logirovaniya finalnyh artifacts; ee mozhno otklyuchit cherez `pseudolabel.cleanup_intermediates=false`.
 - Provereny lokalnye komandy `compileall` i `unittest`.
