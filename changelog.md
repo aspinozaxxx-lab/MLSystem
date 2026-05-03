@@ -30,4 +30,5 @@
 - Triton pereveden v explicit model-control mode: tyazhelaya model zagruzhaetsya pered inference stage i vygruzhaetsya posle nego, chtoby osvobozhdat VRAM mezhdu rabotami.
 - Ochishcheny bolshie Airflow intermediates `pseudolabel_scene_results` i `vectorization_work` na GPU servere; finalnye geojson/summaries/checkpoints ne udalalis.
 - V `finalize_mlflow_run` dobavlena avtomaticheskaya ochistka runtime intermediates posle logirovaniya finalnyh artifacts; ee mozhno otklyuchit cherez `pseudolabel.cleanup_intermediates=false`.
+- Dobavlen Airflow maintenance DAG `mlsystem_maintenance_cleanup`: ezhednevno chistit starye runtime intermediates, lokalnyy S3 cache i starye Airflow logs bez udaleniya MinIO/MLflow/finalnyh artifacts.
 - Provereny lokalnye komandy `compileall` i `unittest`.
