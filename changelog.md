@@ -27,4 +27,6 @@
 - Dobavlen skip failed scenes v pseudolabel inference, chtoby odin pustoy/bitiy TIFF ne valil ves DAG; failed scenes pishutsya v coverage report.
 - S3 cache dlya all-images inference teper ochishchaetsya posle kazhdoy sceny, a probability intermediates sohranyayutsya kak compact uint8.
 - Dobavlen env-flag `MLSYSTEM_DISABLE_S3_FILE_CACHE` dlya otdelnyh streaming scenariev, no osnovnoy all-images put ispolzuet rabochiy boto3 cache s purge.
+- Triton pereveden v explicit model-control mode: tyazhelaya model zagruzhaetsya pered inference stage i vygruzhaetsya posle nego, chtoby osvobozhdat VRAM mezhdu rabotami.
+- Ochishcheny bolshie Airflow intermediates `pseudolabel_scene_results` i `vectorization_work` na GPU servere; finalnye geojson/summaries/checkpoints ne udalalis.
 - Provereny lokalnye komandy `compileall` i `unittest`.

@@ -23,6 +23,24 @@ def triton_ready(url: str = "http://triton:8000", timeout_sec: float = 5.0) -> b
         return False
 
 
+def load_model(endpoint: TritonEndpoint, timeout_sec: float = 60.0) -> None:
+    """Load a model when Triton runs with explicit model control."""
+    import tritonclient.http as httpclient
+
+    client = httpclient.InferenceServerClient(url=endpoint.url.replace("http://", "").replace("https://", ""))
+    client.load_model(endpoint.model_name)
+    if not client.is_model_ready(endpoint.model_name, model_version=endpoint.model_version or ""):
+        raise RuntimeError(f"Triton model {endpoint.model_name} was loaded but is not ready")
+
+
+def unload_model(endpoint: TritonEndpoint) -> None:
+    """Unload a model to release GPU memory after an inference stage."""
+    import tritonclient.http as httpclient
+
+    client = httpclient.InferenceServerClient(url=endpoint.url.replace("http://", "").replace("https://", ""))
+    client.unload_model(endpoint.model_name)
+
+
 def infer_identity_smoke(endpoint: TritonEndpoint, values: np.ndarray | None = None) -> np.ndarray:
     """Run a tiny Triton HTTP smoke inference against the identity test model."""
     import tritonclient.http as httpclient

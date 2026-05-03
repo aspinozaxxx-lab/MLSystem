@@ -19,7 +19,7 @@ from shapely.geometry import shape
 
 from ..debug.pseudolabel_debug import build_postprocess_debug, write_probability_preview
 from ..inference.scene_inference import SceneInferenceConfig, SceneInferenceRunner
-from ..inference.triton_client import TritonEndpoint, triton_ready
+from ..inference.triton_client import TritonEndpoint, load_model as load_triton_model, triton_ready, unload_model as unload_triton_model
 from ..job_schema import JobSpec
 from ..metrics.object_metric_artifacts import write_object_metrics_artifacts
 from ..metrics.object_metrics import compute_object_f1
@@ -253,6 +253,7 @@ def _pseudolabel_runtime_options(
         "triton_endpoint": triton_endpoint,
         "disable_s3_file_cache": disable_s3_file_cache,
         "purge_s3_file_cache_after_scene": purge_s3_file_cache_after_scene,
+        "triton_unload_after_inference": bool(inference_cfg.get("triton_unload_after_inference", True)),
     }
 
 
@@ -466,8 +467,13 @@ def run_pseudolabel_inference_stage(
     previous_s3_purge_env = os.environ.get("MLSYSTEM_PURGE_S3_CACHE_AFTER_SCENE")
     if options.get("purge_s3_file_cache_after_scene"):
         os.environ["MLSYSTEM_PURGE_S3_CACHE_AFTER_SCENE"] = "1"
+    triton_endpoint = options.get("triton_endpoint")
+    triton_loaded = False
     model.eval()
-    if options.get("triton_endpoint") is not None and device.type == "cuda":
+    if triton_endpoint is not None:
+        load_triton_model(triton_endpoint)
+        triton_loaded = True
+    if triton_endpoint is not None and device.type == "cuda":
         model.to("cpu")
         torch.cuda.empty_cache()
     previous_torch_threads = torch.get_num_threads()
@@ -567,6 +573,11 @@ def run_pseudolabel_inference_stage(
             os.environ.pop("MLSYSTEM_PURGE_S3_CACHE_AFTER_SCENE", None)
         else:
             os.environ["MLSYSTEM_PURGE_S3_CACHE_AFTER_SCENE"] = previous_s3_purge_env
+        if triton_loaded and triton_endpoint is not None and options.get("triton_unload_after_inference", True):
+            try:
+                unload_triton_model(triton_endpoint)
+            except Exception as exc:
+                print(f"[pseudolabel-inference] warning: failed to unload Triton model {triton_endpoint.model_name}: {exc}", flush=True)
         torch.set_num_threads(previous_torch_threads)
     if device.type == "cuda":
         model.to("cpu")

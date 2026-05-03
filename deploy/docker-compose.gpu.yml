@@ -240,7 +240,7 @@ services:
   triton:
     image: ${TRITON_IMAGE:-nvcr.io/nvidia/tritonserver:25.03-py3}
     container_name: mlsystem-gpu-triton
-    command: tritonserver --model-repository=/models --strict-model-config=false
+    command: tritonserver --model-repository=/models --strict-model-config=false --model-control-mode=explicit --load-model=identity_python
     gpus: all
     ports:
       - "${TRITON_HTTP_PORT:-8000}:8000"
