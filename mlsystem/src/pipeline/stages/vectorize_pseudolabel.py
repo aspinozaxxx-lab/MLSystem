@@ -47,6 +47,58 @@ def run(ctx: StageContext) -> StageReport:
             merge_epsilon=float(vector_cfg.get("merge_epsilon") if vector_cfg.get("merge_epsilon") is not None else 1.0),
             bad_block_policy=str(vector_cfg.get("bad_block_policy") or "fail"),
         )
+        accepted_geojson_mb = summary.get("final_geojson_size_mb")
+        metrics = {
+            "accepted_objects": summary.get("accepted_objects"),
+            "threshold_used": threshold,
+            "min_object_area_m2_used": float(vector_cfg.get("final_min_area") or (ctx.config.postprocess or {}).get("min_area_m2") or 0.0),
+            "simplify_tolerance_m_used": None,
+            "accepted_geojson_mb": accepted_geojson_mb,
+            "vectorization_mode": "block_parallel",
+        }
+        root_summary_path = ctx.store.run_dir / "pseudolabel_summary.json"
+        root_vectorization_summary_path = ctx.store.run_dir / "vectorization_summary.json"
+        write_json(
+            root_summary_path,
+            {
+                "status": "success",
+                "mode": "block_parallel",
+                "accepted_geojson": str(accepted),
+                "metrics": metrics,
+                "vectorization": summary,
+            },
+        )
+        write_json(
+            root_vectorization_summary_path,
+            {
+                "accepted_geojson": str(accepted),
+                "pseudolabel": {
+                    "accepted_objects": summary.get("accepted_objects"),
+                    "accepted_geojson_mb": accepted_geojson_mb,
+                },
+                "vectorization": summary,
+            },
+        )
+        examples_path = ctx.store.run_dir / "prediction_examples.html"
+        if not examples_path.exists():
+            examples_path.write_text(
+                "<!doctype html><html><body><h1>MLSystem block_parallel pseudolabel</h1>"
+                f"<p>accepted_objects={summary.get('accepted_objects')}</p>"
+                f"<p>accepted_geojson={accepted.name}</p>"
+                "</body></html>",
+                encoding="utf-8",
+            )
+        training_result_path = ctx.store.run_dir / "training_result.json"
+        training_result = read_json(training_result_path, default={}) or {}
+        training_result["postprocess_metrics"] = metrics
+        training_result["pseudolabel"] = {
+            "accepted_objects": summary.get("accepted_objects"),
+            "accepted_geojson_mb": accepted_geojson_mb,
+            "accepted_geojson": accepted.name,
+            "vectorization_mode": "block_parallel",
+        }
+        write_json(training_result_path, training_result)
+        ctx.store.update_summary(training_result=training_result)
         return StageReport(
             ctx.stage_id,
             "success",
@@ -70,7 +122,10 @@ def run(ctx: StageContext) -> StageReport:
             warnings=(["memory guard reduced workers_effective"] if (summary.get("memory_guard") or {}).get("reduced") else []),
             artifacts={
                 "accepted_geojson": str(accepted),
-                "vectorization_summary.json": str(ctx.store.run_dir / "vectorization_block_parallel" / "vectorization_summary.json"),
+                "pseudolabel_summary.json": str(root_summary_path),
+                "prediction_examples.html": str(examples_path),
+                "vectorization_summary.json": str(root_vectorization_summary_path),
+                "block_vectorization_summary.json": str(ctx.store.run_dir / "vectorization_block_parallel" / "vectorization_summary.json"),
                 "vectorization_plan.json": str(ctx.store.run_dir / "vectorization_block_parallel" / "vectorization_plan.json"),
                 "block_results.json": str(ctx.store.run_dir / "vectorization_block_parallel" / "block_results.json"),
                 "processing_blocks.geojson": str(ctx.store.run_dir / "vectorization_block_parallel" / "processing_blocks.geojson"),

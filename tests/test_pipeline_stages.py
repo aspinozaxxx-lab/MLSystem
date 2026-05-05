@@ -210,6 +210,52 @@ class PipelineStagesTests(unittest.TestCase):
             self.assertEqual(run_postprocess_pseudolabel(ctx).status, "success")
             self.assertEqual(run_export_pseudolabel(ctx).status, "success")
 
+    def test_block_parallel_vectorize_writes_downstream_compatibility_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ctx = self._context(
+                tmp,
+                pseudolabel={
+                    "enabled": True,
+                    "run_on": "validation_scenes",
+                    "vectorization": {"mode": "block_parallel", "workers": 4},
+                },
+            )
+            ctx.config.class_name = "deforest"
+            ctx.config.postprocess = {"threshold": 0.5, "min_area_m2": 500.0}
+            write_json(ctx.store.run_dir / "pseudolabel_scene_results_manifest.json", {"scenes": ["scene_a.tif"]})
+
+            def fake_block_vectorization(**kwargs):
+                kwargs["accepted_geojson"].write_text('{"type":"FeatureCollection","features":[]}', encoding="utf-8")
+                return {
+                    "prediction_tiles": 1,
+                    "prediction_scenes": 1,
+                    "blocks_total": 2,
+                    "blocks_done": 2,
+                    "blocks_failed": 0,
+                    "workers_requested": 4,
+                    "workers_effective": 4,
+                    "boundary_candidates_count": 0,
+                    "polygons_before_merge": 3,
+                    "polygons_after_merge": 1,
+                    "accepted_objects": 1,
+                    "final_objects": 1,
+                    "final_geojson_size_mb": 0.01,
+                    "vectorization_duration_sec": 1.2,
+                    "merge_duration_sec": 0.4,
+                    "memory_guard": {"reduced": False},
+                }
+
+            with patch("mlsystem.src.pipeline.stages.vectorize_pseudolabel.run_block_parallel_vectorization", side_effect=fake_block_vectorization):
+                report = run_vectorize_pseudolabel(ctx)
+
+            self.assertEqual(report.status, "success")
+            self.assertEqual(report.counters["vectorization_mode"], "block_parallel")
+            self.assertTrue((ctx.store.run_dir / "pseudolabel_summary.json").exists())
+            self.assertTrue((ctx.store.run_dir / "prediction_examples.html").exists())
+            self.assertTrue((ctx.store.run_dir / "vectorization_summary.json").exists())
+            training_result = json.loads((ctx.store.run_dir / "training_result.json").read_text(encoding="utf-8"))
+            self.assertEqual(training_result["pseudolabel"]["accepted_objects"], 1)
+
     def _context(self, tmp: str, *, preprocess: dict | None = None, pseudolabel: dict | None = None, smoke: bool = False) -> StageContext:
         preprocess = preprocess or {}
         pseudolabel = pseudolabel or {}
