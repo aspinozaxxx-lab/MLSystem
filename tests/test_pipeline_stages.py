@@ -94,6 +94,13 @@ class PipelineStagesTests(unittest.TestCase):
             report = run_prepare_inference_scenes(ctx)
             self.assertEqual(report.counters["inference_scenes"], 3)
 
+        with tempfile.TemporaryDirectory() as tmp:
+            ctx = self._context(tmp, pseudolabel={"run_on": "synthetic"})
+            report = run_prepare_inference_scenes(ctx)
+            self.assertEqual(report.counters["inference_scenes"], 1)
+            manifest = json.loads((ctx.store.run_dir / "inference_manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["scenes"][0]["entry"], "synthetic")
+
     def test_run_pseudolabel_inference_uses_inference_manifest_scene_entries(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             ctx = self._context(tmp, pseudolabel={"enabled": True, "run_on": "dataset_scenes"})

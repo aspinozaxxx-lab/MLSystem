@@ -19,7 +19,9 @@ def run(ctx: StageContext) -> StageReport:
 
     selected: list[dict[str, Any]] = []
     missing: list[str] = []
-    if run_on in {"dataset_scenes", "dataset", "matched_scenes"}:
+    if run_on in {"synthetic", "smoke_synthetic"} or ctx.config.smoke:
+        selected = [{"entry": "synthetic", "name": "synthetic", "key": None, "score": 1.0, "source": "synthetic_smoke"}]
+    elif run_on in {"dataset_scenes", "dataset", "matched_scenes"}:
         selected = list(matched)
     elif run_on in {"all_images", "all_available_images"}:
         selected = _images_as_matches(inventory.get("available_images") or [])
