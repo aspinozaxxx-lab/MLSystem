@@ -38,6 +38,29 @@ class StageReportFormatterTests(unittest.TestCase):
         self.assertIn("host_path: `/data/mlsystem/airflow/status/run1/missing_scenes.txt`", text)
         self.assertIn("docker logs --tail 300 mlsystem-gpu-api", text)
 
+    def test_format_stage_report_contains_input_lineage(self) -> None:
+        report = {
+            "status": "success",
+            "details": {
+                "input_lineage": {
+                    "source": "inventory_scenes",
+                    "inventory_matched_count": 24,
+                    "selected_count": 2,
+                    "dataset_input_limit": 2,
+                    "limit_source": "dag_run.conf.preprocess.max_dataset_scenes",
+                    "limit_reason": "unit mini dataset",
+                    "invariant_status": "OK with explicit limit",
+                    "excluded_count": 22,
+                }
+            },
+        }
+        text = format_stage_report(report, stage="prepare_dataset", run_id="run1")
+        self.assertIn("## Input lineage", text)
+        self.assertIn("inventory matched scenes: `24`", text)
+        self.assertIn("selected scenes for dataset: `2`", text)
+        self.assertIn("limit source: `dag_run.conf.preprocess.max_dataset_scenes`", text)
+        self.assertIn("excluded scenes: `22`", text)
+
     def test_compact_xcom_summary_excludes_full_payload(self) -> None:
         report = {
             "status": "success",

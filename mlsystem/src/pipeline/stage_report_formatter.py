@@ -63,6 +63,8 @@ def format_stage_report(
     checks = _list(payload.get("checks") or _nested(payload, "stage_report", "checks"))
     counters = _mapping(payload.get("counters") or _nested(payload, "stage_report", "counters"))
     artifacts = _mapping(payload.get("artifacts") or _nested(payload, "stage_report", "artifacts"))
+    details = _mapping(payload.get("details") or _nested(payload, "stage_report", "details"))
+    input_lineage = _mapping(details.get("input_lineage") or payload.get("input_lineage"))
     resources = _mapping(payload.get("resources"))
 
     lines = [
@@ -86,6 +88,22 @@ def format_stage_report(
         _append_path(lines, "stage_json", stage_json_path or payload.get("stage_json_path"), container_status_root, host_status_root)
     if report_path or payload.get("report_path"):
         _append_path(lines, "stage_report", report_path or payload.get("report_path"), container_status_root, host_status_root)
+
+    if input_lineage:
+        lines += ["", "## Input lineage"]
+        lines.append(f"- source: `{input_lineage.get('source') or 'unknown'}`")
+        lines.append(f"- inventory matched scenes: `{input_lineage.get('inventory_matched_count')}`")
+        lines.append(f"- selected scenes for dataset: `{input_lineage.get('selected_count')}`")
+        limit = input_lineage.get("dataset_input_limit")
+        lines.append(f"- explicit dataset limit: `{limit if limit is not None else 'none'}`")
+        if input_lineage.get("limit_source"):
+            lines.append(f"- limit source: `{input_lineage.get('limit_source')}`")
+        if input_lineage.get("limit_reason"):
+            lines.append(f"- limit reason: {mask_text(str(input_lineage.get('limit_reason')))}")
+        lines.append(f"- input invariant: `{input_lineage.get('invariant_status')}`")
+        excluded_count = int(input_lineage.get("excluded_count") or 0)
+        if excluded_count:
+            lines.append(f"- excluded scenes: `{excluded_count}`, see `prepare_dataset_input_audit.txt`")
 
     lines += ["", "## Checks"]
     if checks:

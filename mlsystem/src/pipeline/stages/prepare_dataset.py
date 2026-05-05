@@ -22,16 +22,59 @@ from .report import StageCheck, StageFailure, StageReport
 
 
 def run(ctx: StageContext) -> StageReport:
-    inventory = read_json(ctx.store.run_dir / "inventory_scenes.json", default=None) or (ctx.store.read_summary().get("scene_inventory") or {})
-    matching = read_json(ctx.store.run_dir / "scene_matching_report.json", default=None) or (ctx.store.read_summary().get("scene_matching") or {})
-    matched = inventory.get("matched") or matching.get("matched") or []
-    if not matched:
-        report = StageReport(ctx.stage_id, "failed", errors=["inventory_scenes output has no matched scenes"])
-        raise StageFailure("prepare_dataset cannot run without matched scenes", report)
+    inventory_path = ctx.store.run_dir / "inventory_scenes.json"
+    matching_path = ctx.store.run_dir / "scene_matching_report.json"
+    matched_path = ctx.store.run_dir / "matched_scenes.txt"
+    manifest_path = ctx.store.run_dir / "dataset_manifest.json"
+    audit_json_path = ctx.store.run_dir / "prepare_dataset_input_audit.json"
+    audit_txt_path = ctx.store.run_dir / "prepare_dataset_input_audit.txt"
+    excluded_path = ctx.store.run_dir / "excluded_dataset_scenes.txt"
 
-    max_scenes = ctx.config.preprocess.get("max_scenes")
-    if max_scenes is not None:
-        matched = matched[: max(1, int(max_scenes))]
+    inventory = read_json(inventory_path, default=None) or (ctx.store.read_summary().get("scene_inventory") or {})
+    matching = read_json(matching_path, default=None) or (ctx.store.read_summary().get("scene_matching") or {})
+    inventory_matched = list(inventory.get("matched") or matching.get("matched") or [])
+    upstream_inventory_matched_count = _inventory_matched_count(inventory, matching, inventory_matched)
+    limit_info = _resolve_dataset_input_limit(ctx)
+
+    matched = _select_dataset_matches(inventory_matched, limit_info)
+    excluded_matches = inventory_matched[len(matched) :]
+    audit = _build_input_audit(
+        ctx,
+        inventory_report_path=inventory_path,
+        matched_scenes_file=matched_path,
+        inventory_matched_count=upstream_inventory_matched_count,
+        selected=matched,
+        excluded=excluded_matches,
+        limit_info=limit_info,
+        invariant_status=_input_invariant_status(upstream_inventory_matched_count, len(inventory_matched), len(matched), limit_info),
+    )
+    _write_input_audit_payload(audit, audit_json_path, audit_txt_path, excluded_path)
+    input_warnings = _input_lineage_warnings(audit)
+    input_errors = _input_invariant_errors(audit, manifest_path)
+    if input_errors:
+        report = StageReport(
+            ctx.stage_id,
+            "failed",
+            [
+                StageCheck(
+                    "input lineage",
+                    "failed",
+                    f"inventory matched={audit['inventory_matched_count']}, selected={audit['selected_count']}, limit={audit['dataset_input_limit']}",
+                )
+            ],
+            counters=_input_lineage_counters(audit),
+            warnings=input_warnings,
+            errors=input_errors,
+            artifacts={
+                "inventory_scenes.json": str(inventory_path),
+                "matched_scenes.txt": str(matched_path),
+                "prepare_dataset_input_audit.json": str(audit_json_path),
+                "prepare_dataset_input_audit.txt": str(audit_txt_path),
+                "excluded_dataset_scenes.txt": str(excluded_path),
+            },
+            details={"input_lineage": audit},
+        )
+        raise StageFailure("prepare_dataset input mismatch", report)
 
     pipeline_config = load_config()
     annotation_uri = inventory.get("annotation_uri") or matching.get("annotation_uri")
@@ -94,7 +137,7 @@ def run(ctx: StageContext) -> StageReport:
         return _fail(ctx, [f"Unsupported preprocess.split_strategy: {split_strategy}"])
 
     errors: list[str] = []
-    warnings = _collect_count_warnings(rows)
+    warnings = input_warnings + _collect_count_warnings(rows)
     if not train_rows:
         errors.append("train split is empty")
     if not val_rows:
@@ -113,6 +156,7 @@ def run(ctx: StageContext) -> StageReport:
         "split_strategy": split_strategy,
         "object_count_mode": rows[0].matched_by if rows else count_mode,
         "scene_matching": matching,
+        "input_lineage": audit,
         "selected_scene_count": len(matched),
         "train_scene_count": len(train_matches),
         "val_scene_count": len(val_matches),
@@ -121,12 +165,14 @@ def run(ctx: StageContext) -> StageReport:
         "scene_object_counts": [row.__dict__ | {"image_path": str(row.image_path) if row.image_path else None} for row in rows],
         "split_summary": split_summary,
         "limits": {
-            "max_scenes": max_scenes,
+            "max_scenes": limit_info.get("legacy_max_scenes"),
+            "dataset_input_limit": limit_info.get("value"),
+            "dataset_input_limit_source": limit_info.get("source"),
+            "dataset_input_limit_reason": limit_info.get("reason"),
             "max_train_tiles": preprocess.get("max_train_tiles"),
             "max_val_tiles": preprocess.get("max_val_tiles"),
         },
     }
-    manifest_path = ctx.store.run_dir / "dataset_manifest.json"
     scene_counts_path = ctx.store.run_dir / "scene_object_counts.txt"
     split_report_path = ctx.store.run_dir / "train_val_split.txt"
     train_path = ctx.store.run_dir / "train_scenes.txt"
@@ -146,6 +192,7 @@ def run(ctx: StageContext) -> StageReport:
 
     counters = {
         "total_scenes": len(rows),
+        **_input_lineage_counters(audit),
         "total_objects": sum(row.object_count for row in rows),
         "scenes_without_objects": sum(1 for row in rows if row.object_count == 0),
         "train_scenes": len(train_rows),
@@ -155,8 +202,14 @@ def run(ctx: StageContext) -> StageReport:
         "split_strategy": split_strategy,
         "count_mode": rows[0].matched_by if rows else count_mode,
     }
-    details = {"scene_object_counts": [{"scene_name": row.scene_name, "object_count": row.object_count} for row in rows]}
+    details = {
+        "input_lineage": audit,
+        "scene_object_counts": [{"scene_name": row.scene_name, "object_count": row.object_count} for row in rows],
+    }
     artifacts = {
+        "prepare_dataset_input_audit.json": str(audit_json_path),
+        "prepare_dataset_input_audit.txt": str(audit_txt_path),
+        "excluded_dataset_scenes.txt": str(excluded_path),
         "dataset_manifest.json": str(manifest_path),
         "train_scenes.txt": str(train_path),
         "val_scenes.txt": str(val_path),
@@ -166,6 +219,11 @@ def run(ctx: StageContext) -> StageReport:
         "dataset_validation_report.json": str(validation_path),
     }
     checks = [
+        StageCheck(
+            "input lineage",
+            "warning" if audit["limit_applied"] else "ok",
+            f"source=inventory_scenes, inventory={audit['inventory_matched_count']}, selected={audit['selected_count']}, invariant={audit['invariant_status']}",
+        ),
         StageCheck("inventory", "ok", f"{len(matched)} matched scenes loaded"),
         StageCheck("object counts", "ok", f"{sum(row.object_count for row in rows)} objects counted"),
         StageCheck("split", "failed" if errors else "ok", f"train={len(train_rows)}, val={len(val_rows)}"),
@@ -174,6 +232,177 @@ def run(ctx: StageContext) -> StageReport:
     if errors:
         raise StageFailure("prepare_dataset failed", report)
     return report
+
+
+def _inventory_matched_count(inventory: dict[str, Any], matching: dict[str, Any], matched: list[dict[str, Any]]) -> int:
+    for key in ("matched_count", "selected_matched_count"):
+        value = inventory.get(key)
+        if value is not None:
+            return int(value)
+    for key in ("matched_count", "selected_matched_count"):
+        value = matching.get(key)
+        if value is not None:
+            return int(value)
+    return len(matched)
+
+
+def _scene_name(item: dict[str, Any]) -> str:
+    return str(item.get("entry") or item.get("name") or item.get("key") or "")
+
+
+def _resolve_dataset_input_limit(ctx: StageContext) -> dict[str, Any]:
+    preprocess = dict(getattr(ctx.config, "preprocess", None) or {})
+    raw_preprocess = dict((ctx.raw_conf or {}).get("preprocess") or {})
+    candidates = [
+        ("dag_run.conf.preprocess.max_dataset_scenes", raw_preprocess.get("max_dataset_scenes"), preprocess.get("max_dataset_scenes")),
+        ("dag_run.conf.preprocess.dataset_limit", raw_preprocess.get("dataset_limit"), preprocess.get("dataset_limit")),
+        ("dag_run.conf.preprocess.scene_limit", raw_preprocess.get("scene_limit"), preprocess.get("scene_limit")),
+        ("dag_run.conf.preprocess.sample_size", raw_preprocess.get("sample_size"), preprocess.get("sample_size")),
+        ("dag_run.conf.preprocess.max_scenes", raw_preprocess.get("max_scenes"), preprocess.get("max_scenes")),
+    ]
+    for source, raw_value, config_value in candidates:
+        value = raw_value if raw_value is not None else config_value
+        if value in (None, ""):
+            continue
+        limit = max(1, int(value))
+        reason = (
+            raw_preprocess.get("dataset_limit_reason")
+            or raw_preprocess.get("limit_reason")
+            or preprocess.get("dataset_limit_reason")
+            or preprocess.get("limit_reason")
+            or ("preprocess.max_scenes compatibility limit" if source.endswith(".max_scenes") else "explicit dataset input limit configured")
+        )
+        return _dataset_limit_info(limit, source, str(reason), legacy_max_scenes=limit if source.endswith(".max_scenes") else preprocess.get("max_scenes"))
+    return _dataset_limit_info(None, None, None, legacy_max_scenes=preprocess.get("max_scenes"))
+
+
+def _dataset_limit_info(value: int | None, source: str | None, reason: str | None, *, legacy_max_scenes: Any = None) -> dict[str, Any]:
+    return {
+        "value": value,
+        "source": source,
+        "reason": reason,
+        "configured": value is not None,
+        "legacy_max_scenes": legacy_max_scenes,
+    }
+
+
+def _select_dataset_matches(matched: list[dict[str, Any]], limit_info: dict[str, Any]) -> list[dict[str, Any]]:
+    limit = limit_info.get("value")
+    if limit is None:
+        return list(matched)
+    return list(matched[: int(limit)])
+
+
+def _build_input_audit(
+    ctx: StageContext,
+    *,
+    inventory_report_path: Path,
+    matched_scenes_file: Path,
+    inventory_matched_count: int,
+    selected: list[dict[str, Any]],
+    excluded: list[dict[str, Any]],
+    limit_info: dict[str, Any],
+    invariant_status: str,
+) -> dict[str, Any]:
+    return {
+        "run_id": ctx.run_id,
+        "source": "inventory_scenes",
+        "inventory_report_path": str(inventory_report_path),
+        "inventory_matched_count": inventory_matched_count,
+        "matched_scenes_file": str(matched_scenes_file),
+        "selected_count": len(selected),
+        "selected_scenes": [_scene_name(item) for item in selected],
+        "excluded_count": len(excluded),
+        "excluded_scenes": [_scene_name(item) for item in excluded],
+        "limit_applied": bool(limit_info.get("value") is not None and len(selected) < inventory_matched_count),
+        "dataset_input_limit": limit_info.get("value"),
+        "limit_source": limit_info.get("source"),
+        "limit_reason": limit_info.get("reason"),
+        "invariant_status": invariant_status,
+    }
+
+
+def _input_invariant_status(inventory_matched_count: int, inventory_list_count: int, selected_count: int, limit_info: dict[str, Any]) -> str:
+    if inventory_matched_count != inventory_list_count:
+        return "FAILED: inventory matched_count does not match matched scene rows"
+    if limit_info.get("value") is not None:
+        return "OK with explicit limit"
+    if selected_count == inventory_matched_count:
+        return "OK"
+    return "FAILED: selected scenes differ from inventory without explicit dataset limit"
+
+
+def _input_invariant_errors(audit: dict[str, Any], manifest_path: Path) -> list[str]:
+    errors: list[str] = []
+    if int(audit.get("selected_count") or 0) <= 0:
+        errors.append(
+            "inventory_scenes output has no matched scenes. "
+            f"inventory_scenes.json path={audit.get('inventory_report_path')}; "
+            f"matched_scenes.txt path={audit.get('matched_scenes_file')}"
+        )
+    if audit.get("invariant_status") not in {"OK", "OK with explicit limit"}:
+        errors.append(
+            "prepare_dataset input mismatch: "
+            f"inventory matched {audit.get('inventory_matched_count')} scenes, "
+            f"selected {audit.get('selected_count')} scenes, no valid explicit dataset limit configured. "
+            f"inventory_scenes.json path={audit.get('inventory_report_path')}; "
+            f"matched_scenes.txt path={audit.get('matched_scenes_file')}; "
+            f"dataset_manifest.json path={manifest_path if manifest_path.exists() else str(manifest_path) + ' (not created)'}; "
+            f"excluded_scenes={audit.get('excluded_scenes')[:10] if isinstance(audit.get('excluded_scenes'), list) else []}"
+        )
+    return errors
+
+
+def _input_lineage_warnings(audit: dict[str, Any]) -> list[str]:
+    if not audit.get("limit_applied"):
+        return []
+    return [
+        "Dataset input was explicitly limited: "
+        f"selected={audit.get('selected_count')} of matched={audit.get('inventory_matched_count')} "
+        f"source={audit.get('limit_source')} reason={audit.get('limit_reason')}"
+    ]
+
+
+def _input_lineage_counters(audit: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "upstream_inventory_matched_scenes": audit.get("inventory_matched_count"),
+        "selected_dataset_scenes": audit.get("selected_count"),
+        "excluded_dataset_scenes": audit.get("excluded_count"),
+        "dataset_input_limit": audit.get("dataset_input_limit"),
+        "limit_applied": bool(audit.get("limit_applied")),
+    }
+
+
+def _write_input_audit_payload(audit: dict[str, Any], audit_json_path: Path, audit_txt_path: Path, excluded_path: Path) -> None:
+    write_json(audit_json_path, audit)
+    excluded = list(audit.get("excluded_scenes") or [])
+    excluded_path.write_text("\n".join(excluded) + ("\n" if excluded else ""), encoding="utf-8")
+    audit_txt_path.write_text(_input_audit_text(audit), encoding="utf-8")
+
+
+def _input_audit_text(audit: dict[str, Any]) -> str:
+    lines = [
+        "prepare_dataset input audit",
+        f"run_id={audit.get('run_id')}",
+        f"source={audit.get('source')}",
+        f"inventory_report_path={audit.get('inventory_report_path')}",
+        f"inventory_matched_count={audit.get('inventory_matched_count')}",
+        f"matched_scenes_file={audit.get('matched_scenes_file')}",
+        f"selected_count={audit.get('selected_count')}",
+        f"excluded_count={audit.get('excluded_count')}",
+        f"limit_applied={audit.get('limit_applied')}",
+        f"dataset_input_limit={audit.get('dataset_input_limit')}",
+        f"limit_source={audit.get('limit_source')}",
+        f"limit_reason={audit.get('limit_reason')}",
+        f"invariant_status={audit.get('invariant_status')}",
+        "",
+        "[selected_scenes]",
+        *(audit.get("selected_scenes") or []),
+        "",
+        "[excluded_scenes]",
+        *(audit.get("excluded_scenes") or []),
+    ]
+    return "\n".join(str(line) for line in lines) + "\n"
 
 
 def _collect_count_warnings(rows: list[SceneObjectCount]) -> list[str]:

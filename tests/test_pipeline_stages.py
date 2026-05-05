@@ -62,6 +62,71 @@ class PipelineStagesTests(unittest.TestCase):
             self.assertEqual(all_scenes, {"scene_a.tif", "scene_b.tif", "scene_c.tif"})
             self.assertEqual(split_summary["total_files"], 3)
             self.assertEqual(split_summary["total_objects"], 3)
+            self.assertEqual(report.counters["upstream_inventory_matched_scenes"], 3)
+            self.assertEqual(report.counters["selected_dataset_scenes"], 3)
+            self.assertFalse(report.counters["limit_applied"])
+
+    def test_prepare_dataset_uses_full_inventory_without_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ctx = self._context(
+                tmp,
+                preprocess={"split_strategy": "object_balanced", "count_mode": "property", "target_val_fraction": 0.2, "split_seed": 11},
+            )
+            matched = self._write_inventory_rows(ctx, 24)
+            annotation = {"type": "FeatureCollection", "features": [self._feature("scene_00.tif"), self._feature("scene_05.tif"), self._feature("scene_05.tif")]}
+            with self._prepare_dataset_patches(ctx, annotation):
+                report = run_prepare_dataset(ctx)
+            audit = json.loads((ctx.store.run_dir / "prepare_dataset_input_audit.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(matched), 24)
+            self.assertEqual(report.counters["total_scenes"], 24)
+            self.assertEqual(report.counters["upstream_inventory_matched_scenes"], 24)
+            self.assertEqual(report.counters["selected_dataset_scenes"], 24)
+            self.assertEqual(report.counters["excluded_dataset_scenes"], 0)
+            self.assertEqual(audit["invariant_status"], "OK")
+            self.assertFalse(audit["limit_applied"])
+
+    def test_prepare_dataset_explicit_limit_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ctx = self._context(
+                tmp,
+                preprocess={
+                    "split_strategy": "object_balanced",
+                    "count_mode": "property",
+                    "max_dataset_scenes": 2,
+                    "dataset_limit_reason": "unit mini dataset",
+                },
+            )
+            self._write_inventory_rows(ctx, 24)
+            annotation = {"type": "FeatureCollection", "features": [self._feature("scene_00.tif"), self._feature("scene_01.tif")]}
+            with self._prepare_dataset_patches(ctx, annotation):
+                report = run_prepare_dataset(ctx)
+            audit = json.loads((ctx.store.run_dir / "prepare_dataset_input_audit.json").read_text(encoding="utf-8"))
+            self.assertEqual(report.counters["total_scenes"], 2)
+            self.assertEqual(report.counters["upstream_inventory_matched_scenes"], 24)
+            self.assertEqual(report.counters["selected_dataset_scenes"], 2)
+            self.assertEqual(report.counters["excluded_dataset_scenes"], 22)
+            self.assertTrue(report.counters["limit_applied"])
+            self.assertEqual(audit["limit_source"], "dag_run.conf.preprocess.max_dataset_scenes")
+            self.assertEqual(audit["invariant_status"], "OK with explicit limit")
+            self.assertEqual(len(audit["excluded_scenes"]), 22)
+            self.assertTrue(any("Dataset input was explicitly limited" in warning for warning in report.warnings))
+
+    def test_prepare_dataset_mismatch_without_explicit_limit_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ctx = self._context(tmp, preprocess={"split_strategy": "object_balanced", "count_mode": "property"})
+            matched = self._write_inventory_rows(ctx, 2)
+            inventory = json.loads((ctx.store.run_dir / "inventory_scenes.json").read_text(encoding="utf-8"))
+            inventory["matched_count"] = 24
+            inventory["matched"] = matched
+            write_json(ctx.store.run_dir / "inventory_scenes.json", inventory)
+            with self.assertRaises(StageFailure) as raised:
+                run_prepare_dataset(ctx)
+            text = "\n".join(raised.exception.report.errors)
+            self.assertIn("prepare_dataset input mismatch", text)
+            self.assertIn("inventory_scenes.json path=", text)
+            self.assertIn("dataset_manifest.json path=", text)
+            audit = json.loads((ctx.store.run_dir / "prepare_dataset_input_audit.json").read_text(encoding="utf-8"))
+            self.assertTrue(audit["invariant_status"].startswith("FAILED"))
 
     def test_prepare_dataset_default_legacy_without_schema_version(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -146,6 +211,8 @@ class PipelineStagesTests(unittest.TestCase):
             self.assertEqual(run_export_pseudolabel(ctx).status, "success")
 
     def _context(self, tmp: str, *, preprocess: dict | None = None, pseudolabel: dict | None = None, smoke: bool = False) -> StageContext:
+        preprocess = preprocess or {}
+        pseudolabel = pseudolabel or {}
         conf = SimpleNamespace(
             schema_version=None,
             experiment_id="unit_stage",
@@ -154,11 +221,12 @@ class PipelineStagesTests(unittest.TestCase):
             layout_uri="s3://b/layouts/",
             scenes_file="scenes.txt",
             annotation_file="auto",
-            preprocess=preprocess or {},
-            pseudolabel=pseudolabel or {},
+            preprocess=preprocess,
+            pseudolabel=pseudolabel,
         )
         store = AirflowRunStore(Path(tmp), "manual__unit", {"experiment_id": "unit_stage"})
-        return StageContext("unit_stage", "manual__unit", conf, {}, Path(tmp), store, logging.getLogger("test"))
+        raw_conf = {"experiment_id": "unit_stage", "preprocess": dict(preprocess), "pseudolabel": dict(pseudolabel)}
+        return StageContext("unit_stage", "manual__unit", conf, raw_conf, Path(tmp), store, logging.getLogger("test"))
 
     def _inventory_patches(self, images: list[dict], scenes_text: str):
         return patch.multiple(
@@ -176,13 +244,34 @@ class PipelineStagesTests(unittest.TestCase):
             {"entry": "scene_b.tif", "name": "scene_b.tif", "key": "images/scene_b.tif", "score": 1.0},
             {"entry": "scene_c.tif", "name": "scene_c.tif", "key": "images/scene_c.tif", "score": 1.0},
         ]
+        self._write_inventory_payload(ctx, matched)
+
+    def _write_inventory_rows(self, ctx: StageContext, count: int) -> list[dict]:
+        matched = [
+            {"entry": f"scene_{idx:02d}.tif", "name": f"scene_{idx:02d}.tif", "key": f"images/scene_{idx:02d}.tif", "score": 1.0}
+            for idx in range(count)
+        ]
+        self._write_inventory_payload(ctx, matched)
+        return matched
+
+    def _write_inventory_payload(self, ctx: StageContext, matched: list[dict]) -> None:
         inventory = {
             "annotation_uri": "s3://b/layouts/ann.geojson",
+            "matched_count": len(matched),
             "matched": matched,
             "available_images": matched,
         }
         write_json(ctx.store.run_dir / "inventory_scenes.json", inventory)
-        write_json(ctx.store.run_dir / "scene_matching_report.json", {"matched": matched})
+        write_json(ctx.store.run_dir / "scene_matching_report.json", {"matched_count": len(matched), "matched": matched})
+        (ctx.store.run_dir / "matched_scenes.txt").write_text("\n".join(item["entry"] for item in matched) + "\n", encoding="utf-8")
+
+    def _prepare_dataset_patches(self, ctx: StageContext, annotation: dict):
+        return patch.multiple(
+            "mlsystem.src.pipeline.stages.prepare_dataset",
+            load_config=lambda: SimpleNamespace(storage=SimpleNamespace(heavy_backend="local", s3_bucket="b"), known_data_roots=[]),
+            read_s3_text=lambda _cfg, _uri: json.dumps(annotation),
+            raster_path_for_s3_key=lambda _cfg, key: str(ctx.store.run_dir / Path(key).name),
+        )
 
     @staticmethod
     def _feature(scene_name: str) -> dict:

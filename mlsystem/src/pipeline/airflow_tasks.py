@@ -1245,6 +1245,36 @@ def run_airflow_stage(stage: str, dag_run_conf: dict[str, Any], airflow_run_id: 
     )
 
 
+def push_stage_xcom(summary: dict[str, Any], task_instance: Any) -> None:
+    """Push compact stage result as readable Airflow XCom key/value pairs."""
+    if task_instance is None:
+        return
+    for key in (
+        "stage",
+        "status",
+        "run_id",
+        "job_id",
+        "summary",
+        "report_path",
+        "stage_json_path",
+        "warnings_count",
+        "errors_count",
+        "duration_sec",
+    ):
+        task_instance.xcom_push(key=key, value=summary.get(key))
+    for name, value in (summary.get("key_counters") or {}).items():
+        task_instance.xcom_push(key=f"counter_{_xcom_key(name)}", value=value)
+
+
+def stage_return_message(summary: dict[str, Any]) -> str:
+    return f"{summary.get('status')}: {summary.get('stage')}, report={summary.get('report_path')}"
+
+
+def _xcom_key(value: Any) -> str:
+    key = re.sub(r"[^A-Za-z0-9_]+", "_", str(value)).strip("_")
+    return key[:180] or "value"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="MLSystem Airflow task wrapper")
     sub = parser.add_subparsers(dest="command", required=True)

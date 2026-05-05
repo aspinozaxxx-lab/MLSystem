@@ -98,27 +98,25 @@ MLSYSTEM_API_TOKEN
 - container path и host path;
 - диагностические команды при failure.
 
-Airflow task возвращает только compact XCom:
+Airflow task не пишет полный `return_value`. Wrapper явно пушит маленькие XCom keys:
 
-```json
-{
-  "stage": "prepare_dataset",
-  "status": "success",
-  "job_id": "api_run_prepare_dataset_...",
-  "summary": "prepare_dataset completed",
-  "report_path": "/opt/airflow/mlsystem_runs/<run>/stages/prepare_dataset.report.md",
-  "stage_json_path": "/opt/airflow/mlsystem_runs/<run>/stages/prepare_dataset.json",
-  "warnings_count": 1,
-  "errors_count": 0,
-  "key_counters": {
-    "split_strategy": "object_balanced",
-    "total_scenes": 24,
-    "total_objects": 300
-  }
-}
+```text
+stage=prepare_dataset
+status=success
+job_id=api_run_prepare_dataset_...
+summary=prepare_dataset completed
+report_path=/opt/airflow/mlsystem_runs/<run>/stages/prepare_dataset.report.md
+stage_json_path=/opt/airflow/mlsystem_runs/<run>/stages/prepare_dataset.json
+warnings_count=1
+errors_count=0
+counter_split_strategy=object_balanced
+counter_total_scenes=24
+counter_total_objects=300
 ```
 
-Compact XCom не содержит `resources`, `stage_report` и полный dump artifacts.
+XCom не содержит `resources`, `stage_report`, полный dump artifacts или большие списки сцен.
+Для `prepare_dataset` входной контракт дополнительно фиксируется в `prepare_dataset_input_audit.json`
+и `prepare_dataset_input_audit.txt`; в отчете есть раздел `Input lineage`.
 
 ## Path mapping
 

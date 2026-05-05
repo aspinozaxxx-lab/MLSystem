@@ -5,7 +5,15 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from mlsystem.src.pipeline.airflow_tasks import LEGACY_FALLBACK_STAGES, MAIN_DAG_STAGES, STAGE_POOLS, run_airflow_stage, run_stage
+from mlsystem.src.pipeline.airflow_tasks import (
+    LEGACY_FALLBACK_STAGES,
+    MAIN_DAG_STAGES,
+    STAGE_POOLS,
+    push_stage_xcom,
+    run_airflow_stage,
+    run_stage,
+    stage_return_message,
+)
 from mlsystem.src.pipeline.stages.registry import get_stage_entrypoint
 
 
@@ -65,6 +73,47 @@ class AirflowTasksTests(unittest.TestCase):
             self.assertNotIn("resources", result)
             self.assertNotIn("stage_report", result)
             self.assertLess(len(str(result).encode("utf-8")), 10_000)
+
+    def test_push_stage_xcom_uses_readable_key_value_pairs(self) -> None:
+        class FakeTaskInstance:
+            def __init__(self) -> None:
+                self.values: dict[str, object] = {}
+
+            def xcom_push(self, *, key: str, value: object) -> None:
+                self.values[key] = value
+
+        summary = {
+            "stage": "prepare_dataset",
+            "status": "success",
+            "run_id": "manual__unit",
+            "job_id": "job1",
+            "summary": "prepare_dataset completed",
+            "report_path": "/opt/airflow/mlsystem_runs/unit/stages/prepare_dataset.report.md",
+            "stage_json_path": "/opt/airflow/mlsystem_runs/unit/stages/prepare_dataset.json",
+            "warnings_count": 1,
+            "errors_count": 0,
+            "duration_sec": 1.2,
+            "key_counters": {
+                "total_scenes": 24,
+                "total_objects": 301,
+                "train_scenes": 19,
+                "val_scenes": 5,
+                "split_strategy": "object_balanced",
+                "upstream_inventory_matched_scenes": 24,
+            },
+        }
+        ti = FakeTaskInstance()
+        push_stage_xcom(summary, ti)
+        self.assertEqual(ti.values["stage"], "prepare_dataset")
+        self.assertEqual(ti.values["status"], "success")
+        self.assertEqual(ti.values["job_id"], "job1")
+        self.assertEqual(ti.values["report_path"], summary["report_path"])
+        self.assertEqual(ti.values["counter_total_scenes"], 24)
+        self.assertEqual(ti.values["counter_split_strategy"], "object_balanced")
+        self.assertNotIn("resources", ti.values)
+        self.assertNotIn("stage_report", ti.values)
+        self.assertLess(len(str(ti.values).encode("utf-8")), 10_000)
+        self.assertLess(len(stage_return_message(summary).encode("utf-8")), 512)
 
     def test_stage_failure_writes_stage_report_before_raising(self) -> None:
         conf = {
