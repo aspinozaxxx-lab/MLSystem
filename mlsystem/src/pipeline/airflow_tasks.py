@@ -189,7 +189,29 @@ class AirflowRunStore:
 
     def write_stage(self, stage: str, payload: dict[str, Any]) -> dict[str, Any]:
         stage_payload = {"stage": stage, "finished_at": utc_now(), **payload}
-        write_json(self.stage_dir / f"{stage}.json", stage_payload)
+        stage_json_path = self.stage_dir / f"{stage}.json"
+        report_path = self.stage_dir / f"{stage}.report.md"
+        stage_payload["stage_json_path"] = str(stage_json_path)
+        stage_payload["report_path"] = str(report_path)
+        try:
+            from .stage_report_formatter import path_views, write_stage_report_file
+
+            stage_payload["path_views"] = {
+                "stage_json": path_views(stage_json_path, container_status_root=self.state_dir),
+                "stage_report": path_views(report_path, container_status_root=self.state_dir),
+            }
+            write_json(stage_json_path, stage_payload)
+            write_stage_report_file(
+                stage_payload,
+                path=report_path,
+                stage=stage,
+                run_id=self.airflow_run_id,
+                stage_json_path=stage_json_path,
+                container_status_root=self.state_dir,
+            )
+        except Exception as exc:  # noqa: BLE001 - report formatting must not hide the stage result.
+            stage_payload["report_format_error"] = str(exc)
+            write_json(stage_json_path, stage_payload)
         summary = self.read_summary()
         stages = summary.get("stages") or {}
         stages[stage] = {
@@ -1199,7 +1221,28 @@ def run_airflow_stage(stage: str, dag_run_conf: dict[str, Any], airflow_run_id: 
         from ..orchestration.airflow_api_client import run_stage_via_api
 
         return run_stage_via_api(stage, dag_run_conf, airflow_run_id, Path(state_dir))
-    return run_stage(stage, dag_run_conf, airflow_run_id, Path(state_dir))
+    from .stage_report_formatter import compact_xcom_summary, format_stage_report
+
+    result = run_stage(stage, dag_run_conf, airflow_run_id, Path(state_dir))
+    print(
+        format_stage_report(
+            result,
+            stage=stage,
+            run_id=airflow_run_id,
+            duration_sec=result.get("duration_sec"),
+            stage_json_path=result.get("stage_json_path"),
+            report_path=result.get("report_path"),
+        ),
+        flush=True,
+    )
+    return compact_xcom_summary(
+        result,
+        stage=stage,
+        run_id=airflow_run_id,
+        duration_sec=result.get("duration_sec"),
+        stage_json_path=result.get("stage_json_path"),
+        report_path=result.get("report_path"),
+    )
 
 
 def main() -> None:

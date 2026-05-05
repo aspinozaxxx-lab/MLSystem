@@ -73,7 +73,7 @@ def run(ctx: StageContext) -> StageReport:
             f"{int(matching.get('total_tif_images_available') or 0) - len(matched)} TIFF/TIF images are available but not selected by scenes_file"
         )
     if missing:
-        errors.append(f"{len(missing)} scenes from scenes_file were not matched to TIFF/TIF images")
+        errors.append(f"{len(missing)} scenes from scenes_file were not matched to TIFF/TIF images: {missing[:10]}")
     if ambiguous:
         errors.append(f"{len(ambiguous)} scenes have ambiguous image matches")
     if not matched:

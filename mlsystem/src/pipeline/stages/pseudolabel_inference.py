@@ -47,6 +47,7 @@ def run(ctx: StageContext) -> StageReport:
     manifest_path = ctx.store.run_dir / "pseudolabel_scene_results_manifest.json"
     probability_index_path = ctx.store.run_dir / "probability_maps_index.json"
     inference_results_path = ctx.store.run_dir / "inference_results.json"
+    timing_report_path = ctx.store.run_dir / "inference_timing_report.json"
     probability_index = read_json(manifest_path, default={}) or {}
     write_json(probability_index_path, probability_index)
     write_json(
@@ -63,7 +64,11 @@ def run(ctx: StageContext) -> StageReport:
         "success",
         [StageCheck("GPU inference", "ok", "Triton direct pseudolabel inference completed")],
         counters={
+            "backend": "direct_triton",
+            "scene_count": len(manifest_scenes) if manifest_scenes else coverage.get("scenes_total"),
             "scenes_processed": coverage.get("scenes_processed"),
+            "scenes_failed": coverage.get("scenes_failed") or coverage.get("failed_scenes") or 0,
+            "scenes_skipped": coverage.get("scenes_skipped") or coverage.get("skipped_scenes") or 0,
             "total_predicted_windows": coverage.get("total_predicted_windows"),
             "mean_coverage_fraction": coverage.get("mean_coverage_fraction"),
             "accepted_objects": pseudolabel.get("accepted_objects"),
@@ -72,6 +77,7 @@ def run(ctx: StageContext) -> StageReport:
             "inference_results.json": str(inference_results_path),
             "probability_maps_index.json": str(probability_index_path),
             "pseudolabel_scene_results_manifest.json": str(manifest_path),
+            "inference_timing_report.json": str(timing_report_path),
         },
         summary="GPU pseudolabel inference completed; CPU vectorization/postprocess are separate compatibility stages.",
     )

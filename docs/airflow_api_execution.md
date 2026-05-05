@@ -67,3 +67,39 @@ find /data/mlsystem/airflow/status -maxdepth 3 -type f -name '<stage>.json'
 ```
 
 На сервере не править файлы руками; исправления только через repo + CI/CD.
+
+## Compact XCom
+
+`PythonOperator` больше не возвращает полный stage payload. В `return_value` попадает короткий summary:
+
+```json
+{
+  "stage": "inventory_scenes",
+  "status": "success",
+  "job_id": "...",
+  "summary": "inventory_scenes completed",
+  "report_path": "/opt/airflow/mlsystem_runs/<run>/stages/inventory_scenes.report.md",
+  "stage_json_path": "/opt/airflow/mlsystem_runs/<run>/stages/inventory_scenes.json",
+  "warnings_count": 1,
+  "errors_count": 0,
+  "key_counters": {
+    "available_images": 996,
+    "scene_rows": 24,
+    "matched_scenes": 24,
+    "missing_scenes": 0
+  }
+}
+```
+
+Это держит Airflow metadata DB маленькой. Полные `resources`, `stage_report`, `details` и artifacts dump остаются в файлах status/job store.
+
+## Human-readable task log
+
+После завершения API job Airflow печатает общий отчет из formatter. Для типовых stages в логе должны быть видны ключевые счетчики:
+
+- `inventory_scenes`: config/layout/images/scenes checks, `available_images`, `scene_rows`, `matched_scenes`, `missing_scenes`, `ambiguous_scenes`, пути к `inventory_scenes.json`, `scene_inventory_report.txt`, full report.
+- `prepare_dataset`: `split_strategy`, `total_scenes`, `total_objects`, `scenes_without_objects`, `train_scenes/train_objects`, `val_scenes/val_objects`, пути к `scene_object_counts.txt`, `train_val_split.txt`, `dataset_manifest.json`.
+- `prepare_inference_scenes`: `run_on`, `inference_scenes`, `missing`, `bad_scene_policy`, source manifest, `inference_manifest.json`, `inference_scenes.txt`.
+- `run_pseudolabel_inference`: `backend`, `scene_count`, `scenes_processed`, `scenes_failed`, `scenes_skipped`, `total_predicted_windows`, `probability_maps_index.json`, `inference_timing_report.json`.
+
+При failure formatter добавляет диагностические команды с `job_id`, `<stage>.json`, `<stage>.report.md` и `docker logs --tail 300 mlsystem-gpu-api`.

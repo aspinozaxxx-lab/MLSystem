@@ -69,12 +69,16 @@ def run(ctx: StageContext) -> StageReport:
 
     checks = [StageCheck("scene selection", "failed" if errors else "ok", f"run_on={run_on}, scenes={len(selected)}, missing={len(missing)}")]
     counters = {"run_on": run_on, "inference_scenes": len(selected), "missing": len(missing), "bad_scene_policy": bad_scene_policy}
+    details = {
+        "source_inventory": str(ctx.store.run_dir / "inventory_scenes.json"),
+        "source_dataset_manifest": str(ctx.store.run_dir / "dataset_manifest.json") if manifest else None,
+    }
     artifacts = {
         "inference_manifest.json": str(manifest_path),
         "inference_scenes.txt": str(scenes_path),
         "inference_inventory_report.json": str(report_path),
     }
-    report = StageReport(ctx.stage_id, "failed" if errors else "success", checks, counters, errors=errors, artifacts=artifacts)
+    report = StageReport(ctx.stage_id, "failed" if errors else "success", checks, counters, errors=errors, artifacts=artifacts, details=details)
     if errors:
         raise StageFailure("prepare_inference_scenes failed", report)
     return report

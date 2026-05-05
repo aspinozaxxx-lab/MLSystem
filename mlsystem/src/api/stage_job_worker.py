@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
+import re
 import traceback
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -33,7 +35,13 @@ def run_job(job_id: str, job_root: Path | None = None) -> int:
             message=mask_text(str(exc)),
             traceback_tail=mask_text("\n".join(tb.splitlines()[-40:])),
         )
-        finish_job(store, job, state="failed", report={"status": "failed", "error": error.model_dump()}, error=error)
+        report = _load_written_stage_report(request, job.stage, job.airflow_run_id)
+        if not report:
+            report = {"stage": job.stage, "status": "failed"}
+        report["status"] = "failed"
+        report["error"] = error.model_dump()
+        report.setdefault("errors", [error.message])
+        finish_job(store, job, state="failed", report=mask_secrets(report), error=error)
         _write_tails(store, job_id, mask_text(stdout_buffer.getvalue()) or "", mask_text(stderr_buffer.getvalue() + "\n" + tb) or "")
         return 1
 
@@ -42,6 +50,22 @@ def _write_tails(store: JobStore, job_id: str, stdout_text: str, stderr_text: st
     job_dir = store.job_dir(job_id)
     (job_dir / "stdout_tail.txt").write_text(stdout_text[-max_chars:], encoding="utf-8")
     (job_dir / "stderr_tail.txt").write_text(stderr_text[-max_chars:], encoding="utf-8")
+
+
+def _load_written_stage_report(request: StageStartRequest, stage: str, airflow_run_id: str) -> dict | None:
+    experiment_id = request.experiment_config.get("experiment_id") if isinstance(request.experiment_config, dict) else None
+    run_dir_name = str(experiment_id or _safe_run_id(airflow_run_id))
+    path = Path(request.status_root) / run_dir_name / "stages" / f"{stage}.json"
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _safe_run_id(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", value)[:180] or "run"
 
 
 def main() -> int:

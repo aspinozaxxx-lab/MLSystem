@@ -3,6 +3,8 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from mlsystem.src.api.job_runner import JobRunner
 from mlsystem.src.api.job_store import JobStore
@@ -43,6 +45,38 @@ class ApiStageRoutesTests(unittest.TestCase):
             status = debug_run_stage_sync("unit_api_failure", "prepare_inference_scenes", request, store)
             self.assertEqual(status.state, "failed")
             self.assertIn("missing", status.error.message.lower())
+
+    def test_debug_sync_inventory_missing_scene_persists_report_and_missing_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JobStore(Path(tmp) / "jobs")
+            status_root = Path(tmp) / "status"
+            request = StageStartRequest(
+                experiment_config={
+                    "experiment_id": "unit_inventory_missing",
+                    "images_uri": "s3://b/images/",
+                    "layout_uri": "s3://b/layouts/",
+                    "scenes_file": "scenes.txt",
+                    "annotation_file": "auto",
+                },
+                status_root=str(status_root),
+            )
+            images = [{"bucket": "b", "key": "images/scene_a.tif", "name": "scene_a.tif", "size": 1}]
+            with patch.multiple(
+                "mlsystem.src.pipeline.stages.inventory_scenes",
+                load_config=lambda: SimpleNamespace(),
+                build_s3_layout_status=lambda _cfg: {"ok": True},
+                list_s3_objects=lambda _cfg, _uri, suffixes=None: images,
+                find_layout_files=lambda _cfg, _layout, _scenes, _ann: ("s3://b/layouts/ann.geojson", "s3://b/layouts/scenes.txt"),
+                read_s3_text=lambda _cfg, _uri: "scene_a.tif\nmissing_scene.tif\n",
+            ):
+                status = debug_run_stage_sync("unit_inventory_missing", "inventory_scenes", request, store)
+            self.assertEqual(status.state, "failed")
+            self.assertIn("missing_scene.tif", (status.error.message + str(status.report)))
+            run_dir = status_root / "unit_inventory_missing"
+            self.assertTrue((run_dir / "missing_scenes.txt").exists())
+            self.assertIn("missing_scene.tif", (run_dir / "missing_scenes.txt").read_text(encoding="utf-8"))
+            self.assertTrue((run_dir / "stages" / "inventory_scenes.report.md").exists())
+            self.assertIn("report_path", status.report)
 
 
 if __name__ == "__main__":

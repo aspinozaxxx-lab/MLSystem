@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from ..api.security import mask_secrets, mask_text
+from ..pipeline.stage_report_formatter import compact_xcom_summary, format_stage_report
 
 
 class AirflowApiStageError(RuntimeError):
@@ -68,20 +69,57 @@ def run_stage_via_api(stage: str, dag_run_conf: dict[str, Any], airflow_run_id: 
             last_change = time.time()
         if state == "succeeded":
             report = status.get("report") or {}
-            summary = report.get("summary") or ((report.get("stage_report") or {}).get("summary"))
-            print(f"MLSystem API stage succeeded: stage={stage} job_id={job_id} summary={summary}", flush=True)
-            return report or status
+            _print_human_report(stage, airflow_run_id, job_id, status, report)
+            summary = compact_xcom_summary(
+                report,
+                stage=stage,
+                run_id=airflow_run_id,
+                job_id=job_id,
+                duration_sec=status.get("duration_sec"),
+                stage_json_path=report.get("stage_json_path"),
+                report_path=report.get("report_path"),
+            )
+            print(f"MLSystem API stage succeeded: stage={stage} job_id={job_id} summary={summary.get('summary')}", flush=True)
+            return summary
         if state in {"failed", "cancelled", "timed_out"}:
             error = status.get("error") or {}
             message = mask_text(str(error.get("message"))) if error.get("message") is not None else None
             traceback_tail = mask_text(str(error.get("traceback_tail"))) if error.get("traceback_tail") is not None else None
+            report = status.get("report") or {}
+            _print_human_report(stage, airflow_run_id, job_id, status, report)
+            summary = compact_xcom_summary(
+                report,
+                stage=stage,
+                run_id=airflow_run_id,
+                job_id=job_id,
+                duration_sec=status.get("duration_sec"),
+                stage_json_path=report.get("stage_json_path"),
+                report_path=report.get("report_path"),
+            )
             print(
                 "MLSystem API stage failed: "
                 f"stage={stage} job_id={job_id} state={state} "
-                f"message={message} traceback_tail={traceback_tail}",
+                f"message={message} report_path={summary.get('report_path')} "
+                f"stage_json_path={summary.get('stage_json_path')} traceback_tail={traceback_tail}",
                 flush=True,
             )
-            raise AirflowApiStageError(f"MLSystem stage {stage} failed via API job {job_id}: {message}")
+            raise AirflowApiStageError(
+                f"MLSystem stage {stage} failed via API job {job_id}: {message}; "
+                f"report_path={summary.get('report_path')}; stage_json_path={summary.get('stage_json_path')}"
+            )
         if time.time() - last_change > no_progress_timeout:
             raise AirflowApiStageError(f"MLSystem API job {job_id} made no state progress for {no_progress_timeout} sec")
         time.sleep(poll_sec)
+
+
+def _print_human_report(stage: str, run_id: str, job_id: str, status: dict[str, Any], report: dict[str, Any]) -> None:
+    text = format_stage_report(
+        report,
+        stage=stage,
+        run_id=run_id,
+        job_id=job_id,
+        duration_sec=status.get("duration_sec"),
+        stage_json_path=report.get("stage_json_path"),
+        report_path=report.get("report_path"),
+    )
+    print(text, flush=True)
