@@ -36,7 +36,7 @@ WMS layer names:
 - `kanopus_all_nrg`
 - `kanopus_all_rgb`
 - the delivery layers listed above
-- 932 per-scene NRG layers named `scene_<safe_scene_id>_nrg`
+- 995 per-scene NRG layers named `scene_<safe_scene_id>_nrg`
 - `kanopus_footprints_full`
 - `kanopus_labels`
 - `kanopus_overlap_zones`
@@ -64,10 +64,10 @@ The project groups layers as:
 
 ```text
 Kanopus
-  Общие слои
-  Контуры и подписи
-  Поставки
-  Снимки
+  Common layers
+  Footprints and labels
+  Deliveries
+  Scenes
 ```
 
 `All NRG` and `Footprints full` are enabled by default. Per-scene layers are unchecked by default, so QGIS does not request all scenes at startup.
@@ -80,7 +80,7 @@ Full footprints GeoJSON:
 http://31.192.104.147:8082/static/kanopus_footprints_full.geojson
 ```
 
-These footprints are built from the COG valid-data mask, not from rectangular COG bounds. They include all 932 scenes and are simplified for QGIS use.
+These footprints are built from the COG valid-data mask, not from rectangular COG bounds. They include all 995 published valid scenes and are simplified for QGIS use.
 
 Labels GeoJSON:
 
@@ -123,7 +123,7 @@ Recommended setup for cartographers:
 
 1. Open `qgis_kanopus_project.qgs`, or add `qgis_kanopus_layers.qlr`.
 2. Keep `All NRG` on for context.
-3. Expand `Снимки` -> delivery name.
+3. Expand `Scenes` -> delivery name.
 4. Enable specific scene checkboxes as needed.
 5. Use `Identify Features` on `Footprints full` to see exact scene metadata.
 
@@ -136,11 +136,14 @@ Recommended setup for cartographers:
 - Delivery spatial indexes: `/data/mlsystem/mapservice2/index/deliveries/*_tileindex.shp`.
 - Cache directory: `/data/mlsystem/mapservice2/cache`.
 - Cache backend: one MapCache disk root, separated internally by tileset/layer directories such as `kanopus_all_nrg/`, `kanopus_all_rgb/`, `Kachugskij_nrg/`.
-- Per-scene layers are WMS only. They are not preseeded and are not added as 932 MapCache tilesets.
+- Per-scene layers are WMS only. They are not preseeded and are not added as MapCache tilesets.
 - Report: `/data/mlsystem/mapservice2/reports/wms_service_report.md`.
 - Valid footprints report: `/data/mlsystem/mapservice2/reports/kanopus_footprints_valid_report.md`.
 - Full footprints report: `/data/mlsystem/mapservice2/reports/footprints_full_report.md`.
 - Overlap report: `/data/mlsystem/mapservice2/reports/kanopus_overlap_report.md`.
-- WMS GetCapabilities with scene layers is about 1.24 MB and responds in about 1.9 seconds on the server test.
+- Missing TIFF reindex report: `/data/mlsystem/mapservice2/reports/missing_tifs_reindex_report.md`.
+- WMS GetCapabilities with scene layers is about 1.32 MB and responded in about 6.5 seconds on the server test after publishing 995 scene layers.
+
+Current data note: S3 currently has 996 TIFF objects under `images/kanopus`, but one Kachugskij object is not published because GDAL/rasterio does not recognize it as a supported TIFF. The service publishes the 995 valid COGs.
 
 Current limitation: the service has no authentication and port `8082` is exposed. Put it behind VPN, basic auth, or an IP allowlist before wider access.
