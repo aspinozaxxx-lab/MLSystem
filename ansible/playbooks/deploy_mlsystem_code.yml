@@ -41,3 +41,25 @@
       ansible.builtin.command:
         cmd: find "{{ mlsystem_gpu_repo_root }}" -type d -name __pycache__ -prune -exec rm -rf {} +
       changed_when: false
+
+    - name: Check GPU platform compose file
+      ansible.builtin.stat:
+        path: "{{ mlsystem_gpu_compose_path }}"
+      register: gpu_platform_compose_stat
+
+    - name: Check GPU platform env file
+      ansible.builtin.stat:
+        path: "{{ mlsystem_gpu_env_path }}"
+      register: gpu_platform_env_stat
+
+    - name: Recreate Python runtime containers after code deploy
+      ansible.builtin.command:
+        cmd: >-
+          docker compose --env-file "{{ mlsystem_gpu_env_path }}"
+          -f "{{ mlsystem_gpu_compose_path }}"
+          up -d --force-recreate --no-deps
+          mlsystem-api airflow-webserver airflow-scheduler airflow-triggerer
+      changed_when: true
+      when:
+        - gpu_platform_compose_stat.stat.exists
+        - gpu_platform_env_stat.stat.exists
