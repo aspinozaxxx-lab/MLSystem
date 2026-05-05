@@ -1,12 +1,33 @@
 from __future__ import annotations
 
-from ...storage.local_io import write_json
+from ...storage.local_io import read_json, write_json
 from .context import StageContext
 from .report import StageCheck, StageFailure, StageReport
 
 
 def run(ctx: StageContext) -> StageReport:
     from ..airflow_tasks import _read_training_result
+
+    if ctx.config.smoke:
+        summary = read_json(ctx.store.run_dir / "pseudolabel_summary.json", default={}) or {}
+        metrics = summary.get("metrics") or {
+            "accepted_objects": 1,
+            "threshold_used": 0.5,
+            "min_object_area_m2_used": 1,
+            "simplify_tolerance_m_used": 0,
+        }
+        summary_path = ctx.store.run_dir / "postprocess_summary.json"
+        write_json(summary_path, metrics)
+        return StageReport(
+            ctx.stage_id,
+            "success",
+            [StageCheck("synthetic postprocess", "ok", "Synthetic smoke postprocess metrics are available")],
+            counters={
+                "accepted_objects": metrics.get("accepted_objects"),
+                "threshold_used": metrics.get("threshold_used"),
+            },
+            artifacts={"postprocess_summary.json": str(summary_path)},
+        )
 
     training_result = _read_training_result(ctx.store)
     metrics = training_result.get("postprocess_metrics") or {}

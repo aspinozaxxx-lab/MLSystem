@@ -12,10 +12,14 @@ from mlsystem.src.storage.local_io import write_json
 from mlsystem.src.pipeline.airflow_tasks import AirflowRunStore
 from mlsystem.src.pipeline.stages.context import StageContext
 from mlsystem.src.pipeline.stages.inventory_scenes import run as run_inventory_scenes
+from mlsystem.src.pipeline.stages.export_pseudolabel import run as run_export_pseudolabel
+from mlsystem.src.pipeline.stages.postprocess_pseudolabel import run as run_postprocess_pseudolabel
 from mlsystem.src.pipeline.stages.prepare_dataset import run as run_prepare_dataset
 from mlsystem.src.pipeline.stages.prepare_inference_scenes import run as run_prepare_inference_scenes
+from mlsystem.src.pipeline.stages.probability_maps import run as run_probability_maps
 from mlsystem.src.pipeline.stages.pseudolabel_inference import run as run_pseudolabel_inference
 from mlsystem.src.pipeline.stages.report import StageFailure
+from mlsystem.src.pipeline.stages.vectorize_pseudolabel import run as run_vectorize_pseudolabel
 
 
 class PipelineStagesTests(unittest.TestCase):
@@ -130,11 +134,22 @@ class PipelineStagesTests(unittest.TestCase):
             self.assertEqual(captured["stage_mode"], "inference")
             self.assertEqual(captured["pseudolabel"]["scene_entries"], ["scene_a.tif", "scene_b.tif"])
 
-    def _context(self, tmp: str, *, preprocess: dict | None = None, pseudolabel: dict | None = None) -> StageContext:
+    def test_synthetic_smoke_writes_compatibility_artifacts_for_downstream_stages(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ctx = self._context(tmp, pseudolabel={"enabled": True, "run_on": "synthetic"}, smoke=True)
+            self.assertEqual(run_pseudolabel_inference(ctx).status, "success")
+            self.assertTrue((ctx.store.run_dir / "coverage_report.json").exists())
+            self.assertTrue((ctx.store.run_dir / "pseudolabel_summary.json").exists())
+            self.assertEqual(run_probability_maps(ctx).status, "success")
+            self.assertEqual(run_vectorize_pseudolabel(ctx).status, "success")
+            self.assertEqual(run_postprocess_pseudolabel(ctx).status, "success")
+            self.assertEqual(run_export_pseudolabel(ctx).status, "success")
+
+    def _context(self, tmp: str, *, preprocess: dict | None = None, pseudolabel: dict | None = None, smoke: bool = False) -> StageContext:
         conf = SimpleNamespace(
             schema_version=None,
             experiment_id="unit_stage",
-            smoke=False,
+            smoke=smoke,
             images_uri="s3://b/images/",
             layout_uri="s3://b/layouts/",
             scenes_file="scenes.txt",

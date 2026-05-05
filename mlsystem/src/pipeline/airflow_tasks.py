@@ -765,7 +765,9 @@ def _run_airflow_synthetic_pseudolabel_smoke(store: AirflowRunStore) -> dict[str
     smoke_dir = store.run_dir / "synthetic_pseudolabel"
     smoke_dir.mkdir(parents=True, exist_ok=True)
     accepted_geojson = smoke_dir / f"{store.experiment_id}.accepted.geojson"
+    root_accepted_geojson = store.run_dir / f"{store.experiment_id}.accepted.geojson"
     prediction_examples = smoke_dir / "prediction_examples.html"
+    root_prediction_examples = store.run_dir / "prediction_examples.html"
     smoke_summary = {
         "status": "success",
         "mode": "airflow_synthetic",
@@ -785,17 +787,44 @@ def _run_airflow_synthetic_pseudolabel_smoke(store: AirflowRunStore) -> dict[str
             }
         ],
     }
-    accepted_geojson.write_text(json.dumps(geojson, ensure_ascii=False, indent=2), encoding="utf-8")
-    prediction_examples.write_text(
-        "<!doctype html><html><body><h1>MLSystem Airflow smoke</h1><p>Synthetic pseudolabel smoke completed.</p></body></html>",
-        encoding="utf-8",
-    )
+    geojson_text = json.dumps(geojson, ensure_ascii=False, indent=2)
+    accepted_geojson.write_text(geojson_text, encoding="utf-8")
+    root_accepted_geojson.write_text(geojson_text, encoding="utf-8")
+    prediction_html = "<!doctype html><html><body><h1>MLSystem Airflow smoke</h1><p>Synthetic pseudolabel smoke completed.</p></body></html>"
+    prediction_examples.write_text(prediction_html, encoding="utf-8")
+    root_prediction_examples.write_text(prediction_html, encoding="utf-8")
+    coverage_report = {
+        "mode": "airflow_synthetic",
+        "scenes_processed": 1,
+        "total_expected_windows": 1,
+        "total_predicted_windows": 1,
+        "mean_coverage_fraction": 1.0,
+        "min_coverage_fraction": 1.0,
+    }
+    pseudolabel_summary = {
+        "status": "success",
+        "mode": "airflow_synthetic",
+        "accepted_geojson": str(root_accepted_geojson),
+        "prediction_examples_html": str(root_prediction_examples),
+        "metrics": {
+            "accepted_objects": 1,
+            "threshold_used": 0.5,
+            "min_object_area_m2_used": 1,
+            "simplify_tolerance_m_used": 0,
+        },
+    }
+    write_json(store.run_dir / "coverage_report.json", coverage_report)
+    write_json(store.run_dir / "pseudolabel_summary.json", pseudolabel_summary)
+    (store.run_dir / "pseudolabel_scenes.txt").write_text("synthetic\n", encoding="utf-8")
+    write_json(store.run_dir / "pseudolabel_scene_results_manifest.json", {"mode": "airflow_synthetic", "scenes": ["synthetic"]})
     write_json(smoke_dir / "summary.json", smoke_summary)
     return {
         "summary": "Synthetic pseudolabel smoke completed without heavy ML dependencies.",
-        "accepted_geojson": str(accepted_geojson),
-        "prediction_examples_html": str(prediction_examples),
+        "accepted_geojson": str(root_accepted_geojson),
+        "prediction_examples_html": str(root_prediction_examples),
         "smoke_summary": smoke_summary,
+        "coverage_report": str(store.run_dir / "coverage_report.json"),
+        "pseudolabel_summary": str(store.run_dir / "pseudolabel_summary.json"),
     }
 
 
