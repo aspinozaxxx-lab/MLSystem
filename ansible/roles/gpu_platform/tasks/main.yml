@@ -219,6 +219,12 @@
   register: torch_cuda_check
   changed_when: false
 
+- name: Verify PyTorch sees CUDA inside MLSystem API
+  ansible.builtin.command:
+    cmd: docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}" exec -T mlsystem-api python -c "import torch; print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NO_CUDA')"
+  register: api_torch_cuda_check
+  changed_when: false
+
 - name: Verify Triton models endpoint
   ansible.builtin.uri:
     url: "http://127.0.0.1:{{ mlsystem_gpu_triton_http_port }}/v2/repository/index"
@@ -237,4 +243,5 @@
       triton_ready: "http://{{ mlsystem_gpu_public_host }}:{{ mlsystem_gpu_triton_http_port }}/v2/health/ready"
       mlsystem_api: "ssh tunnel/local only: http://127.0.0.1:{{ mlsystem_gpu_api_port }}"
       torch_cuda: "{{ torch_cuda_check.stdout_lines }}"
+      api_torch_cuda: "{{ api_torch_cuda_check.stdout_lines }}"
       triton_models: "{{ triton_models.content }}"
