@@ -674,6 +674,103 @@ def _write_scene_list(path: Path, matches: list[SceneMatch]) -> Path:
     return path
 
 
+def _load_prepared_dataset_split(
+    experiment_dir: Path,
+    matches: list[SceneMatch],
+    job: JobSpec,
+) -> tuple[list[SceneMatch], list[SceneMatch], dict[str, Any]] | None:
+    manifest_value = job.preprocess.get("prepared_dataset_manifest")
+    if not manifest_value and job.preprocess.get("use_prepared_dataset_manifest"):
+        manifest_value = "dataset_manifest.json"
+    if not manifest_value:
+        return None
+    manifest_path = Path(str(manifest_value))
+    if not manifest_path.is_absolute():
+        manifest_path = experiment_dir / manifest_path
+    if not manifest_path.exists():
+        raise RuntimeError(f"Prepared dataset manifest is missing: {manifest_path}")
+
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    train_raw = payload.get("train_scenes") or []
+    val_raw = payload.get("val_scenes") or []
+    if not train_raw or not val_raw:
+        raise RuntimeError("Prepared dataset manifest has empty train_scenes or val_scenes")
+
+    lookup = _scene_match_lookup(matches)
+    train_matches = _resolve_prepared_matches(train_raw, lookup, "train")
+    val_matches = _resolve_prepared_matches(val_raw, lookup, "val")
+    train_ids = {_scene_match_identity(match) for match in train_matches}
+    val_ids = {_scene_match_identity(match) for match in val_matches}
+    overlap = sorted(train_ids & val_ids)
+    if overlap:
+        raise RuntimeError(f"Prepared dataset split overlap: {overlap[:10]}")
+    selected_ids = train_ids | val_ids
+    available_ids = {_scene_match_identity(match) for match in matches}
+    lost = sorted(available_ids - selected_ids)
+    if lost:
+        raise RuntimeError(f"Prepared dataset split lost {len(lost)} matched scenes: {lost[:10]}")
+    return train_matches, val_matches, {
+        "source": str(manifest_path),
+        "split_strategy": payload.get("split_strategy"),
+        "train_scene_count": len(train_matches),
+        "val_scene_count": len(val_matches),
+        "split_summary": payload.get("split_summary") or {},
+    }
+
+
+def _scene_match_identity(match: SceneMatch) -> str:
+    return str(match.key or match.name or match.entry)
+
+
+def _scene_match_lookup(matches: list[SceneMatch]) -> dict[str, SceneMatch]:
+    lookup: dict[str, SceneMatch] = {}
+    for match in matches:
+        for key in {
+            str(match.key or ""),
+            str(match.name or ""),
+            str(match.entry or ""),
+            PurePosixPath(str(match.key or "")).name,
+            PurePosixPath(str(match.name or "")).name,
+            PurePosixPath(str(match.entry or "")).name,
+            _norm_scene_name(str(match.key or "")),
+            _norm_scene_name(str(match.name or "")),
+            _norm_scene_name(str(match.entry or "")),
+        }:
+            if key:
+                lookup.setdefault(key, match)
+    return lookup
+
+
+def _resolve_prepared_matches(raw_items: list[Any], lookup: dict[str, SceneMatch], split_name: str) -> list[SceneMatch]:
+    resolved: list[SceneMatch] = []
+    missing: list[str] = []
+    for item in raw_items:
+        values: list[str]
+        if isinstance(item, dict):
+            values = [
+                str(item.get("key") or ""),
+                str(item.get("name") or ""),
+                str(item.get("entry") or ""),
+                PurePosixPath(str(item.get("key") or "")).name,
+                PurePosixPath(str(item.get("name") or "")).name,
+                PurePosixPath(str(item.get("entry") or "")).name,
+                _norm_scene_name(str(item.get("key") or "")),
+                _norm_scene_name(str(item.get("name") or "")),
+                _norm_scene_name(str(item.get("entry") or "")),
+            ]
+        else:
+            value = str(item)
+            values = [value, PurePosixPath(value).name, _norm_scene_name(value)]
+        match = next((lookup[value] for value in values if value and value in lookup), None)
+        if match:
+            resolved.append(match)
+        else:
+            missing.append(str(item))
+    if missing:
+        raise RuntimeError(f"Prepared dataset {split_name} scenes are not in current matching result: {missing[:10]}")
+    return resolved
+
+
 def _write_object_metrics_artifacts(
     experiment_dir: Path,
     pred_features: list[dict[str, Any]],
@@ -1215,14 +1312,24 @@ def run_real_train(
     with trace_stage("prepare_dataset", {"job_id": job.job_id, "scene_count": len(matches), "tile_size": patch_size}):
         shapes = _load_shapes(config, annotation_uri)
 
-    train_matches, val_matches = _split_train_val_matches(
-        config,
-        matches,
-        shapes,
-        train_fraction=float(job.preprocess.get("train_fraction") or 0.75),
-        seed=seed,
-        stratify_positive=bool(job.preprocess.get("stratify_positive_validation", True)),
-    )
+    prepared_split = _load_prepared_dataset_split(experiment_dir, matches, job)
+    if prepared_split is not None:
+        train_matches, val_matches, prepared_split_metadata = prepared_split
+        log_fn(
+            job_log,
+            "real_train using prepared dataset manifest "
+            f"train={len(train_matches)} val={len(val_matches)} source={prepared_split_metadata.get('source')}",
+        )
+    else:
+        train_matches, val_matches = _split_train_val_matches(
+            config,
+            matches,
+            shapes,
+            train_fraction=float(job.preprocess.get("train_fraction") or 0.75),
+            seed=seed,
+            stratify_positive=bool(job.preprocess.get("stratify_positive_validation", True)),
+        )
+        prepared_split_metadata = None
     train_samples, train_report = _read_samples(
         config,
         train_matches,
@@ -1286,6 +1393,7 @@ def run_real_train(
         "patch_size": patch_size,
         "train_scenes": train_report,
         "val_scenes": val_report,
+        "prepared_dataset_manifest": prepared_split_metadata,
     }
     dataset_report_path = experiment_dir / "train_dataset_report.json"
     write_json(dataset_report_path, dataset_report)

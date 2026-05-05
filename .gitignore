@@ -66,6 +66,11 @@ checkpoints/
 MLData/
 MLTraner/
 
+# Handtest runtime artifacts
+tests/handtests/**/output/
+tests/handtests/input/*.bak_*
+tests/handtests/input/*.missing_removed.txt
+
 # Keep lightweight result summaries
 !results/
 !results/summaries/

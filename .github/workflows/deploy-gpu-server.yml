@@ -107,3 +107,4 @@ jobs:
           curl -fsS "http://${GPU_SERVER_HOST}:5000/health" >/dev/null
           curl -fsS "http://${GPU_SERVER_HOST}:9000/minio/health/live" >/dev/null
           curl -fsS "http://${GPU_SERVER_HOST}:8000/v2/health/ready" >/dev/null
+          ssh -i ~/.ssh/gpu_server_key -o StrictHostKeyChecking=yes "${GPU_SERVER_USER}@${GPU_SERVER_HOST}" 'curl -fsS http://127.0.0.1:8088/health | python3 -m json.tool && curl -fsS http://127.0.0.1:8088/ready | python3 -m json.tool'

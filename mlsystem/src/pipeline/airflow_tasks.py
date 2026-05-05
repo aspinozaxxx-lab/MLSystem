@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import re
 import shutil
@@ -20,28 +21,24 @@ from ..pipeline_config import load_config
 from ..s3_adapter import build_s3_layout_status
 from ..storage.local_io import read_json, write_json
 from ..storage.s3 import find_layout_files, list_s3_objects, read_s3_text
+from ..data.dataset_split import split_manifest_scene_rows
 from ..data.scene_matching import build_scene_matching_report
 from .prediction_pipeline import PredictionPipeline
 from .training_pipeline import TrainingPipeline
 
 
 MAIN_DAG_STAGES = [
-    "validate_experiment_config",
-    "check_s3_layout",
-    "match_scenes",
-    "validate_scene_matching",
-    "inventory_images",
-    "prepare_dataset_manifest",
-    "prepare_train_tiles_or_windows",
-    "validate_dataset",
+    "inventory_scenes",
+    "prepare_dataset",
     "create_mlflow_run",
     "train_model",
     "evaluate_pixel_metrics",
     "predict_validation_scenes",
     "vectorize_validation_predictions",
     "compute_object_f1",
-    "predict_pseudolabel_scenes",
-    "stitch_probability_maps",
+    "prepare_inference_scenes",
+    "run_pseudolabel_inference",
+    "validate_probability_maps",
     "vectorize_pseudolabel",
     "postprocess_pseudolabel",
     "export_pseudolabel_artifacts",
@@ -51,19 +48,69 @@ MAIN_DAG_STAGES = [
     "finalize_mlflow_run",
 ]
 
+STAGE_POOLS = {
+    "inventory_scenes": ("io_light", 1),
+    "prepare_dataset": ("cpu_heavy", 2),
+    "create_mlflow_run": ("io_light", 1),
+    "train_model": ("gpu_training", 1),
+    "evaluate_pixel_metrics": ("cpu_light", 1),
+    "predict_validation_scenes": ("gpu_training", 1),
+    "vectorize_validation_predictions": ("cpu_heavy", 2),
+    "compute_object_f1": ("cpu_heavy", 1),
+    "prepare_inference_scenes": ("io_light", 1),
+    "run_pseudolabel_inference": ("gpu_training", 1),
+    "validate_probability_maps": ("cpu_heavy", 2),
+    "vectorize_pseudolabel": ("cpu_heavy", 3),
+    "postprocess_pseudolabel": ("cpu_heavy", 3),
+    "export_pseudolabel_artifacts": ("io_light", 1),
+    "generate_prediction_examples": ("cpu_heavy", 1),
+    "log_mlflow_artifacts": ("io_light", 1),
+    "write_codex_api_summary": ("io_light", 1),
+    "finalize_mlflow_run": ("io_light", 1),
+}
+
 CLI_STAGE_ALIASES = {
+    "inventory": "inventory_scenes",
     "validate-config": "validate_experiment_config",
+    "check-s3-layout": "check_s3_layout",
     "match-scenes": "match_scenes",
-    "prepare-dataset": "prepare_dataset_manifest",
+    "prepare-dataset": "prepare_dataset",
+    "prepare-dataset-manifest": "prepare_dataset_manifest",
     "train": "train_model",
     "evaluate": "evaluate_pixel_metrics",
-    "pseudolabel": "predict_pseudolabel_scenes",
+    "prepare-inference": "prepare_inference_scenes",
+    "pseudolabel": "run_pseudolabel_inference",
+    "predict-pseudolabel-scenes": "predict_pseudolabel_scenes",
+    "run-pseudolabel-inference": "run_pseudolabel_inference",
+    "stitch-probability-maps": "stitch_probability_maps",
+    "validate-probability-maps": "validate_probability_maps",
     "postprocess": "postprocess_pseudolabel",
     "finalize": "finalize_mlflow_run",
 }
 
+LEGACY_FALLBACK_STAGES = {
+    "validate_experiment_config",
+    "check_s3_layout",
+    "match_scenes",
+    "validate_scene_matching",
+    "inventory_images",
+    "prepare_train_tiles_or_windows",
+    "validate_dataset",
+    "create_mlflow_run",
+    "train_model",
+    "evaluate_pixel_metrics",
+    "predict_validation_scenes",
+    "vectorize_validation_predictions",
+    "compute_object_f1",
+    "generate_prediction_examples",
+    "log_mlflow_artifacts",
+    "write_codex_api_summary",
+    "finalize_mlflow_run",
+}
+
 
 class AirflowExperimentConfig(BaseModel):
+    schema_version: int | None = None
     experiment_id: str
     class_name: str | None = None
     task: str = "train_predict_pseudolabel"
@@ -426,6 +473,10 @@ def _run_training_pipeline(conf: AirflowExperimentConfig, store: AirflowRunStore
     train_pseudolabel["enabled"] = False
     train_only_conf = conf.model_copy(update={"pseudolabel": train_pseudolabel})
     job = _build_airflow_job(train_only_conf)
+    prepared_manifest = store.run_dir / "dataset_manifest.json"
+    if prepared_manifest.exists():
+        job.preprocess.setdefault("prepared_dataset_manifest", str(prepared_manifest))
+        job.preprocess.setdefault("use_prepared_dataset_manifest", True)
     job_log = store.run_dir / "airflow_train.log"
     tags = {
         "job_id": conf.experiment_id,
@@ -612,7 +663,9 @@ def _smoke_or_skip(conf: AirflowExperimentConfig, stage: str) -> dict[str, Any] 
         "validate_experiment_config",
         "create_mlflow_run",
         "predict_pseudolabel_scenes",
+        "run_pseudolabel_inference",
         "stitch_probability_maps",
+        "validate_probability_maps",
         "vectorize_pseudolabel",
         "postprocess_pseudolabel",
         "export_pseudolabel_artifacts",
@@ -746,7 +799,7 @@ def _run_airflow_synthetic_pseudolabel_smoke(store: AirflowRunStore) -> dict[str
     }
 
 
-def run_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: str, state_dir: Path) -> dict[str, Any]:
+def _run_legacy_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: str, state_dir: Path) -> dict[str, Any]:
     started = time.time()
     resources_before = _resource_snapshot()
     conf = AirflowExperimentConfig.model_validate(conf_payload)
@@ -808,9 +861,7 @@ def run_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: str, sta
         max_scenes = conf.preprocess.get("max_scenes")
         if max_scenes is not None:
             matched = matched[: max(1, int(max_scenes))]
-        split_idx = max(1, int(len(matched) * 0.75)) if matched else 0
-        train_scenes = matched[:split_idx]
-        val_scenes = matched[split_idx:] or matched[-1:]
+        train_scenes, val_scenes = split_manifest_scene_rows(matched, train_fraction=0.75)
         manifest = {
             "experiment_id": conf.experiment_id,
             "created_at": utc_now(),
@@ -1035,7 +1086,90 @@ def run_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: str, sta
     return store.write_stage(stage, result)
 
 
+def run_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: str, state_dir: Path) -> dict[str, Any]:
+    from .stages.context import StageContext
+    from .stages.registry import get_stage_entrypoint
+    from .stages.report import StageFailure, StageReport
+
+    try:
+        entrypoint = get_stage_entrypoint(stage)
+    except KeyError:
+        if stage not in LEGACY_FALLBACK_STAGES:
+            known = ", ".join(MAIN_DAG_STAGES + sorted(LEGACY_FALLBACK_STAGES))
+            raise ValueError(f"Unknown Airflow MLSystem stage: {stage}. Known stages: {known}")
+        return _run_legacy_stage(stage, conf_payload, airflow_run_id, state_dir)
+
+    started = time.time()
+    resources_before = _resource_snapshot()
+    conf = AirflowExperimentConfig.model_validate(conf_payload)
+    store = AirflowRunStore(state_dir, airflow_run_id, conf.model_dump())
+    logger = logging.getLogger(f"mlsystem.airflow.{stage}")
+    store.update_summary(
+        status="running",
+        experiment_config=conf.model_dump(),
+        airflow={"dag_id": "mlsystem_experiment_pipeline", "run_id": airflow_run_id},
+        active_stage=stage,
+        active_stage_started_at=utc_now(),
+        active_stage_resources=resources_before,
+    )
+    monitor = _StageResourceMonitor(store.stage_dir / f"{stage}.resources.json", stage=stage)
+    monitor.start()
+
+    failure_to_raise: Exception | None = None
+    try:
+        smoke_result = _smoke_or_skip(conf, stage)
+        if smoke_result is not None:
+            result = smoke_result
+        else:
+            context = StageContext(
+                stage_id=stage,
+                run_id=airflow_run_id,
+                config=conf,
+                raw_conf=conf_payload,
+                status_dir=state_dir,
+                store=store,
+                logger=logger,
+            )
+            report = entrypoint(context)
+            result = report.to_stage_payload()
+            log_text = report.to_airflow_log()
+            if report.status == "failed":
+                logger.error(log_text)
+                failure_to_raise = RuntimeError(result.get("error") or report.summary or f"{stage} failed")
+            else:
+                logger.info(log_text)
+    except StageFailure as exc:
+        report = exc.report
+        result = report.to_stage_payload()
+        logger.error(report.to_airflow_log())
+        failure_to_raise = exc
+    except Exception as exc:  # noqa: BLE001
+        report = StageReport(stage_id=stage, status="failed", errors=[str(exc)])
+        result = report.to_stage_payload()
+        logger.error(report.to_airflow_log())
+        failure_to_raise = exc
+    finally:
+        monitor_payload = monitor.stop()
+
+    result["duration_sec"] = round(time.time() - started, 3)
+    result["resources"] = {
+        "before": resources_before,
+        "after": _resource_snapshot(),
+        "monitor": _safe_rel(store.stage_dir / f"{stage}.resources.json", store.run_dir),
+        "sample_count": len(monitor_payload.get("samples") or []),
+    }
+    written = store.write_stage(stage, result)
+    if failure_to_raise is not None:
+        raise RuntimeError(result.get("error") or f"{stage} failed") from failure_to_raise
+    return written
+
+
 def run_airflow_stage(stage: str, dag_run_conf: dict[str, Any], airflow_run_id: str, state_dir: Path | str) -> dict[str, Any]:
+    mode = str(os.getenv("MLSYSTEM_AIRFLOW_EXECUTION_MODE") or "local").lower()
+    if mode == "api":
+        from ..orchestration.airflow_api_client import run_stage_via_api
+
+        return run_stage_via_api(stage, dag_run_conf, airflow_run_id, Path(state_dir))
     return run_stage(stage, dag_run_conf, airflow_run_id, Path(state_dir))
 
 
