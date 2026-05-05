@@ -52,13 +52,69 @@
         path: "{{ mlsystem_gpu_env_path }}"
       register: gpu_platform_env_stat
 
-    - name: Recreate Python runtime containers after code deploy
+    - name: Ensure MLSystem API container exists after code deploy
       ansible.builtin.command:
         cmd: >-
           docker compose --env-file "{{ mlsystem_gpu_env_path }}"
           -f "{{ mlsystem_gpu_compose_path }}"
-          up -d --force-recreate --no-deps
-          mlsystem-api airflow-webserver airflow-scheduler airflow-triggerer
+          up -d --no-deps mlsystem-api
+      changed_when: true
+      when:
+        - gpu_platform_compose_stat.stat.exists
+        - gpu_platform_env_stat.stat.exists
+
+    - name: Restart MLSystem API to load deployed code
+      ansible.builtin.command:
+        cmd: >-
+          docker compose --env-file "{{ mlsystem_gpu_env_path }}"
+          -f "{{ mlsystem_gpu_compose_path }}"
+          restart mlsystem-api
+      changed_when: true
+      when:
+        - gpu_platform_compose_stat.stat.exists
+        - gpu_platform_env_stat.stat.exists
+
+    - name: Wait for MLSystem API health after code deploy
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ mlsystem_gpu_api_port }}/health"
+        status_code: 200
+      retries: 60
+      delay: 10
+      register: code_deploy_api_health
+      until: code_deploy_api_health.status == 200
+      when:
+        - gpu_platform_compose_stat.stat.exists
+        - gpu_platform_env_stat.stat.exists
+
+    - name: Wait for MLSystem API readiness after code deploy
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ mlsystem_gpu_api_port }}/ready"
+        status_code: 200
+      retries: 60
+      delay: 10
+      register: code_deploy_api_ready
+      until: code_deploy_api_ready.status == 200
+      when:
+        - gpu_platform_compose_stat.stat.exists
+        - gpu_platform_env_stat.stat.exists
+
+    - name: Ensure Airflow runtime containers exist after API is ready
+      ansible.builtin.command:
+        cmd: >-
+          docker compose --env-file "{{ mlsystem_gpu_env_path }}"
+          -f "{{ mlsystem_gpu_compose_path }}"
+          up -d --no-deps airflow-webserver airflow-scheduler airflow-triggerer
+      changed_when: true
+      when:
+        - gpu_platform_compose_stat.stat.exists
+        - gpu_platform_env_stat.stat.exists
+
+    - name: Restart Airflow runtime containers to load deployed code
+      ansible.builtin.command:
+        cmd: >-
+          docker compose --env-file "{{ mlsystem_gpu_env_path }}"
+          -f "{{ mlsystem_gpu_compose_path }}"
+          restart airflow-webserver airflow-scheduler airflow-triggerer
       changed_when: true
       when:
         - gpu_platform_compose_stat.stat.exists
