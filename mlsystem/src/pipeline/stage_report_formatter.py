@@ -62,6 +62,7 @@ def format_stage_report(
     warnings = _list(payload.get("warnings") or _nested(payload, "stage_report", "warnings"))
     checks = _list(payload.get("checks") or _nested(payload, "stage_report", "checks"))
     counters = _mapping(payload.get("counters") or _nested(payload, "stage_report", "counters"))
+    metrics = _mapping(payload.get("metrics") or _nested(payload, "stage_report", "details", "metrics") or _nested(payload, "details", "metrics"))
     artifacts = _mapping(payload.get("artifacts") or _nested(payload, "stage_report", "artifacts"))
     details = _mapping(payload.get("details") or _nested(payload, "stage_report", "details"))
     input_lineage = _mapping(details.get("input_lineage") or payload.get("input_lineage"))
@@ -121,6 +122,13 @@ def format_stage_report(
             lines.append(f"- {key}: `{_short_value(counters[key])}`")
     else:
         lines.append("- no counters reported")
+
+    lines += ["", "## Metrics"]
+    if metrics:
+        for key in sorted(metrics):
+            lines.append(f"- {key}: `{_short_value(metrics[key])}`")
+    else:
+        lines.append("- no metrics reported")
 
     lines += ["", "## Warnings"]
     if warnings:
@@ -182,6 +190,7 @@ def compact_xcom_summary(
         errors = [str(error_payload["message"])]
     warnings = _list(payload.get("warnings") or _nested(payload, "stage_report", "warnings"))
     counters = _mapping(payload.get("counters") or _nested(payload, "stage_report", "counters"))
+    metrics = _mapping(payload.get("metrics") or _nested(payload, "stage_report", "details", "metrics") or _nested(payload, "details", "metrics"))
     summary = payload.get("summary") or _nested(payload, "stage_report", "summary") or (error_payload.get("message") if error_payload else None)
     compact = {
         "stage": stage,
@@ -195,10 +204,14 @@ def compact_xcom_summary(
         "errors_count": len(errors),
         "duration_sec": duration_sec if duration_sec is not None else payload.get("duration_sec"),
         "key_counters": _compact_counters(counters),
+        "key_metrics": _compact_counters(metrics),
     }
+    urls = _extract_url_fields(payload)
+    compact.update(urls)
     encoded = json.dumps(compact, ensure_ascii=False, default=str)
     if len(encoded.encode("utf-8")) > MAX_COMPACT_XCOM_BYTES:
         compact["key_counters"] = {"truncated": True, "counter_count": len(counters)}
+        compact["key_metrics"] = {"truncated": True, "metric_count": len(metrics)}
         compact["summary"] = (compact.get("summary") or "")[:1000]
     return compact
 
@@ -291,6 +304,40 @@ def _compact_counters(counters: Mapping[str, Any]) -> dict[str, Any]:
         else:
             compact[key] = _short_value(value)
     return compact
+
+
+def _extract_url_fields(payload: Mapping[str, Any]) -> dict[str, Any]:
+    details = _mapping(payload.get("details") or _nested(payload, "stage_report", "details"))
+    mlflow = _mapping(payload.get("mlflow") or details.get("mlflow"))
+    result: dict[str, Any] = {}
+    run_url = (
+        payload.get("url_mlflow_run")
+        or payload.get("mlflow_run_url")
+        or payload.get("run_url")
+        or mlflow.get("run_url")
+        or mlflow.get("run_url_external")
+    )
+    experiment_url = (
+        payload.get("url_mlflow_experiment")
+        or payload.get("mlflow_experiment_url")
+        or payload.get("experiment_url")
+        or mlflow.get("experiment_url")
+        or mlflow.get("experiment_url_external")
+    )
+    run_id = payload.get("mlflow_run_id") or mlflow.get("run_id")
+    final_status = payload.get("mlflow_final_status") or mlflow.get("final_status")
+    summary_path = payload.get("summary_path") or payload.get("codex_summary") or payload.get("run_summary")
+    if run_url:
+        result["url_mlflow_run"] = run_url
+    if experiment_url:
+        result["url_mlflow_experiment"] = experiment_url
+    if run_id:
+        result["mlflow_run_id"] = run_id
+    if final_status:
+        result["mlflow_final_status"] = final_status
+    if summary_path:
+        result["summary_path"] = summary_path
+    return result
 
 
 def _short_value(value: Any, max_len: int = 500) -> str:

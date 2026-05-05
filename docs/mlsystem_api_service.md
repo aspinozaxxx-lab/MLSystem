@@ -1,38 +1,38 @@
 # MLSystem API service
 
-`mlsystem-api` - внутренний FastAPI-сервис для запуска MLSystem stages из Airflow через устойчивый HTTP API.
-
-Схема:
+`mlsystem-api` - внутренний FastAPI-сервис, через который Airflow запускает MLSystem stages.
 
 ```text
 Airflow task -> mlsystem-api -> persistent API job -> subprocess worker -> stage registry -> production code
 ```
 
-Airflow больше не должен исполнять тяжелый MLSystem-код внутри своего процесса. Он создает API job, опрашивает статус и валит task, если job завершился ошибкой.
+Сервис не должен содержать бизнес-логику stage. Он создает job, запускает worker subprocess, хранит status/report/error и возвращает результат через стабильный API.
 
 ## Endpoints
 
 | Endpoint | Назначение |
 |---|---|
-| `GET /health` | Легкая проверка, что сервис жив. Без секрета. |
-| `GET /ready` | Проверяет status root, job root, импорт stage registry и обязательные env-ключи. Если базовая готовность нарушена, возвращает HTTP 503. RabbitMQ не делает ready=false, потому что workflow experimental. |
-| `GET /api/v1/stages` | Возвращает `MAIN_DAG_STAGES`, registry stages, aliases, legacy fallback stages и pools. |
-| `POST /api/v1/runs/{run_id}/stages/{stage}/start` | Создает persistent job и запускает stage worker subprocess. |
-| `GET /api/v1/jobs/{job_id}` | Возвращает состояние job, report/error/artifacts. |
-| `GET /api/v1/runs/{run_id}/summary` | Читает summary из Airflow status artifacts. |
-| `POST /api/v1/debug/run-stage-sync` | Синхронный debug endpoint для коротких локальных проверок. Не использовать для train/inference. |
-| `POST /api/v1/debug/inference-rabbit-smoke` | Smoke-проверка RabbitMQ inference backend, experimental. |
+| `GET /health` | Легкая проверка, что сервис жив. |
+| `GET /ready` | Проверка status root, job root, env и импорта stage registry. |
+| `GET /api/v1/stages` | Список `MAIN_DAG_STAGES`, registry stages, aliases, legacy fallback и pools. |
+| `POST /api/v1/runs/{run_id}/stages/{stage}/start` | Создать persistent job и запустить stage worker subprocess. |
+| `GET /api/v1/jobs/{job_id}` | Получить state/report/error/artifacts job. |
+| `GET /api/v1/runs/{run_id}/summary` | Прочитать summary текущего run из status artifacts. |
+| `POST /api/v1/debug/run-stage-sync` | Только короткая локальная отладка, не для train/inference. |
+| `POST /api/v1/debug/inference-rabbit-smoke` | Experimental RabbitMQ smoke. |
 
 ## Job states
 
-- `queued`
-- `running`
-- `succeeded`
-- `failed`
-- `cancelled`
-- `timed_out`
+```text
+queued
+running
+succeeded
+failed
+cancelled
+timed_out
+```
 
-## Где лежат job artifacts
+## Job store
 
 По умолчанию:
 
@@ -42,21 +42,72 @@ Airflow больше не должен исполнять тяжелый MLSyste
 
 Файлы:
 
-- `job.json` - состояние job;
-- `request.json` - запрос с замаскированными секретами;
-- `report.json` - результат stage;
-- `error.json` - ошибка, если stage упал;
+- `job.json` - текущее состояние job;
+- `request.json` - masked request;
+- `report.json` - stage payload;
+- `error.json` - ошибка и traceback tail;
 - `stdout_tail.txt`, `stderr_tail.txt` - хвосты worker output.
 
-Путь задается через:
+Env:
 
 ```text
 MLSYSTEM_API_JOB_ROOT=/data/mlsystem/api/jobs
 ```
 
-## Секреты
+## Stage reports
 
-API/job store маскирует ключи, содержащие:
+Полные stage reports лежат не в XCom, а в status root:
+
+```text
+/data/mlsystem/airflow/status/<run_id>/stages/<stage>.json
+/data/mlsystem/airflow/status/<run_id>/stages/<stage>.report.md
+```
+
+Markdown report содержит:
+
+- stage/status/run_id/job_id/duration;
+- checks;
+- counters;
+- metrics;
+- warnings/errors;
+- artifacts;
+- resource summary;
+- container и host paths;
+- diagnostic commands при failure.
+
+## XCom-safe response
+
+API возвращает полный report в job status, но Airflow wrapper делает compact summary и пушит только scalar XCom keys:
+
+```text
+stage=prepare_dataset
+status=success
+job_id=<job_id>
+summary=prepare_dataset completed
+report_path=/opt/airflow/mlsystem_runs/<run>/stages/prepare_dataset.report.md
+stage_json_path=/opt/airflow/mlsystem_runs/<run>/stages/prepare_dataset.json
+counter_total_scenes=24
+metric_pixel_f1=0.73
+url_mlflow_run=http://...
+```
+
+XCom не хранит `resources`, `stage_report`, большие списки scenes или полный dump artifacts.
+
+## MLflow URL
+
+`create_mlflow_run` пишет в report и XCom:
+
+```text
+mlflow_run_id
+url_mlflow_run
+url_mlflow_experiment
+```
+
+Если задан `MLSYSTEM_MLFLOW_PUBLIC_URL`, ссылки строятся от него. Если public URL не задан, используется tracking URI и report пишет warning.
+
+## Secrets
+
+Request/job store маскирует ключи, содержащие:
 
 ```text
 password, secret, token, access_key, secret_key,
@@ -64,89 +115,12 @@ AWS_SECRET_ACCESS_KEY, MLFLOW_TRACKING_PASSWORD,
 MINIO_SECRET_KEY, S3_SECRET_KEY
 ```
 
-Также маскируются env-переменные с `SECRET`, `TOKEN`, `PASSWORD`.
-
-## Авторизация
-
-Мутирующие и debug endpoints используют bearer token, если задан:
-
-```text
-MLSYSTEM_API_TOKEN
-```
-
-`/health`, `/ready`, `/api/v1/stages` оставлены без token для внутренней диагностики контейнеров.
-
-Секрет генерируется/сохраняется через ansible template `/etc/mlsystem/gpu-platform.env`; значение не коммитится.
-
-## Stage reports и XCom
-
-Полный результат stage больше не должен попадать в Airflow XCom. API job по-прежнему хранит полный `report.json`, а stage пишет эксплуатационные artifacts:
-
-```text
-/data/mlsystem/airflow/status/<experiment_id>/stages/<stage>.json
-/data/mlsystem/airflow/status/<experiment_id>/stages/<stage>.report.md
-```
-
-`<stage>.json` содержит машинный payload stage. `<stage>.report.md` содержит человекочитаемый отчет:
-
-- stage/status/run_id/job_id/duration;
-- checks;
-- counters;
-- warnings/errors;
-- artifacts;
-- resource summary;
-- container path и host path;
-- диагностические команды при failure.
-
-Airflow task не пишет полный `return_value`. Wrapper явно пушит маленькие XCom keys:
-
-```text
-stage=prepare_dataset
-status=success
-job_id=api_run_prepare_dataset_...
-summary=prepare_dataset completed
-report_path=/opt/airflow/mlsystem_runs/<run>/stages/prepare_dataset.report.md
-stage_json_path=/opt/airflow/mlsystem_runs/<run>/stages/prepare_dataset.json
-warnings_count=1
-errors_count=0
-counter_split_strategy=object_balanced
-counter_total_scenes=24
-counter_total_objects=300
-```
-
-XCom не содержит `resources`, `stage_report`, полный dump artifacts или большие списки сцен.
-Для `prepare_dataset` входной контракт дополнительно фиксируется в `prepare_dataset_input_audit.json`
-и `prepare_dataset_input_audit.txt`; в отчете есть раздел `Input lineage`.
-
-## Path mapping
-
-Внутри Airflow/API контейнеров status root смонтирован как:
-
-```text
-/opt/airflow/mlsystem_runs
-```
-
-На host тот же каталог доступен как:
-
-```text
-/data/mlsystem/airflow/status
-```
-
-Отчеты показывают оба пути, когда mapping однозначен:
-
-```text
-container_path: /opt/airflow/mlsystem_runs/<run>/stages/<stage>.json
-host_path: /data/mlsystem/airflow/status/<run>/stages/<stage>.json
-```
+Значения `SECRET/TOKEN/PASSWORD` из env не печатаются в логах и не коммитятся.
 
 ## Dependency risk
 
-Текущий compose доустанавливает Python-зависимости в Airflow/API контейнеры при старте через `_PIP_ADDITIONAL_REQUIREMENTS`. Это удобно для MVP, но рискованно для production: startup долгий, версии могут дрейфовать, pip может ставить несовместимые latest-пакеты.
+Текущая схема runtime-зависимостей еще требует отдельного follow-up:
 
-Следующий отдельный шаг:
-
-1. Завести pinned requirements для Airflow/API runtime, например `deploy/requirements-airflow-api.txt`.
-2. Собрать собственный image на базе `apache/airflow:2.9.3-python3.11`.
-3. Зафиксировать версии `fastapi`, `uvicorn`, `requests`, `torch`, `torchvision`, `mlflow`, `boto3`, `rasterio`, `shapely`, `pika`, `tritonclient`, `segmentation-models-pytorch`.
-4. Убрать runtime `pip install` из контейнерного старта.
-5. Проверять image в CI до деплоя.
+1. Завести pinned requirements для Airflow/API image.
+2. Собирать отдельный image вместо runtime `_PIP_ADDITIONAL_REQUIREMENTS`.
+3. Зафиксировать версии `fastapi`, `uvicorn`, `mlflow`, `boto3`, `rasterio`, `shapely`, `pika`, `tritonclient`, `torch`.

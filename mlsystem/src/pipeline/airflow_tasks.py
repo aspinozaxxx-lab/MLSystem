@@ -3,13 +3,15 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import os
 import re
 import shutil
 import subprocess
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -35,7 +37,7 @@ MAIN_DAG_STAGES = [
     "evaluate_pixel_metrics",
     "predict_validation_scenes",
     "vectorize_validation_predictions",
-    "compute_object_f1",
+    "compute_f1",
     "prepare_inference_scenes",
     "run_pseudolabel_inference",
     "validate_probability_maps",
@@ -54,11 +56,11 @@ STAGE_POOLS = {
     "create_mlflow_run": ("io_light", 1),
     "train_model": ("gpu_training", 1),
     "evaluate_pixel_metrics": ("cpu_light", 1),
-    "predict_validation_scenes": ("gpu_training", 1),
+    "predict_validation_scenes": ("gpu_inference", 1),
     "vectorize_validation_predictions": ("cpu_heavy", 2),
-    "compute_object_f1": ("cpu_heavy", 1),
+    "compute_f1": ("cpu_heavy", 1),
     "prepare_inference_scenes": ("io_light", 1),
-    "run_pseudolabel_inference": ("gpu_training", 1),
+    "run_pseudolabel_inference": ("gpu_inference", 1),
     "validate_probability_maps": ("cpu_heavy", 2),
     "vectorize_pseudolabel": ("cpu_heavy", 3),
     "postprocess_pseudolabel": ("cpu_heavy", 3),
@@ -78,6 +80,8 @@ CLI_STAGE_ALIASES = {
     "prepare-dataset-manifest": "prepare_dataset_manifest",
     "train": "train_model",
     "evaluate": "evaluate_pixel_metrics",
+    "compute-f1": "compute_f1",
+    "compute-object-f1": "compute_object_f1",
     "prepare-inference": "prepare_inference_scenes",
     "pseudolabel": "run_pseudolabel_inference",
     "predict-pseudolabel-scenes": "predict_pseudolabel_scenes",
@@ -102,6 +106,7 @@ LEGACY_FALLBACK_STAGES = {
     "predict_validation_scenes",
     "vectorize_validation_predictions",
     "compute_object_f1",
+    "compute_f1",
     "generate_prediction_examples",
     "log_mlflow_artifacts",
     "write_codex_api_summary",
@@ -300,6 +305,34 @@ def _resource_snapshot() -> dict[str, Any]:
     except Exception as exc:
         snapshot["gpu_error"] = f"{type(exc).__name__}: {exc}"
     return snapshot
+
+
+def _attach_stage_runtime_counters(result: dict[str, Any], stage: str, resources_before: dict[str, Any], resources_after: dict[str, Any]) -> None:
+    counters = dict(result.get("counters") or {})
+    pool_name = (STAGE_POOLS.get(stage) or ("default_pool", 1))[0]
+    counters.setdefault("requested_pool", pool_name)
+    counters.setdefault("effective_pool", pool_name)
+    before_gpu = _first_gpu(resources_before)
+    after_gpu = _first_gpu(resources_after)
+    gpu = after_gpu or before_gpu
+    if gpu:
+        counters.setdefault("cuda_available", True)
+        counters.setdefault("gpu_name", gpu.get("name"))
+        counters.setdefault("gpu_memory_total_mb", gpu.get("memory_total_mb"))
+        if before_gpu:
+            counters.setdefault("gpu_memory_used_mb_before", before_gpu.get("memory_used_mb"))
+        if after_gpu:
+            counters.setdefault("gpu_memory_used_mb_after", after_gpu.get("memory_used_mb"))
+    elif pool_name.startswith("gpu"):
+        counters.setdefault("cuda_available", False)
+    result["counters"] = counters
+
+
+def _first_gpu(snapshot: dict[str, Any]) -> dict[str, Any] | None:
+    gpus = snapshot.get("gpu")
+    if isinstance(gpus, list) and gpus and isinstance(gpus[0], dict):
+        return gpus[0]
+    return None
 
 
 class _StageResourceMonitor:
@@ -701,6 +734,174 @@ def _smoke_or_skip(conf: AirflowExperimentConfig, stage: str) -> dict[str, Any] 
     return _stage_result("skipped", summary="Synthetic smoke run skips external S3/dataset/training work.")
 
 
+def _mlflow_url_fields(pipeline_config: Any, experiment_id: str | None, run_id: str | None) -> tuple[dict[str, Any], list[str]]:
+    warnings: list[str] = []
+    internal_uri = str(getattr(pipeline_config, "mlflow_tracking_uri_internal", "") or "")
+    configured_public = os.getenv("MLSYSTEM_MLFLOW_PUBLIC_URL") or str(getattr(pipeline_config, "mlflow_tracking_uri_external", "") or "")
+    base = configured_public or internal_uri
+    if not configured_public:
+        warnings.append("MLflow public URL is not configured; using tracking URI.")
+    fields: dict[str, Any] = {"tracking_uri": internal_uri}
+    if base and experiment_id:
+        base = base.rstrip("/")
+        fields["url_mlflow_experiment"] = f"{base}/#/experiments/{experiment_id}"
+        fields["mlflow_experiment_url"] = fields["url_mlflow_experiment"]
+    if base and experiment_id and run_id:
+        fields["url_mlflow_run"] = f"{base}/#/experiments/{experiment_id}/runs/{run_id}"
+        fields["mlflow_run_url"] = fields["url_mlflow_run"]
+    return fields, warnings
+
+
+def _dataset_manifest(store: AirflowRunStore) -> dict[str, Any]:
+    return read_json(store.run_dir / "dataset_manifest.json", default={}) or {}
+
+
+def _manifest_scene_count(manifest: dict[str, Any], split: str) -> int:
+    direct_key = f"{split}_scene_count"
+    scenes_key = f"{split}_scenes"
+    if manifest.get(direct_key) is not None:
+        try:
+            return int(manifest.get(direct_key) or 0)
+        except (TypeError, ValueError):
+            return 0
+    scenes = manifest.get(scenes_key) or []
+    return len(scenes) if isinstance(scenes, list) else 0
+
+
+def _extract_pixel_metrics(training_result: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, str]], list[str]]:
+    last_metrics = training_result.get("last_epoch_metrics") or {}
+    aliases = [
+        ("val/precision", "pixel_precision"),
+        ("val/recall", "pixel_recall"),
+        ("val/pixel_f1", "pixel_f1"),
+        ("val/pixel_iou", "pixel_iou"),
+        ("val/iou", "pixel_iou"),
+        ("val/accuracy", "pixel_accuracy"),
+    ]
+    metrics: dict[str, Any] = {}
+    alias_rows: list[dict[str, str]] = []
+    for original, normalized in aliases:
+        if original in last_metrics and metrics.get(normalized) is None:
+            metrics[normalized] = last_metrics.get(original)
+            alias_rows.append({"original_metric_name": original, "normalized_metric_name": normalized})
+    warnings: list[str] = []
+    for key in ("pixel_precision", "pixel_recall", "pixel_f1", "pixel_iou", "pixel_accuracy"):
+        if key not in metrics:
+            metrics[key] = None
+            warnings.append(f"{key} is not available in training_result.last_epoch_metrics.")
+    counters = {
+        "scenes_evaluated": training_result.get("val_scene_count"),
+        "threshold": None,
+        "pixel_tp": None,
+        "pixel_fp": None,
+        "pixel_fn": None,
+        "pixel_tn": None,
+    }
+    warnings.extend(
+        [
+            "pixel tp/fp/fn/tn are not available because current training metrics do not persist confusion-matrix counts.",
+            "pixel threshold is not available because current validation metrics are logged at training default threshold only.",
+        ]
+    )
+    return metrics, counters, alias_rows, warnings
+
+
+def _write_pixel_metrics_artifacts(store: AirflowRunStore, metrics: dict[str, Any], counters: dict[str, Any], aliases: list[dict[str, str]], warnings: list[str]) -> dict[str, str]:
+    payload = {
+        "metrics": metrics,
+        "counters": counters,
+        "aliases": aliases,
+        "warnings": warnings,
+        "metrics_source": str(store.run_dir / "training_result.json"),
+    }
+    json_path = store.run_dir / "pixel_metrics.json"
+    txt_path = store.run_dir / "pixel_metrics.txt"
+    write_json(json_path, payload)
+    lines = [
+        "Pixel metrics",
+        f"metrics_source={payload['metrics_source']}",
+        f"scenes_evaluated={counters.get('scenes_evaluated')}",
+    ]
+    for key in sorted(metrics):
+        lines.append(f"{key}={metrics.get(key)}")
+    for key in ("pixel_tp", "pixel_fp", "pixel_fn", "pixel_tn", "threshold"):
+        lines.append(f"{key}={counters.get(key)}")
+    txt_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return {"pixel_metrics.json": str(json_path), "pixel_metrics.txt": str(txt_path)}
+
+
+def _device_counters(training_result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "device": training_result.get("device"),
+        "cuda_available": training_result.get("cuda_available"),
+        "gpu_name": training_result.get("gpu_name"),
+    }
+
+
+def _object_metric_summary(training_result: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    metrics = training_result.get("postprocess_metrics") or {}
+    normalized = {
+        "object_precision": metrics.get("val/object_precision"),
+        "object_recall": metrics.get("val/object_recall"),
+        "object_f1": metrics.get("val/object_f1"),
+    }
+    counters = {
+        "reference_objects": metrics.get("val/gt_count"),
+        "predicted_objects": metrics.get("val/pred_count"),
+        "tp_objects": metrics.get("val/tp"),
+        "fp_objects": metrics.get("val/fp"),
+        "fn_objects": metrics.get("val/fn"),
+        "reference_scenes": training_result.get("val_scene_count"),
+        "prediction_scenes": None,
+    }
+    warnings: list[str] = []
+    if normalized["object_f1"] is None:
+        warnings.append("object metrics are not available at compute_f1 stage; current compatibility pipeline computes them after pseudolabel vectorization when postprocess metrics exist.")
+    return normalized, counters, warnings
+
+
+def _log_mlflow_metrics_if_available(store: AirflowRunStore, metrics: dict[str, Any], counters: dict[str, Any] | None = None) -> list[str]:
+    summary = store.read_summary()
+    mlflow_info = summary.get("mlflow") or _read_training_result(store).get("mlflow") or {}
+    run_id = mlflow_info.get("run_id")
+    if not run_id or str(run_id).startswith("smoke-"):
+        return []
+    warnings: list[str] = []
+    try:
+        import mlflow
+
+        mlflow.set_tracking_uri(load_config().mlflow_tracking_uri_internal)
+        with mlflow.start_run(run_id=run_id):
+            for key, value in metrics.items():
+                number = _finite_float(value)
+                if number is not None:
+                    mlflow.log_metric(key, number)
+            for key, value in (counters or {}).items():
+                number = _finite_float(value)
+                if number is not None:
+                    mlflow.log_metric(key, number)
+    except Exception as exc:  # noqa: BLE001 - report warning without hiding stage metrics.
+        warnings.append(f"Failed to log F1 metrics to MLflow: {type(exc).__name__}: {exc}")
+    return warnings
+
+
+def _finite_float(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _write_simple_key_value_report(path: Path, title: str, sections: dict[str, dict[str, Any]]) -> None:
+    lines = [title]
+    for section, values in sections.items():
+        lines.extend(["", section])
+        for key in sorted(values):
+            lines.append(f"{key}={values[key]}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def _create_mlflow_run(conf: AirflowExperimentConfig, store: AirflowRunStore) -> dict[str, Any]:
     try:
         import mlflow
@@ -742,22 +943,55 @@ def _create_mlflow_run(conf: AirflowExperimentConfig, store: AirflowRunStore) ->
             )
             run_id = run.info.run_id
             experiment_id = run.info.experiment_id
-        run_url = f"{pipeline_config.mlflow_tracking_uri_external.rstrip('/')}/#/experiments/{experiment_id}/runs/{run_id}"
+            artifact_uri = run.info.artifact_uri
+        url_fields, url_warnings = _mlflow_url_fields(pipeline_config, experiment_id, run_id)
+        run_url = url_fields.get("url_mlflow_run")
+        experiment_url = url_fields.get("url_mlflow_experiment")
         store.update_summary(
             mlflow={
                 "experiment_name": experiment_name,
                 "experiment_id": experiment_id,
                 "run_id": run_id,
                 "run_url_external": run_url,
+                "experiment_url_external": experiment_url,
                 "tracking_uri": pipeline_config.mlflow_tracking_uri_internal,
+                "artifact_uri": artifact_uri,
             }
         )
-        return _stage_result("success", mlflow_run_id=run_id, mlflow_run_url=run_url)
+        return _stage_result(
+            "success",
+            summary=f"MLflow run created: {run_id}",
+            mlflow_run_id=run_id,
+            mlflow_experiment_id=experiment_id,
+            mlflow_experiment_name=experiment_name,
+            artifact_uri=artifact_uri,
+            counters={"mlflow_experiment_id": experiment_id, "mlflow_run_id": run_id},
+            warnings=url_warnings,
+            details={
+                "mlflow": {
+                    "experiment_name": experiment_name,
+                    "experiment_id": experiment_id,
+                    "run_id": run_id,
+                    "run_name": conf.experiment_id,
+                    "tracking_uri": pipeline_config.mlflow_tracking_uri_internal,
+                    "artifact_uri": artifact_uri,
+                    "run_url": run_url,
+                    "experiment_url": experiment_url,
+                }
+            },
+            **url_fields,
+        )
     except Exception as exc:
         if conf.smoke:
             fallback = {"run_id": f"smoke-{conf.experiment_id}", "run_url_external": None, "error": f"{type(exc).__name__}: {exc}"}
             store.update_summary(mlflow=fallback, warnings=[f"MLflow smoke fallback: {fallback['error']}"])
-            return _stage_result("success", summary="MLflow unavailable in local smoke; stored fallback metadata.", warnings=[fallback["error"]])
+            return _stage_result(
+                "success",
+                summary="MLflow unavailable in local smoke; stored fallback metadata.",
+                warnings=[fallback["error"]],
+                counters={"mlflow_run_id": fallback["run_id"]},
+                mlflow_run_id=fallback["run_id"],
+            )
         raise
 
 
@@ -766,21 +1000,48 @@ def _finalize_mlflow_run(conf: AirflowExperimentConfig, store: AirflowRunStore) 
     mlflow_info = summary.get("mlflow") or {}
     run_id = mlflow_info.get("run_id")
     cleanup = _cleanup_runtime_intermediates(conf, store)
+    stages = summary.get("stages") or {}
+    failed_stages = [name for name, payload in stages.items() if (payload or {}).get("status") == "failed"]
+    warning_count = len(summary.get("warnings") or [])
+    final_counters = {
+        "failed_stages": len(failed_stages),
+        "warning_stages": warning_count,
+        "runtime_cleanup_deleted_files": cleanup.get("deleted_files"),
+        "runtime_cleanup_deleted_bytes": cleanup.get("deleted_bytes"),
+        "mlflow_final_status": "success",
+    }
     if not run_id or str(run_id).startswith("smoke-"):
         store.update_summary(status="success", finished_at=utc_now(), runtime_cleanup=cleanup)
-        return _stage_result("success", summary="No real MLflow run to finalize.", cleanup=cleanup)
+        return _stage_result(
+            "success",
+            summary="No real MLflow run to finalize.",
+            counters={**final_counters, "mlflow_run_id": run_id},
+            mlflow_run_id=run_id,
+            mlflow_final_status="success",
+            details={"cleanup": cleanup, "failed_stages": failed_stages},
+        )
     try:
         import mlflow
 
         pipeline_config = load_config()
         mlflow.set_tracking_uri(pipeline_config.mlflow_tracking_uri_internal)
+        url_fields, url_warnings = _mlflow_url_fields(pipeline_config, mlflow_info.get("experiment_id"), run_id)
         store.update_summary(status="success", finished_at=utc_now(), runtime_cleanup=cleanup)
         with mlflow.start_run(run_id=run_id):
             mlflow.set_tags({"job_status": "success", "airflow_status": "success"})
             mlflow.log_artifact(str(store.summary_path))
-        return _stage_result("success", mlflow_run_id=run_id, cleanup=cleanup)
+        return _stage_result(
+            "success",
+            summary=f"MLflow run finalized: {run_id}",
+            counters={**final_counters, "mlflow_run_id": run_id},
+            warnings=url_warnings,
+            mlflow_run_id=run_id,
+            mlflow_final_status="success",
+            details={"cleanup": cleanup, "failed_stages": failed_stages, "mlflow": {**mlflow_info, **url_fields}},
+            **url_fields,
+        )
     except Exception as exc:
-        return _stage_result("failed", error=f"{type(exc).__name__}: {exc}")
+        return _stage_result("failed", error=f"{type(exc).__name__}: {exc}", counters={**final_counters, "mlflow_run_id": run_id, "mlflow_final_status": "failed"})
 
 
 def _run_airflow_synthetic_pseudolabel_smoke(store: AirflowRunStore) -> dict[str, Any]:
@@ -870,7 +1131,9 @@ def _run_legacy_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: 
     if smoke_result is not None:
         smoke_result["duration_sec"] = round(time.time() - started, 3)
         monitor_payload = monitor.stop()
-        smoke_result["resources"] = {"before": resources_before, "after": _resource_snapshot(), "monitor": _safe_rel(store.stage_dir / f"{stage}.resources.json", store.run_dir), "sample_count": len(monitor_payload.get("samples") or [])}
+        resources_after = _resource_snapshot()
+        _attach_stage_runtime_counters(smoke_result, stage, resources_before, resources_after)
+        smoke_result["resources"] = {"before": resources_before, "after": resources_after, "monitor": _safe_rel(store.stage_dir / f"{stage}.resources.json", store.run_dir), "sample_count": len(monitor_payload.get("samples") or [])}
         return store.write_stage(stage, smoke_result)
 
     if stage == "validate_experiment_config":
@@ -975,16 +1238,23 @@ def _run_legacy_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: 
             result = _stage_result("skipped", summary="train.enabled=false")
         else:
             training_result = _read_training_result(store)
-            last_metrics = training_result.get("last_epoch_metrics") or {}
-            if not last_metrics:
+            if not (training_result.get("last_epoch_metrics") or {}):
                 result = _stage_result("failed", error="No pixel metrics found in training_result.json.")
             else:
+                metrics, counters, aliases, warnings = _extract_pixel_metrics(training_result)
+                artifacts = _write_pixel_metrics_artifacts(store, metrics, counters, aliases, warnings)
                 result = _stage_result(
                     "success",
-                    train_loss=last_metrics.get("train/loss"),
-                    val_pixel_iou=last_metrics.get("val/iou"),
-                    val_pixel_dice=last_metrics.get("val/dice"),
-                    val_pixel_f1=last_metrics.get("val/pixel_f1"),
+                    summary="Pixel metrics extracted from training_result.json.",
+                    metrics=metrics,
+                    counters=counters,
+                    warnings=warnings,
+                    artifacts=artifacts,
+                    details={
+                        "metrics_source": str(store.run_dir / "training_result.json"),
+                        "aliases": aliases,
+                        "metrics": metrics,
+                    },
                 )
     elif stage == "predict_validation_scenes":
         training_result = _read_training_result(store)
@@ -992,40 +1262,163 @@ def _run_legacy_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: 
         if not training_result.get("checkpoint_path") and not configured_checkpoint:
             result = _stage_result("failed", error="Training checkpoint is missing; validation prediction cannot start.")
         else:
+            manifest = _dataset_manifest(store)
+            validation_input_scenes = _manifest_scene_count(manifest, "val")
+            prediction_summary = {
+                "input_validation_scenes": validation_input_scenes,
+                "processed_scenes": 0,
+                "skipped_scenes": validation_input_scenes,
+                "failed_scenes": 0,
+                "predicted_tiles": None,
+                "predicted_windows": None,
+                "checkpoint_path": training_result.get("checkpoint_path") or configured_checkpoint,
+                "note": "Validation prediction is not a separate production computation in the current compatibility pipeline.",
+            }
+            json_path = store.run_dir / "validation_prediction_summary.json"
+            txt_path = store.run_dir / "validation_prediction_summary.txt"
+            write_json(json_path, prediction_summary)
+            _write_simple_key_value_report(
+                txt_path,
+                "Validation prediction",
+                {
+                    "counts": prediction_summary,
+                    "device": _device_counters(training_result),
+                },
+            )
             result = _stage_result(
                 "success",
                 summary="Validation prediction is included in the pseudolabel stage for the current compatibility pipeline.",
-                checkpoint_path=training_result.get("checkpoint_path"),
+                warnings=["validation scenes are marked skipped here because current compatibility code does not run a distinct validation prediction stage."],
+                counters={
+                    "validation_input_scenes": validation_input_scenes,
+                    "validation_scenes_processed": 0,
+                    "validation_scenes_skipped": validation_input_scenes,
+                    "validation_scenes_failed": 0,
+                    "validation_prediction_tiles": None,
+                    "validation_prediction_windows": None,
+                    **_device_counters(training_result),
+                },
+                artifacts={
+                    "validation_prediction_summary.json": str(json_path),
+                    "validation_prediction_summary.txt": str(txt_path),
+                    "dataset_manifest.json": str(store.run_dir / "dataset_manifest.json"),
+                },
+                checkpoint_path=training_result.get("checkpoint_path") or configured_checkpoint,
             )
     elif stage == "vectorize_validation_predictions":
         summary_path = store.run_dir / "pseudolabel_summary.json"
         if not summary_path.exists():
+            manifest = _dataset_manifest(store)
+            validation_input_scenes = _manifest_scene_count(manifest, "val")
+            summary = {
+                "input_scenes": validation_input_scenes,
+                "processed_scenes": 0,
+                "prediction_files_read": 0,
+                "objects_total": None,
+                "empty_scenes": None,
+                "failed_scenes": 0,
+                "status": "deferred",
+                "reason": "validation vectorization is not a distinct computation in the current compatibility pipeline.",
+            }
+            json_path = store.run_dir / "validation_vectorization_summary.json"
+            txt_path = store.run_dir / "validation_vectorization_summary.txt"
+            by_scene_path = store.run_dir / "validation_objects_by_scene.txt"
+            write_json(json_path, summary)
+            _write_simple_key_value_report(txt_path, "Validation vectorization", {"summary": summary})
+            by_scene_path.write_text("", encoding="utf-8")
             result = _stage_result(
                 "success",
                 summary="Deferred: vectorization is executed in predict_pseudolabel_scenes by the current compatibility pipeline.",
+                warnings=["validation vectorization counters are not available before pseudolabel compatibility postprocess runs."],
+                counters={
+                    "validation_vectorized_scenes": 0,
+                    "validation_prediction_files": 0,
+                    "validation_vectorized_objects": None,
+                    "validation_empty_scenes": None,
+                    "validation_failed_scenes": 0,
+                },
+                artifacts={
+                    "validation_vectorization_summary.json": str(json_path),
+                    "validation_vectorization_summary.txt": str(txt_path),
+                    "validation_objects_by_scene.txt": str(by_scene_path),
+                },
             )
         else:
             summary = read_json(summary_path, default={}) or {}
+            metrics = summary.get("metrics") or {}
+            objects_total = metrics.get("accepted_objects")
+            vector_summary = {
+                "processed_scenes": (read_json(store.run_dir / "coverage_report.json", default={}) or {}).get("scenes_processed"),
+                "prediction_files_read": None,
+                "objects_total": objects_total,
+                "empty_scenes": None,
+                "failed_scenes": None,
+                "source": str(summary_path),
+            }
+            json_path = store.run_dir / "validation_vectorization_summary.json"
+            txt_path = store.run_dir / "validation_vectorization_summary.txt"
+            by_scene_path = store.run_dir / "validation_objects_by_scene.txt"
+            write_json(json_path, vector_summary)
+            _write_simple_key_value_report(txt_path, "Validation vectorization", {"summary": vector_summary})
+            by_scene_path.write_text("", encoding="utf-8")
             result = _stage_result(
                 "success",
-                accepted_objects=((summary.get("metrics") or {}).get("accepted_objects")),
-                threshold_used=((summary.get("metrics") or {}).get("threshold_used")),
+                counters={
+                    "validation_vectorized_scenes": vector_summary.get("processed_scenes"),
+                    "validation_prediction_files": vector_summary.get("prediction_files_read"),
+                    "validation_vectorized_objects": objects_total,
+                    "validation_empty_scenes": vector_summary.get("empty_scenes"),
+                    "validation_failed_scenes": vector_summary.get("failed_scenes"),
+                },
+                artifacts={
+                    "validation_vectorization_summary.json": str(json_path),
+                    "validation_vectorization_summary.txt": str(txt_path),
+                    "validation_objects_by_scene.txt": str(by_scene_path),
+                },
+                accepted_objects=objects_total,
+                threshold_used=metrics.get("threshold_used"),
             )
-    elif stage == "compute_object_f1":
+    elif stage in {"compute_f1", "compute_object_f1"}:
         training_result = _read_training_result(store)
-        metrics = training_result.get("postprocess_metrics") or {}
-        object_keys = {
-            key: metrics.get(key)
-            for key in ["val/object_f1", "val/object_precision", "val/object_recall", "val/tp", "val/fp", "val/fn"]
-            if key in metrics
+        pixel_metrics, pixel_counters, aliases, pixel_warnings = _extract_pixel_metrics(training_result)
+        object_metrics, object_counters, object_warnings = _object_metric_summary(training_result)
+        summary_payload = {
+            "pixel_metrics": pixel_metrics,
+            "pixel_counters": pixel_counters,
+            "object_metrics": object_metrics,
+            "object_counters": object_counters,
+            "aliases": aliases,
+            "warnings": pixel_warnings + object_warnings,
         }
-        if "val/object_f1" not in object_keys:
-            result = _stage_result(
-                "success",
-                summary="Deferred: object F1 is computed after pseudolabel vectorization by the current compatibility pipeline.",
-            )
-        else:
-            result = _stage_result("success", **object_keys)
+        json_path = store.run_dir / "f1_summary.json"
+        txt_path = store.run_dir / "f1_summary.txt"
+        object_matching_json = store.run_dir / "object_matching_report.json"
+        object_matching_txt = store.run_dir / "object_matching_report.txt"
+        write_json(json_path, summary_payload)
+        _write_simple_key_value_report(
+            txt_path,
+            "F1 summary",
+            {"pixel_metrics": pixel_metrics, "pixel_counts": pixel_counters, "object_metrics": object_metrics, "object_counts": object_counters},
+        )
+        write_json(object_matching_json, {"status": "not_available" if object_metrics.get("object_f1") is None else "available", "source": str(store.run_dir / "training_result.json"), "object_counters": object_counters})
+        _write_simple_key_value_report(object_matching_txt, "Object matching", {"object_counts": object_counters, "object_metrics": object_metrics})
+        all_metrics = {**pixel_metrics, **object_metrics}
+        all_counters = {**pixel_counters, **object_counters}
+        mlflow_warnings = _log_mlflow_metrics_if_available(store, all_metrics, all_counters)
+        result = _stage_result(
+            "success",
+            summary="F1 metrics summarized from available pixel and object artifacts.",
+            metrics=all_metrics,
+            counters=all_counters,
+            warnings=pixel_warnings + object_warnings + mlflow_warnings,
+            artifacts={
+                "f1_summary.json": str(json_path),
+                "f1_summary.txt": str(txt_path),
+                "object_matching_report.json": str(object_matching_json),
+                "object_matching_report.txt": str(object_matching_txt),
+            },
+            details=summary_payload,
+        )
     elif stage == "predict_pseudolabel_scenes":
         if conf.smoke:
             smoke = _run_airflow_synthetic_pseudolabel_smoke(store)
@@ -1109,23 +1502,65 @@ def _run_legacy_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: 
         if not examples.exists():
             result = _stage_result("failed", error="prediction_examples.html is missing.")
         else:
-            result = _stage_result("success", prediction_examples_html=str(examples), size_bytes=examples.stat().st_size)
+            result = _stage_result(
+                "success",
+                summary="Prediction examples artifact is available.",
+                counters={
+                    "examples_requested": 1,
+                    "examples_generated": 1,
+                    "examples_failed": 0,
+                    "prediction_examples_size_bytes": examples.stat().st_size,
+                },
+                artifacts={"prediction_examples.html": str(examples)},
+                prediction_examples_html=str(examples),
+                size_bytes=examples.stat().st_size,
+            )
     elif stage == "log_mlflow_artifacts":
         run_summary_path, codex_summary_path = _write_run_summaries(conf, store)
         mlflow_info = (store.read_summary().get("mlflow") or _read_training_result(store).get("mlflow") or {})
         run_id = mlflow_info.get("run_id")
+        artifacts_failed = 0
+        artifact_errors: list[str] = []
+        logged_paths = [str(run_summary_path), str(codex_summary_path)]
         if run_id and not str(run_id).startswith("smoke-"):
             import mlflow
 
             pipeline_config = load_config()
             mlflow.set_tracking_uri(pipeline_config.mlflow_tracking_uri_internal)
             with mlflow.start_run(run_id=run_id):
-                mlflow.log_artifact(str(run_summary_path))
-                mlflow.log_artifact(str(codex_summary_path))
-        result = _stage_result("success", artifacts=_existing_artifacts(store))
+                for artifact_path in logged_paths:
+                    try:
+                        mlflow.log_artifact(artifact_path)
+                    except Exception as exc:  # noqa: BLE001 - keep logging stage report explicit.
+                        artifacts_failed += 1
+                        artifact_errors.append(f"{Path(artifact_path).name}: {type(exc).__name__}: {exc}")
+        pipeline_config = load_config()
+        url_fields, url_warnings = _mlflow_url_fields(pipeline_config, mlflow_info.get("experiment_id"), run_id)
+        result = _stage_result(
+            "failed" if artifacts_failed else "success",
+            summary=f"Logged {len(logged_paths) - artifacts_failed} summary artifacts to MLflow.",
+            counters={
+                "artifacts_logged": len(logged_paths) - artifacts_failed,
+                "artifacts_failed": artifacts_failed,
+                "mlflow_run_id": run_id,
+            },
+            warnings=url_warnings,
+            error="; ".join(artifact_errors) if artifact_errors else None,
+            artifacts={"run_summary.json": str(run_summary_path), "codex_summary.json": str(codex_summary_path)},
+            mlflow_run_id=run_id,
+            **url_fields,
+        )
     elif stage == "write_codex_api_summary":
         run_summary_path, codex_summary_path = _write_run_summaries(conf, store)
-        result = _stage_result("success", run_summary=str(run_summary_path), codex_summary=str(codex_summary_path))
+        result = _stage_result(
+            "success",
+            summary="Run and Codex API summaries written.",
+            counters={"summary_sections": 2},
+            artifacts={"run_summary.json": str(run_summary_path), "codex_summary.json": str(codex_summary_path)},
+            summary_path=str(codex_summary_path),
+            run_summary=str(run_summary_path),
+            codex_summary=str(codex_summary_path),
+        )
     elif stage == "finalize_mlflow_run":
         result = _finalize_mlflow_run(conf, store)
     else:
@@ -1133,7 +1568,9 @@ def _run_legacy_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: 
 
     result["duration_sec"] = round(time.time() - started, 3)
     monitor_payload = monitor.stop()
-    result["resources"] = {"before": resources_before, "after": _resource_snapshot(), "monitor": _safe_rel(store.stage_dir / f"{stage}.resources.json", store.run_dir), "sample_count": len(monitor_payload.get("samples") or [])}
+    resources_after = _resource_snapshot()
+    _attach_stage_runtime_counters(result, stage, resources_before, resources_after)
+    result["resources"] = {"before": resources_before, "after": resources_after, "monitor": _safe_rel(store.stage_dir / f"{stage}.resources.json", store.run_dir), "sample_count": len(monitor_payload.get("samples") or [])}
     return store.write_stage(stage, result)
 
 
@@ -1203,9 +1640,11 @@ def run_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: str, sta
         monitor_payload = monitor.stop()
 
     result["duration_sec"] = round(time.time() - started, 3)
+    resources_after = _resource_snapshot()
+    _attach_stage_runtime_counters(result, stage, resources_before, resources_after)
     result["resources"] = {
         "before": resources_before,
-        "after": _resource_snapshot(),
+        "after": resources_after,
         "monitor": _safe_rel(store.stage_dir / f"{stage}.resources.json", store.run_dir),
         "sample_count": len(monitor_payload.get("samples") or []),
     }
@@ -1249,6 +1688,11 @@ def push_stage_xcom(summary: dict[str, Any], task_instance: Any) -> None:
     """Push compact stage result as readable Airflow XCom key/value pairs."""
     if task_instance is None:
         return
+    enriched = dict(summary)
+    stage = enriched.get("stage")
+    if stage:
+        enriched.setdefault("pool", (STAGE_POOLS.get(str(stage)) or ("default_pool", 1))[0])
+    enriched.setdefault("execution_mode", str(os.getenv("MLSYSTEM_AIRFLOW_EXECUTION_MODE") or "local").lower())
     for key in (
         "stage",
         "status",
@@ -1260,14 +1704,108 @@ def push_stage_xcom(summary: dict[str, Any], task_instance: Any) -> None:
         "warnings_count",
         "errors_count",
         "duration_sec",
+        "pool",
+        "execution_mode",
+        "mlflow_run_id",
+        "mlflow_final_status",
+        "summary_path",
+        "url_mlflow_run",
+        "url_mlflow_experiment",
     ):
-        task_instance.xcom_push(key=key, value=summary.get(key))
-    for name, value in (summary.get("key_counters") or {}).items():
-        task_instance.xcom_push(key=f"counter_{_xcom_key(name)}", value=value)
+        if key in enriched:
+            safe_xcom_push(task_instance, key, enriched.get(key))
+    for name, value in (enriched.get("key_counters") or {}).items():
+        safe_xcom_push(task_instance, f"counter_{_xcom_key(name)}", value)
+    for name, value in (enriched.get("key_metrics") or {}).items():
+        safe_xcom_push(task_instance, f"metric_{_xcom_key(name)}", value)
 
 
 def stage_return_message(summary: dict[str, Any]) -> str:
-    return f"{summary.get('status')}: {summary.get('stage')}, report={summary.get('report_path')}"
+    message = f"{summary.get('status')}: {summary.get('stage')}, report={summary.get('report_path')}"
+    return str(xcom_safe_value(message) or "")[:512]
+
+
+XCOM_MAX_VALUE_CHARS = 2000
+_XCOM_BASE_KEYS = {
+    "stage",
+    "status",
+    "run_id",
+    "job_id",
+    "summary",
+    "report_path",
+    "stage_json_path",
+    "warnings_count",
+    "errors_count",
+    "duration_sec",
+    "pool",
+    "execution_mode",
+    "mlflow_run_id",
+    "mlflow_final_status",
+    "summary_path",
+    "url_mlflow_run",
+    "url_mlflow_experiment",
+}
+
+
+def safe_xcom_push(task_instance: Any, key: str, value: Any) -> None:
+    """Push one XCom key after scalar-only normalization."""
+    normalized_key = _xcom_key(key)
+    if not _is_allowed_xcom_key(normalized_key):
+        logging.getLogger("mlsystem.airflow.xcom").warning("Skipping unsupported XCom key %s", normalized_key)
+        return
+    safe_value, converted = _coerce_xcom_value(value)
+    if converted:
+        logging.getLogger("mlsystem.airflow.xcom").warning("Converted non-scalar XCom value for key %s", normalized_key)
+    task_instance.xcom_push(key=normalized_key, value=safe_value)
+
+
+def xcom_safe_value(value: Any) -> str | int | float | bool | None:
+    """Return an Airflow metadata-safe scalar value."""
+    return _coerce_xcom_value(value)[0]
+
+
+def _is_allowed_xcom_key(key: str) -> bool:
+    return key in _XCOM_BASE_KEYS or key.startswith("counter_") or key.startswith("metric_") or key.startswith("url_")
+
+
+def _coerce_xcom_value(value: Any) -> tuple[str | int | float | bool | None, bool]:
+    original_type = type(value)
+    try:
+        import numpy as np  # type: ignore
+
+        if isinstance(value, np.generic):
+            value = value.item()
+    except Exception:  # noqa: BLE001 - numpy is optional for the wrapper.
+        pass
+
+    if value is None:
+        return None, original_type is not type(None)
+    if isinstance(value, bool):
+        return value, original_type is not bool
+    if isinstance(value, int) and not isinstance(value, bool):
+        return int(value), original_type is not int
+    if isinstance(value, float):
+        return (float(value) if math.isfinite(float(value)) else None), original_type is not float or not math.isfinite(float(value))
+    if isinstance(value, Decimal):
+        return (float(value) if value.is_finite() else None), True
+    if isinstance(value, datetime):
+        return value.isoformat(), True
+    if isinstance(value, date):
+        return value.isoformat(), True
+    if isinstance(value, Path):
+        return _truncate_xcom_text(str(value)), True
+    if isinstance(value, str):
+        return _truncate_xcom_text(value), False
+    if isinstance(value, (dict, list, tuple, set)):
+        text = json.dumps(value, ensure_ascii=False, default=str, sort_keys=True)
+        return _truncate_xcom_text(text), True
+    return _truncate_xcom_text(str(value)), True
+
+
+def _truncate_xcom_text(value: str, max_chars: int = XCOM_MAX_VALUE_CHARS) -> str:
+    if len(value) <= max_chars:
+        return value
+    return value[: max_chars - 3] + "..."
 
 
 def _xcom_key(value: Any) -> str:

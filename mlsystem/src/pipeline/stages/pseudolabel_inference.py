@@ -44,6 +44,7 @@ def run(ctx: StageContext) -> StageReport:
     prediction_result = _run_pseudolabel_pipeline(effective_config, ctx.store, stage_mode="inference")
     coverage = read_json(ctx.store.run_dir / "coverage_report.json", default={}) or {}
     pseudolabel = prediction_result.get("pseudolabel") or {}
+    training_result = read_json(ctx.store.run_dir / "training_result.json", default={}) or {}
     manifest_path = ctx.store.run_dir / "pseudolabel_scene_results_manifest.json"
     probability_index_path = ctx.store.run_dir / "probability_maps_index.json"
     inference_results_path = ctx.store.run_dir / "inference_results.json"
@@ -57,27 +58,51 @@ def run(ctx: StageContext) -> StageReport:
             "pseudolabel": pseudolabel,
             "scene_results_manifest": str(manifest_path),
             "probability_maps_index": str(probability_index_path),
+            "accepted_objects_status": "not_available_at_this_stage",
+            "final_accepted_objects_stage": "vectorize_pseudolabel/postprocess_pseudolabel/export_pseudolabel_artifacts",
         },
     )
+    scenes_requested = len(manifest_scenes) if manifest_scenes else coverage.get("scenes_total")
+    scenes_processed = coverage.get("scenes_processed")
+    scenes_failed = coverage.get("scenes_failed") or coverage.get("failed_scenes") or 0
+    scenes_skipped = coverage.get("scenes_skipped") or coverage.get("skipped_scenes") or 0
+    prediction_windows = coverage.get("total_predicted_windows")
+    probability_maps = len(probability_index.get("scene_results") or probability_index.get("scenes") or []) if isinstance(probability_index, dict) else None
     return StageReport(
         ctx.stage_id,
         "success",
         [StageCheck("GPU inference", "ok", "Triton direct pseudolabel inference completed")],
         counters={
             "backend": "direct_triton",
-            "scene_count": len(manifest_scenes) if manifest_scenes else coverage.get("scenes_total"),
-            "scenes_processed": coverage.get("scenes_processed"),
-            "scenes_failed": coverage.get("scenes_failed") or coverage.get("failed_scenes") or 0,
-            "scenes_skipped": coverage.get("scenes_skipped") or coverage.get("skipped_scenes") or 0,
-            "total_predicted_windows": coverage.get("total_predicted_windows"),
+            "scene_count": scenes_requested,
+            "scenes_processed": scenes_processed,
+            "scenes_failed": scenes_failed,
+            "scenes_skipped": scenes_skipped,
+            "total_predicted_windows": prediction_windows,
             "mean_coverage_fraction": coverage.get("mean_coverage_fraction"),
-            "accepted_objects": pseudolabel.get("accepted_objects"),
+            "pseudolabel_scenes_requested": scenes_requested,
+            "pseudolabel_scenes_processed": scenes_processed,
+            "pseudolabel_scenes_failed": scenes_failed,
+            "pseudolabel_scenes_skipped": scenes_skipped,
+            "pseudolabel_prediction_windows": prediction_windows,
+            "probability_maps": probability_maps,
+            "device": training_result.get("device"),
+            "cuda_available": training_result.get("cuda_available"),
+            "gpu_name": training_result.get("gpu_name"),
         },
         artifacts={
             "inference_results.json": str(inference_results_path),
             "probability_maps_index.json": str(probability_index_path),
             "pseudolabel_scene_results_manifest.json": str(manifest_path),
             "inference_timing_report.json": str(timing_report_path),
+        },
+        warnings=["accepted_objects is not available at run_pseudolabel_inference; final accepted object count belongs to vectorize/postprocess/export stages."],
+        details={
+            "inference_input_source": str(ctx.store.run_dir / "inference_manifest.json"),
+            "triton_path": "direct",
+            "accepted_objects": "not_available_at_this_stage",
+            "final_accepted_objects_stage": "vectorize_pseudolabel/postprocess_pseudolabel/export_pseudolabel_artifacts",
+            "thresholds": (getattr(ctx.config, "postprocess", {}) or {}),
         },
         summary="GPU pseudolabel inference completed; CPU vectorization/postprocess are separate compatibility stages.",
     )

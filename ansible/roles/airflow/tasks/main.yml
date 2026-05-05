@@ -206,6 +206,7 @@
       docker compose --env-file "{{ airflow_env_path }}" -f "{{ airflow_compose_path }}"
       exec -T airflow-scheduler bash -lc
       'airflow pools set gpu_training "{{ airflow_gpu_slots }}" "GPU-bound MLSystem train/inference stages" &&
+       airflow pools set gpu_inference "{{ airflow_gpu_slots }}" "GPU-bound MLSystem inference stages" &&
        airflow pools set cpu_heavy "{{ airflow_cpu_heavy_slots }}" "CPU-heavy MLSystem vectorization/postprocess stages" &&
        airflow pools set cpu_light "{{ airflow_cpu_light_slots }}" "Lightweight MLSystem orchestration stages" &&
        airflow pools set io_light "{{ airflow_io_light_slots }}" "Lightweight S3/MLflow IO stages"'

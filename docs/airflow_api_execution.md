@@ -1,99 +1,116 @@
-# Airflow API execution
+# Выполнение Airflow stages через API
 
-Airflow остается оркестратором: DAG, task_id, pools и линейные зависимости сохраняются. Исполнение MLSystem stage переносится в `mlsystem-api`.
+Airflow остается оркестратором: DAG, task_id, pools и зависимости сохраняются. Код MLSystem исполняется в `mlsystem-api`.
 
 ## Execution modes
 
+Production:
+
 ```text
 MLSYSTEM_AIRFLOW_EXECUTION_MODE=api
+MLSYSTEM_API_URL=http://mlsystem-api:8088
+MLSYSTEM_API_TOKEN=<secret from env>
 ```
 
-В production compose это значение задается через `/etc/mlsystem/gpu-platform.env`.
-
-Для локальной отладки и unit tests доступен fallback:
+Локальный fallback для unit tests и аварийной отладки:
 
 ```text
 MLSYSTEM_AIRFLOW_EXECUTION_MODE=local
 ```
 
-В local mode `run_airflow_stage` напрямую вызывает `run_stage`.
+## Что делает Airflow task
 
-## Как Airflow вызывает API
-
-1. Airflow task берет `dag_run.conf`.
-2. Берет `dag_run.run_id`.
-3. POST в `MLSYSTEM_API_URL/api/v1/runs/{run_id}/stages/{stage}/start`.
-4. Получает `job_id`.
-5. Poll `GET /api/v1/jobs/{job_id}` с интервалом `MLSYSTEM_AIRFLOW_API_POLL_SEC`.
-6. При `succeeded` возвращает report.
-7. При `failed`, `cancelled`, `timed_out` поднимает exception, чтобы Airflow task стал failed.
-
-## Env
-
-```text
-MLSYSTEM_API_URL=http://mlsystem-api:8088
-MLSYSTEM_API_TOKEN=<secret from env>
-MLSYSTEM_AIRFLOW_API_POLL_SEC=10
-MLSYSTEM_AIRFLOW_API_NO_PROGRESS_TIMEOUT_SEC=3600
-```
-
-## Что видно в Airflow logs
-
-Минимально:
-
-- `stage`;
-- `job_id`;
-- state transitions;
-- summary при success;
-- error message и traceback tail при failure.
-
-Секреты не печатаются: payload проходит через masking.
-
-## Диагностика failed stage
-
-1. Найти `job_id` в Airflow task log.
-2. На сервере:
-
-```bash
-cat /data/mlsystem/api/jobs/<job_id>/job.json
-cat /data/mlsystem/api/jobs/<job_id>/error.json
-tail -n 100 /data/mlsystem/api/jobs/<job_id>/stderr_tail.txt
-```
-
-3. Проверить stage artifacts:
-
-```bash
-find /data/mlsystem/airflow/status -maxdepth 3 -type f -name '<stage>.json'
-```
-
-На сервере не править файлы руками; исправления только через repo + CI/CD.
+1. Читает `dag_run.conf` и `dag_run.run_id`.
+2. Создает API job через `POST /api/v1/runs/{run_id}/stages/{stage}/start`.
+3. Пишет `job_id` в лог.
+4. Poll-ит `GET /api/v1/jobs/{job_id}`.
+5. Печатает человекочитаемый stage report.
+6. Пушит только scalar XCom keys.
+7. При `failed/cancelled/timed_out` поднимает exception.
 
 ## XCom key/value
 
-`PythonOperator` для stage tasks настроен с `do_xcom_push=False`, поэтому полный stage payload не попадает в `return_value`.
-После завершения stage wrapper явно пушит маленькие XCom keys:
+`PythonOperator` создан с `do_xcom_push=False`, поэтому `return_value` не должен попадать в XCom. Wrapper явно пушит маленькие keys:
 
-- `stage`
-- `status`
-- `run_id`
-- `job_id`
-- `summary`
-- `report_path`
-- `stage_json_path`
-- `warnings_count`
-- `errors_count`
-- `duration_sec`
-- `counter_<name>`, например `counter_total_scenes`, `counter_train_objects`, `counter_split_strategy`
+```text
+stage
+status
+run_id
+job_id
+summary
+report_path
+stage_json_path
+warnings_count
+errors_count
+duration_sec
+pool
+execution_mode
+counter_<name>
+metric_<name>
+url_mlflow_run
+url_mlflow_experiment
+```
 
-Источник истины для больших данных остается в stage artifacts, а XCom нужен только для быстрых UI/debug checks.
+Все значения проходят через `xcom_safe_value`:
 
-## Human-readable task log
+- `numpy.int64` -> `int`;
+- `numpy.float32` -> `float`;
+- `NaN/Inf` -> `None`;
+- `Path` -> строка;
+- `datetime/date` -> ISO строка;
+- dict/list/tuple/set -> короткая JSON-строка, не объект;
+- строки обрезаются до безопасной длины.
 
-После завершения API job Airflow печатает общий отчет из formatter. Для типовых stages в логе должны быть видны ключевые счетчики:
+Источник истины для больших данных: stage artifacts, а не XCom.
 
-- `inventory_scenes`: config/layout/images/scenes checks, `available_images`, `scene_rows`, `matched_scenes`, `missing_scenes`, `ambiguous_scenes`, пути к `inventory_scenes.json`, `scene_inventory_report.txt`, full report.
-- `prepare_dataset`: `Input lineage`, `split_strategy`, `upstream_inventory_matched_scenes`, `selected_dataset_scenes`, `excluded_dataset_scenes`, `total_scenes`, `total_objects`, `scenes_without_objects`, `train_scenes/train_objects`, `val_scenes/val_objects`, пути к `prepare_dataset_input_audit.json`, `scene_object_counts.txt`, `train_val_split.txt`, `dataset_manifest.json`.
-- `prepare_inference_scenes`: `run_on`, `inference_scenes`, `missing`, `bad_scene_policy`, source manifest, `inference_manifest.json`, `inference_scenes.txt`.
-- `run_pseudolabel_inference`: `backend`, `scene_count`, `scenes_processed`, `scenes_failed`, `scenes_skipped`, `total_predicted_windows`, `probability_maps_index.json`, `inference_timing_report.json`.
+## Что видно в логах
 
-При failure formatter добавляет диагностические команды с `job_id`, `<stage>.json`, `<stage>.report.md` и `docker logs --tail 300 mlsystem-gpu-api`.
+Каждый stage печатает:
+
+- stage/status/run_id/job_id/duration;
+- checks;
+- counters;
+- metrics;
+- warnings/errors;
+- artifacts;
+- resource summary;
+- container path и host path;
+- диагностические команды при failure.
+
+Для GPU stages дополнительно появляются counters:
+
+```text
+counter_requested_pool
+counter_effective_pool
+counter_cuda_available
+counter_gpu_name
+counter_gpu_memory_total_mb
+counter_gpu_memory_used_mb_before
+counter_gpu_memory_used_mb_after
+```
+
+## Диагностика на сервере
+
+Только чтение/диагностика, без ручного редактирования файлов:
+
+```bash
+ssh gpu-mlserver "docker exec mlsystem-gpu-airflow-scheduler airflow dags list-import-errors"
+ssh gpu-mlserver "docker exec mlsystem-gpu-airflow-scheduler airflow tasks list mlsystem_experiment_pipeline"
+ssh gpu-mlserver "docker exec mlsystem-gpu-airflow-scheduler airflow pools list"
+ssh gpu-mlserver "docker logs --tail 300 mlsystem-gpu-api"
+```
+
+По `job_id` из Airflow log:
+
+```bash
+ssh gpu-mlserver "cat /data/mlsystem/api/jobs/<job_id>/job.json"
+ssh gpu-mlserver "cat /data/mlsystem/api/jobs/<job_id>/error.json"
+ssh gpu-mlserver "tail -n 100 /data/mlsystem/api/jobs/<job_id>/stderr_tail.txt"
+```
+
+По stage artifact:
+
+```bash
+ssh gpu-mlserver "cat /data/mlsystem/airflow/status/<run_id>/stages/<stage>.report.md"
+ssh gpu-mlserver "cat /data/mlsystem/airflow/status/<run_id>/stages/<stage>.json"
+```

@@ -69,6 +69,8 @@ class StageReportFormatterTests(unittest.TestCase):
             "stage_report": {"details": {"huge": ["x"] * 100}},
             "artifacts": {"a": "b"},
             "counters": {"total_scenes": 2},
+            "metrics": {"pixel_f1": 0.7},
+            "mlflow_run_url": "http://mlflow/#/experiments/1/runs/r1",
         }
         summary = compact_xcom_summary(report, stage="prepare_dataset", run_id="run1", job_id="job1", report_path="/r.md", stage_json_path="/s.json")
         self.assertEqual(summary["job_id"], "job1")
@@ -77,6 +79,8 @@ class StageReportFormatterTests(unittest.TestCase):
         self.assertNotIn("resources", summary)
         self.assertNotIn("stage_report", summary)
         self.assertNotIn("artifacts", summary)
+        self.assertEqual(summary["key_metrics"]["pixel_f1"], 0.7)
+        self.assertEqual(summary["url_mlflow_run"], "http://mlflow/#/experiments/1/runs/r1")
         self.assertLess(len(json.dumps(summary, ensure_ascii=False).encode("utf-8")), 10_000)
 
 
