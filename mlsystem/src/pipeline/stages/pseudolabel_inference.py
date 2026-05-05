@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from ...storage.local_io import read_json, write_json
 from .context import StageContext
 from .report import StageCheck, StageReport
@@ -66,8 +68,35 @@ def run(ctx: StageContext) -> StageReport:
     scenes_processed = coverage.get("scenes_processed")
     scenes_failed = coverage.get("scenes_failed") or coverage.get("failed_scenes") or 0
     scenes_skipped = coverage.get("scenes_skipped") or coverage.get("skipped_scenes") or 0
+    matching_report = read_json(ctx.store.run_dir / "scene_matching_report.json", default={}) or {}
+    selected_matched_count = matching_report.get("selected_matched_count")
+    matched_count = matching_report.get("matched_count")
+    explicit_limit = (ctx.config.pseudolabel or {}).get("max_scenes") or (ctx.config.pseudolabel or {}).get("max_debug_scenes")
+    explicit_limit_int = _safe_int(explicit_limit)
+    limit_source = None
+    limit_reason = None
+    excluded_scenes = []
+    if explicit_limit is not None:
+        limit_source = "dag_run.conf.pseudolabel.max_scenes" if (ctx.config.pseudolabel or {}).get("max_scenes") is not None else "dag_run.conf.pseudolabel.max_debug_scenes"
+        limit_reason = "explicit pseudolabel inference scene limit"
+    requested_names = [str(item.get("entry") or item.get("name")) for item in manifest_scenes if item.get("entry") or item.get("name")]
+    if explicit_limit_int is not None and explicit_limit_int >= 0 and len(requested_names) > explicit_limit_int:
+        excluded_scenes = requested_names[explicit_limit_int:]
+    elif isinstance(matched_count, int) and isinstance(selected_matched_count, int) and matched_count > selected_matched_count:
+        selected_names = {str(item.get("entry") or item.get("name")) for item in (matching_report.get("matched") or [])}
+        excluded_scenes = [name for name in requested_names if name not in selected_names]
+        if limit_source is None:
+            limit_source = "scene_matching_report.selected_matched_count"
+            limit_reason = "pseudolabel inference selected fewer scenes than requested"
+    if excluded_scenes:
+        (ctx.store.run_dir / "pseudolabel_skipped_scenes.txt").write_text("\n".join(excluded_scenes) + "\n", encoding="utf-8")
     prediction_windows = coverage.get("total_predicted_windows")
     probability_maps = len(probability_index.get("scene_results") or probability_index.get("scenes") or []) if isinstance(probability_index, dict) else None
+    warnings = ["accepted_objects is not available at run_pseudolabel_inference; final accepted object count belongs to vectorize/postprocess/export stages."]
+    if limit_source:
+        warnings.append(f"Pseudolabel inference was explicitly limited: processed={scenes_processed} of requested={scenes_requested}; source={limit_source}.")
+    elif scenes_requested and scenes_processed is not None and int(scenes_processed or 0) < int(scenes_requested or 0):
+        warnings.append(f"Pseudolabel inference processed fewer scenes than requested without an explicit limit: processed={scenes_processed}, requested={scenes_requested}.")
     return StageReport(
         ctx.stage_id,
         "success",
@@ -86,6 +115,10 @@ def run(ctx: StageContext) -> StageReport:
             "pseudolabel_scenes_skipped": scenes_skipped,
             "pseudolabel_prediction_windows": prediction_windows,
             "probability_maps": probability_maps,
+            "inference_scene_limit": explicit_limit,
+            "pseudolabel_scenes_excluded": len(excluded_scenes) if excluded_scenes else (max(0, int(scenes_requested or 0) - int(scenes_processed or 0)) if scenes_requested is not None and scenes_processed is not None else None),
+            "limit_source": limit_source,
+            "limit_reason": limit_reason,
             "device": training_result.get("device"),
             "cuda_available": training_result.get("cuda_available"),
             "gpu_name": training_result.get("gpu_name"),
@@ -95,14 +128,32 @@ def run(ctx: StageContext) -> StageReport:
             "probability_maps_index.json": str(probability_index_path),
             "pseudolabel_scene_results_manifest.json": str(manifest_path),
             "inference_timing_report.json": str(timing_report_path),
+            **({"pseudolabel_skipped_scenes.txt": str(ctx.store.run_dir / "pseudolabel_skipped_scenes.txt")} if excluded_scenes else {}),
         },
-        warnings=["accepted_objects is not available at run_pseudolabel_inference; final accepted object count belongs to vectorize/postprocess/export stages."],
+        warnings=warnings,
         details={
             "inference_input_source": str(ctx.store.run_dir / "inference_manifest.json"),
             "triton_path": "direct",
             "accepted_objects": "not_available_at_this_stage",
             "final_accepted_objects_stage": "vectorize_pseudolabel/postprocess_pseudolabel/export_pseudolabel_artifacts",
             "thresholds": (getattr(ctx.config, "postprocess", {}) or {}),
+            "limit": {
+                "applied": bool(limit_source),
+                "source": limit_source,
+                "reason": limit_reason,
+                "requested": scenes_requested,
+                "processed": scenes_processed,
+                "excluded_scenes_artifact": str(ctx.store.run_dir / "pseudolabel_skipped_scenes.txt") if excluded_scenes else None,
+            },
         },
         summary="GPU pseudolabel inference completed; CPU vectorization/postprocess are separate compatibility stages.",
     )
+
+
+def _safe_int(value: Any) -> int | None:
+    try:
+        if value is None or value == "":
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None

@@ -12,6 +12,7 @@ from mlsystem.src.pipeline.airflow_tasks import (
     LEGACY_FALLBACK_STAGES,
     MAIN_DAG_STAGES,
     STAGE_POOLS,
+    _extract_pixel_metrics,
     push_stage_xcom,
     run_airflow_stage,
     run_stage,
@@ -65,7 +66,7 @@ class AirflowTasksTests(unittest.TestCase):
     def test_validate_config_writes_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             result = run_stage("validate_experiment_config", SMOKE_CONF, "manual__unit", Path(tmp))
-            self.assertEqual(result["status"], "success")
+            self.assertEqual(result["status"], "skipped")
             summary = Path(tmp) / "unit_airflow_smoke" / "summary.json"
             self.assertTrue(summary.exists())
 
@@ -73,6 +74,10 @@ class AirflowTasksTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             result = run_stage("check_s3_layout", SMOKE_CONF, "manual__unit", Path(tmp))
             self.assertEqual(result["status"], "skipped")
+            self.assertTrue(result["is_smoke_synthetic"])
+            self.assertIn("skip_reason", result)
+            self.assertNotIn("resources", result)
+            self.assertNotIn("counters", result)
 
     def test_run_airflow_stage_returns_compact_xcom_summary_in_local_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -123,15 +128,145 @@ class AirflowTasksTests(unittest.TestCase):
         self.assertEqual(ti.values["job_id"], "job1")
         self.assertEqual(ti.values["report_path"], summary["report_path"])
         self.assertEqual(ti.values["counter_total_scenes"], 24)
-        self.assertEqual(ti.values["counter_split_strategy"], "object_balanced")
-        self.assertEqual(ti.values["counter_accepted_objects"], 7)
-        self.assertAlmostEqual(ti.values["metric_pixel_f1"], 0.75, places=5)
-        self.assertIsNone(ti.values["metric_pixel_iou"])
+        self.assertEqual(ti.values["split_strategy"], "object_balanced")
+        self.assertNotIn("counter_accepted_objects", ti.values)
+        self.assertNotIn("metric_pixel_f1", ti.values)
+        self.assertNotIn("metric_pixel_iou", ti.values)
+        self.assertEqual(ti.values["requested_pool"], "cpu_heavy")
+        self.assertEqual(ti.values["effective_pool"], "cpu_heavy")
         self.assertNotIn("return_value", ti.values)
         self.assertNotIn("resources", ti.values)
         self.assertNotIn("stage_report", ti.values)
         self.assertLess(len(str(ti.values).encode("utf-8")), 10_000)
         self.assertLess(len(stage_return_message(summary).encode("utf-8")), 512)
+
+    def test_synthetic_smoke_xcom_is_minimal(self) -> None:
+        class FakeTaskInstance:
+            def __init__(self) -> None:
+                self.values: dict[str, object] = {}
+
+            def xcom_push(self, *, key: str, value: object) -> None:
+                self.values[key] = value
+
+        summary = {
+            "stage": "inventory_scenes",
+            "status": "skipped",
+            "run_id": "manual__unit",
+            "job_id": "job1",
+            "summary": "Synthetic smoke stage skipped: orchestration-only run.",
+            "report_path": "/r.md",
+            "stage_json_path": "/s.json",
+            "duration_sec": 0.1,
+            "warnings_count": 1,
+            "errors_count": 0,
+            "skip_reason": "synthetic smoke validates orchestration only",
+            "is_smoke_synthetic": True,
+            "key_counters": {"matched_scenes": 24, "cuda_available": True, "gpu_name": "GPU"},
+            "key_metrics": {"pixel_f1": 1.0},
+        }
+        ti = FakeTaskInstance()
+        push_stage_xcom(summary, ti)
+        self.assertEqual(ti.values["status"], "skipped")
+        self.assertTrue(ti.values["is_smoke_synthetic"])
+        self.assertIn("skip_reason", ti.values)
+        self.assertNotIn("counter_matched_scenes", ti.values)
+        self.assertNotIn("cuda_available", ti.values)
+        self.assertNotIn("gpu_name", ti.values)
+        self.assertNotIn("metric_pixel_f1", ti.values)
+
+    def test_cpu_stage_does_not_push_gpu_xcom(self) -> None:
+        class FakeTaskInstance:
+            def __init__(self) -> None:
+                self.values: dict[str, object] = {}
+
+            def xcom_push(self, *, key: str, value: object) -> None:
+                self.values[key] = value
+
+        summary = {
+            "stage": "inventory_scenes",
+            "status": "success",
+            "key_counters": {
+                "matched_scenes": 24,
+                "missing_scenes": 0,
+                "cuda_available": True,
+                "gpu_name": "GPU",
+            },
+        }
+        ti = FakeTaskInstance()
+        push_stage_xcom(summary, ti)
+        self.assertEqual(ti.values["counter_matched_scenes"], 24)
+        self.assertNotIn("cuda_available", ti.values)
+        self.assertNotIn("gpu_name", ti.values)
+
+    def test_gpu_stage_pushes_gpu_xcom(self) -> None:
+        class FakeTaskInstance:
+            def __init__(self) -> None:
+                self.values: dict[str, object] = {}
+
+            def xcom_push(self, *, key: str, value: object) -> None:
+                self.values[key] = value
+
+        summary = {
+            "stage": "run_pseudolabel_inference",
+            "status": "success",
+            "key_counters": {
+                "pseudolabel_scenes_requested": 5,
+                "pseudolabel_scenes_processed": 1,
+                "cuda_available": True,
+                "gpu_name": "GPU",
+                "device": "cuda",
+            },
+        }
+        ti = FakeTaskInstance()
+        push_stage_xcom(summary, ti)
+        self.assertTrue(ti.values["cuda_available"])
+        self.assertEqual(ti.values["gpu_name"], "GPU")
+        self.assertEqual(ti.values["device"], "cuda")
+        self.assertEqual(ti.values["counter_pseudolabel_scenes_processed"], 1)
+
+    def test_evaluate_pixel_metrics_xcom_allowlist(self) -> None:
+        class FakeTaskInstance:
+            def __init__(self) -> None:
+                self.values: dict[str, object] = {}
+
+            def xcom_push(self, *, key: str, value: object) -> None:
+                self.values[key] = value
+
+        summary = {
+            "stage": "evaluate_pixel_metrics",
+            "status": "success",
+            "key_counters": {
+                "scenes_evaluated": 5,
+                "pixel_tp": 1,
+                "pixel_fp": 2,
+                "cuda_available": True,
+                "gpu_name": "GPU",
+                "threshold": 0.5,
+            },
+            "key_metrics": {
+                "pixel_precision": 0.1,
+                "pixel_recall": 0.2,
+                "pixel_f1": 0.133333,
+                "object_f1": 0.9,
+            },
+        }
+        ti = FakeTaskInstance()
+        push_stage_xcom(summary, ti)
+        self.assertEqual(ti.values["counter_scenes_evaluated"], 5)
+        self.assertEqual(ti.values["counter_pixel_tp"], 1)
+        self.assertEqual(ti.values["threshold"], 0.5)
+        self.assertEqual(ti.values["metric_pixel_precision"], 0.1)
+        self.assertNotIn("metric_object_f1", ti.values)
+        self.assertNotIn("cuda_available", ti.values)
+
+    def test_pixel_f1_inconsistency_is_not_published_as_original_value(self) -> None:
+        metrics, _counters, aliases, warnings = _extract_pixel_metrics(
+            {"last_epoch_metrics": {"val/precision": 1e-8, "val/recall": 0.75, "val/pixel_f1": 0.25, "val/iou": 1e-8}}
+        )
+        expected_f1 = 2 * 1e-8 * 0.75 / (1e-8 + 0.75)
+        self.assertAlmostEqual(metrics["pixel_f1"], expected_f1)
+        self.assertTrue(any("inconsistent" in warning for warning in warnings))
+        self.assertTrue(any(row["normalized_metric_name"] == "pixel_f1_source_value_not_used" for row in aliases))
 
     def test_xcom_safe_value_normalizes_unsafe_types(self) -> None:
         self.assertEqual(xcom_safe_value(np.int64(5)), 5)
@@ -173,6 +308,26 @@ class AirflowTasksTests(unittest.TestCase):
             self.assertTrue(report_path.exists())
             self.assertIn("stage_report", stage_path.read_text(encoding="utf-8"))
             self.assertIn("missing.tif", report_path.read_text(encoding="utf-8"))
+
+    def test_validation_prediction_placeholder_is_not_reported_as_success(self) -> None:
+        conf = {"experiment_id": "unit_real_placeholder", "train": {"enabled": True}}
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "unit_real_placeholder"
+            run_dir.mkdir(parents=True)
+            checkpoint = run_dir / "model.pt"
+            checkpoint.write_bytes(b"checkpoint")
+            (run_dir / "dataset_manifest.json").write_text(
+                '{"val_scene_count": 2, "val_scenes": [{"name": "a.tif"}, {"name": "b.tif"}]}',
+                encoding="utf-8",
+            )
+            (run_dir / "training_result.json").write_text(
+                '{"checkpoint_path": "%s", "device": "cuda", "cuda_available": true, "gpu_name": "GPU"}' % str(checkpoint).replace("\\", "\\\\"),
+                encoding="utf-8",
+            )
+            result = run_stage("predict_validation_scenes", conf, "manual__unit", Path(tmp))
+            self.assertEqual(result["status"], "skipped")
+            self.assertIn("Compatibility placeholder", result["summary"])
+            self.assertEqual(result["counters"]["validation_scenes_processed"], 0)
 
 
 if __name__ == "__main__":

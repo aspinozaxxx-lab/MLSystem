@@ -71,6 +71,98 @@ STAGE_POOLS = {
     "finalize_mlflow_run": ("io_light", 1),
 }
 
+GPU_XCOM_STAGES = {"train_model", "predict_validation_scenes", "run_pseudolabel_inference"}
+
+STAGE_XCOM_COUNTERS = {
+    "inventory_scenes": {"scene_rows", "available_images", "matched_scenes", "missing_scenes", "ambiguous_scenes"},
+    "prepare_dataset": {
+        "upstream_inventory_matched_scenes",
+        "selected_dataset_scenes",
+        "excluded_dataset_scenes",
+        "total_scenes",
+        "total_objects",
+        "scenes_without_objects",
+        "train_scenes",
+        "train_objects",
+        "val_scenes",
+        "val_objects",
+    },
+    "predict_validation_scenes": {
+        "validation_input_scenes",
+        "validation_scenes_processed",
+        "validation_scenes_skipped",
+        "validation_scenes_failed",
+        "validation_prediction_windows",
+        "validation_prediction_tiles",
+    },
+    "evaluate_pixel_metrics": {
+        "pixel_tp",
+        "pixel_fp",
+        "pixel_fn",
+        "pixel_tn",
+        "scenes_evaluated",
+    },
+    "vectorize_validation_predictions": {
+        "validation_vectorized_scenes",
+        "validation_prediction_files",
+        "validation_vectorized_objects",
+        "validation_empty_scenes",
+        "validation_failed_scenes",
+    },
+    "compute_f1": {
+        "reference_objects",
+        "predicted_objects",
+        "tp_objects",
+        "fp_objects",
+        "fn_objects",
+        "reference_scenes",
+        "prediction_scenes",
+    },
+    "run_pseudolabel_inference": {
+        "pseudolabel_scenes_requested",
+        "pseudolabel_scenes_processed",
+        "pseudolabel_scenes_skipped",
+        "pseudolabel_scenes_failed",
+        "pseudolabel_prediction_windows",
+        "probability_maps",
+        "inference_scene_limit",
+        "pseudolabel_scenes_excluded",
+    },
+    "vectorize_pseudolabel": {
+        "prediction_tiles",
+        "prediction_scenes",
+        "blocks_total",
+        "blocks_done",
+        "blocks_failed",
+        "workers_requested",
+        "workers_effective",
+        "boundary_candidates",
+        "polygons_before_merge",
+        "polygons_after_merge",
+        "final_objects",
+        "accepted_objects",
+    },
+    "finalize_mlflow_run": {"failed_stages", "warning_stages"},
+    "log_mlflow_artifacts": {"artifacts_logged", "artifacts_failed"},
+    "generate_prediction_examples": {"examples_requested", "examples_generated", "examples_failed"},
+    "write_codex_api_summary": {"summary_sections"},
+}
+
+STAGE_XCOM_METRICS = {
+    "evaluate_pixel_metrics": {"pixel_precision", "pixel_recall", "pixel_f1", "pixel_iou", "pixel_accuracy"},
+    "compute_f1": {"pixel_precision", "pixel_recall", "pixel_f1", "pixel_iou", "object_precision", "object_recall", "object_f1"},
+    "vectorize_pseudolabel": {"vectorization_duration_sec", "merge_duration_sec", "area_ratio_after_merge_to_before_merge", "area_ratio_final_to_before_merge"},
+}
+
+STAGE_XCOM_DIRECT_COUNTERS = {
+    "prepare_dataset": {"split_strategy"},
+    "evaluate_pixel_metrics": {"threshold"},
+    "run_pseudolabel_inference": {"backend", "device", "cuda_available", "gpu_name", "limit_source", "limit_reason"},
+    "vectorize_pseudolabel": {"vectorization_mode"},
+    "finalize_mlflow_run": {"mlflow_run_id", "mlflow_final_status"},
+    "log_mlflow_artifacts": {"mlflow_run_id"},
+}
+
 CLI_STAGE_ALIASES = {
     "inventory": "inventory_scenes",
     "validate-config": "validate_experiment_config",
@@ -312,6 +404,9 @@ def _attach_stage_runtime_counters(result: dict[str, Any], stage: str, resources
     pool_name = (STAGE_POOLS.get(stage) or ("default_pool", 1))[0]
     counters.setdefault("requested_pool", pool_name)
     counters.setdefault("effective_pool", pool_name)
+    if stage not in GPU_XCOM_STAGES:
+        result["counters"] = counters
+        return
     before_gpu = _first_gpu(resources_before)
     after_gpu = _first_gpu(resources_after)
     gpu = after_gpu or before_gpu
@@ -714,24 +809,21 @@ def _write_run_summaries(conf: AirflowExperimentConfig, store: AirflowRunStore) 
 def _smoke_or_skip(conf: AirflowExperimentConfig, stage: str) -> dict[str, Any] | None:
     if not conf.smoke:
         return None
-    passthrough = {
-        "validate_experiment_config",
-        "create_mlflow_run",
-        "predict_pseudolabel_scenes",
-        "run_pseudolabel_inference",
-        "stitch_probability_maps",
-        "validate_probability_maps",
-        "vectorize_pseudolabel",
-        "postprocess_pseudolabel",
-        "export_pseudolabel_artifacts",
-        "generate_prediction_examples",
-        "log_mlflow_artifacts",
-        "write_codex_api_summary",
-        "finalize_mlflow_run",
-    }
-    if stage in passthrough:
-        return None
-    return _stage_result("skipped", summary="Synthetic smoke run skips external S3/dataset/training work.")
+    skip_reason = "synthetic smoke validates Airflow/API orchestration only; external S3, dataset, training, inference, vectorization and MLflow writes are skipped."
+    return _stage_result(
+        "skipped",
+        summary="Synthetic smoke stage skipped: orchestration-only run.",
+        skip_reason=skip_reason,
+        is_smoke_synthetic=True,
+        details={
+            "smoke_mode": {
+                "synthetic": True,
+                "external_s3_dataset_training_inference_skipped": True,
+                "purpose": "orchestration_only",
+            }
+        },
+        warnings=[skip_reason],
+    )
 
 
 def _mlflow_url_fields(pipeline_config: Any, experiment_id: str | None, run_id: str | None) -> tuple[dict[str, Any], list[str]]:
@@ -773,7 +865,6 @@ def _extract_pixel_metrics(training_result: dict[str, Any]) -> tuple[dict[str, A
     aliases = [
         ("val/precision", "pixel_precision"),
         ("val/recall", "pixel_recall"),
-        ("val/pixel_f1", "pixel_f1"),
         ("val/pixel_iou", "pixel_iou"),
         ("val/iou", "pixel_iou"),
         ("val/accuracy", "pixel_accuracy"),
@@ -785,6 +876,35 @@ def _extract_pixel_metrics(training_result: dict[str, Any]) -> tuple[dict[str, A
             metrics[normalized] = last_metrics.get(original)
             alias_rows.append({"original_metric_name": original, "normalized_metric_name": normalized})
     warnings: list[str] = []
+    raw_f1 = last_metrics.get("val/pixel_f1")
+    precision = _finite_float(metrics.get("pixel_precision"))
+    recall = _finite_float(metrics.get("pixel_recall"))
+    if precision is not None and recall is not None:
+        standard_f1 = _standard_f1(precision, recall)
+        metrics["pixel_f1"] = standard_f1
+        if raw_f1 is not None:
+            raw_f1_float = _finite_float(raw_f1)
+            alias_rows.append({"original_metric_name": "val/pixel_f1", "normalized_metric_name": "pixel_f1_source_value_not_used"})
+            if raw_f1_float is None or not _close_metric(raw_f1_float, standard_f1):
+                warnings.append(
+                    "val/pixel_f1 is inconsistent with val/precision and val/recall; "
+                    f"metric_pixel_f1 was derived as standard F1={standard_f1} from precision/recall, "
+                    f"original val/pixel_f1={raw_f1}."
+                )
+    elif raw_f1 is not None:
+        metrics["pixel_f1"] = None
+        alias_rows.append({"original_metric_name": "val/pixel_f1", "normalized_metric_name": "pixel_f1_source_value_not_used"})
+        warnings.append("val/pixel_f1 exists but precision/recall are unavailable, so metric_pixel_f1 is not published as standard F1.")
+
+    iou = _finite_float(metrics.get("pixel_iou"))
+    if precision is not None and recall is not None:
+        standard_iou = _standard_iou_from_precision_recall(precision, recall)
+        if iou is not None and standard_iou is not None and not _close_metric(iou, standard_iou):
+            warnings.append(
+                "pixel_iou is inconsistent with val/precision and val/recall; "
+                f"metric_pixel_iou was derived as standard IoU={standard_iou}, original pixel_iou={metrics.get('pixel_iou')}."
+            )
+            metrics["pixel_iou"] = standard_iou
     for key in ("pixel_precision", "pixel_recall", "pixel_f1", "pixel_iou", "pixel_accuracy"):
         if key not in metrics:
             metrics[key] = None
@@ -804,6 +924,28 @@ def _extract_pixel_metrics(training_result: dict[str, Any]) -> tuple[dict[str, A
         ]
     )
     return metrics, counters, alias_rows, warnings
+
+
+def _standard_f1(precision: float, recall: float) -> float | None:
+    denominator = precision + recall
+    if denominator <= 0:
+        return 0.0
+    return 2.0 * precision * recall / denominator
+
+
+def _standard_iou_from_precision_recall(precision: float, recall: float) -> float | None:
+    if precision <= 0 or recall <= 0:
+        return 0.0
+    denominator = (1.0 / precision) + (1.0 / recall) - 1.0
+    if denominator <= 0:
+        return None
+    return 1.0 / denominator
+
+
+def _close_metric(left: float, right: float | None, *, rel_tol: float = 1e-3, abs_tol: float = 1e-8) -> bool:
+    if right is None:
+        return False
+    return math.isclose(float(left), float(right), rel_tol=rel_tol, abs_tol=abs_tol)
 
 
 def _write_pixel_metrics_artifacts(store: AirflowRunStore, metrics: dict[str, Any], counters: dict[str, Any], aliases: list[dict[str, str]], warnings: list[str]) -> dict[str, str]:
@@ -1130,10 +1272,7 @@ def _run_legacy_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: 
     smoke_result = _smoke_or_skip(conf, stage)
     if smoke_result is not None:
         smoke_result["duration_sec"] = round(time.time() - started, 3)
-        monitor_payload = monitor.stop()
-        resources_after = _resource_snapshot()
-        _attach_stage_runtime_counters(smoke_result, stage, resources_before, resources_after)
-        smoke_result["resources"] = {"before": resources_before, "after": resources_after, "monitor": _safe_rel(store.stage_dir / f"{stage}.resources.json", store.run_dir), "sample_count": len(monitor_payload.get("samples") or [])}
+        monitor.stop()
         return store.write_stage(stage, smoke_result)
 
     if stage == "validate_experiment_config":
@@ -1286,8 +1425,9 @@ def _run_legacy_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: 
                 },
             )
             result = _stage_result(
-                "success",
-                summary="Validation prediction is included in the pseudolabel stage for the current compatibility pipeline.",
+                "skipped",
+                summary="Compatibility placeholder: predict_validation_scenes does not run distinct validation inference yet.",
+                skip_reason="validation prediction is currently deferred; no prediction windows were produced by this stage.",
                 warnings=["validation scenes are marked skipped here because current compatibility code does not run a distinct validation prediction stage."],
                 counters={
                     "validation_input_scenes": validation_input_scenes,
@@ -1327,8 +1467,9 @@ def _run_legacy_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: 
             _write_simple_key_value_report(txt_path, "Validation vectorization", {"summary": summary})
             by_scene_path.write_text("", encoding="utf-8")
             result = _stage_result(
-                "success",
-                summary="Deferred: vectorization is executed in predict_pseudolabel_scenes by the current compatibility pipeline.",
+                "skipped",
+                summary="Compatibility placeholder: validation vectorization is not implemented as a distinct stage yet.",
+                skip_reason="validation vectorization did not run because validation prediction artifacts are not produced by a distinct stage yet.",
                 warnings=["validation vectorization counters are not available before pseudolabel compatibility postprocess runs."],
                 counters={
                     "validation_vectorized_scenes": 0,
@@ -1405,9 +1546,15 @@ def _run_legacy_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: 
         all_metrics = {**pixel_metrics, **object_metrics}
         all_counters = {**pixel_counters, **object_counters}
         mlflow_warnings = _log_mlflow_metrics_if_available(store, all_metrics, all_counters)
+        compute_status = "success_with_warning" if object_metrics.get("object_f1") is None else "success"
+        compute_summary = (
+            "Pixel metrics summarized; object metrics are not available because validation vectorization is not implemented as a distinct stage yet."
+            if object_metrics.get("object_f1") is None
+            else "F1 metrics summarized from available pixel and object artifacts."
+        )
         result = _stage_result(
-            "success",
-            summary="F1 metrics summarized from available pixel and object artifacts.",
+            compute_status,
+            summary=compute_summary,
             metrics=all_metrics,
             counters=all_counters,
             warnings=pixel_warnings + object_warnings + mlflow_warnings,
@@ -1569,8 +1716,9 @@ def _run_legacy_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: 
     result["duration_sec"] = round(time.time() - started, 3)
     monitor_payload = monitor.stop()
     resources_after = _resource_snapshot()
-    _attach_stage_runtime_counters(result, stage, resources_before, resources_after)
-    result["resources"] = {"before": resources_before, "after": resources_after, "monitor": _safe_rel(store.stage_dir / f"{stage}.resources.json", store.run_dir), "sample_count": len(monitor_payload.get("samples") or [])}
+    if not result.get("is_smoke_synthetic"):
+        _attach_stage_runtime_counters(result, stage, resources_before, resources_after)
+        result["resources"] = {"before": resources_before, "after": resources_after, "monitor": _safe_rel(store.stage_dir / f"{stage}.resources.json", store.run_dir), "sample_count": len(monitor_payload.get("samples") or [])}
     return store.write_stage(stage, result)
 
 
@@ -1641,13 +1789,14 @@ def run_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: str, sta
 
     result["duration_sec"] = round(time.time() - started, 3)
     resources_after = _resource_snapshot()
-    _attach_stage_runtime_counters(result, stage, resources_before, resources_after)
-    result["resources"] = {
-        "before": resources_before,
-        "after": resources_after,
-        "monitor": _safe_rel(store.stage_dir / f"{stage}.resources.json", store.run_dir),
-        "sample_count": len(monitor_payload.get("samples") or []),
-    }
+    if not result.get("is_smoke_synthetic"):
+        _attach_stage_runtime_counters(result, stage, resources_before, resources_after)
+        result["resources"] = {
+            "before": resources_before,
+            "after": resources_after,
+            "monitor": _safe_rel(store.stage_dir / f"{stage}.resources.json", store.run_dir),
+            "sample_count": len(monitor_payload.get("samples") or []),
+        }
     written = store.write_stage(stage, result)
     if failure_to_raise is not None:
         raise RuntimeError(result.get("error") or f"{stage} failed") from failure_to_raise
@@ -1689,7 +1838,7 @@ def push_stage_xcom(summary: dict[str, Any], task_instance: Any) -> None:
     if task_instance is None:
         return
     enriched = dict(summary)
-    stage = enriched.get("stage")
+    stage = _canonical_xcom_stage(str(enriched.get("stage") or ""))
     if stage:
         enriched.setdefault("pool", (STAGE_POOLS.get(str(stage)) or ("default_pool", 1))[0])
     enriched.setdefault("execution_mode", str(os.getenv("MLSYSTEM_AIRFLOW_EXECUTION_MODE") or "local").lower())
@@ -1706,6 +1855,8 @@ def push_stage_xcom(summary: dict[str, Any], task_instance: Any) -> None:
         "duration_sec",
         "pool",
         "execution_mode",
+        "skip_reason",
+        "is_smoke_synthetic",
         "mlflow_run_id",
         "mlflow_final_status",
         "summary_path",
@@ -1714,10 +1865,28 @@ def push_stage_xcom(summary: dict[str, Any], task_instance: Any) -> None:
     ):
         if key in enriched:
             safe_xcom_push(task_instance, key, enriched.get(key))
-    for name, value in (enriched.get("key_counters") or {}).items():
-        safe_xcom_push(task_instance, f"counter_{_xcom_key(name)}", value)
-    for name, value in (enriched.get("key_metrics") or {}).items():
-        safe_xcom_push(task_instance, f"metric_{_xcom_key(name)}", value)
+    counters = enriched.get("key_counters") or {}
+    requested_pool = counters.get("requested_pool") or enriched.get("pool")
+    effective_pool = counters.get("effective_pool") or requested_pool
+    safe_xcom_push(task_instance, "requested_pool", requested_pool)
+    safe_xcom_push(task_instance, "effective_pool", effective_pool)
+    if enriched.get("is_smoke_synthetic"):
+        return
+
+    for name in sorted(STAGE_XCOM_DIRECT_COUNTERS.get(stage, set())):
+        if name in counters:
+            safe_xcom_push(task_instance, _xcom_key(name), counters.get(name))
+    if stage in GPU_XCOM_STAGES:
+        for name in ("device", "cuda_available", "gpu_name"):
+            if name in counters:
+                safe_xcom_push(task_instance, name, counters.get(name))
+    for name in sorted(STAGE_XCOM_COUNTERS.get(stage, set())):
+        if name in counters:
+            safe_xcom_push(task_instance, f"counter_{_xcom_key(name)}", counters.get(name))
+    for name in sorted(STAGE_XCOM_METRICS.get(stage, set())):
+        metrics = enriched.get("key_metrics") or {}
+        if name in metrics:
+            safe_xcom_push(task_instance, f"metric_{_xcom_key(name)}", metrics.get(name))
 
 
 def stage_return_message(summary: dict[str, Any]) -> str:
@@ -1739,11 +1908,27 @@ _XCOM_BASE_KEYS = {
     "duration_sec",
     "pool",
     "execution_mode",
+    "requested_pool",
+    "effective_pool",
+    "skip_reason",
+    "is_smoke_synthetic",
     "mlflow_run_id",
     "mlflow_final_status",
     "summary_path",
     "url_mlflow_run",
     "url_mlflow_experiment",
+}
+
+_XCOM_DIRECT_KEYS = {
+    "backend",
+    "device",
+    "cuda_available",
+    "gpu_name",
+    "split_strategy",
+    "vectorization_mode",
+    "threshold",
+    "limit_source",
+    "limit_reason",
 }
 
 
@@ -1765,7 +1950,17 @@ def xcom_safe_value(value: Any) -> str | int | float | bool | None:
 
 
 def _is_allowed_xcom_key(key: str) -> bool:
-    return key in _XCOM_BASE_KEYS or key.startswith("counter_") or key.startswith("metric_") or key.startswith("url_")
+    return key in _XCOM_BASE_KEYS or key in _XCOM_DIRECT_KEYS or key.startswith("counter_") or key.startswith("metric_") or key.startswith("url_")
+
+
+def _canonical_xcom_stage(stage: str) -> str:
+    if stage == "compute_object_f1":
+        return "compute_f1"
+    if stage == "predict_pseudolabel_scenes":
+        return "run_pseudolabel_inference"
+    if stage == "stitch_probability_maps":
+        return "validate_probability_maps"
+    return stage
 
 
 def _coerce_xcom_value(value: Any) -> tuple[str | int | float | bool | None, bool]:

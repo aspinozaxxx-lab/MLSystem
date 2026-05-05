@@ -199,6 +199,35 @@ class PipelineStagesTests(unittest.TestCase):
             self.assertEqual(captured["stage_mode"], "inference")
             self.assertEqual(captured["pseudolabel"]["scene_entries"], ["scene_a.tif", "scene_b.tif"])
 
+    def test_run_pseudolabel_inference_reports_explicit_scene_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ctx = self._context(tmp, pseudolabel={"enabled": True, "run_on": "validation_scenes", "max_scenes": 1})
+            write_json(
+                ctx.store.run_dir / "inference_manifest.json",
+                {
+                    "run_on": "validation_scenes",
+                    "bad_scene_policy": "skip",
+                    "scenes": [
+                        {"entry": "scene_a.tif", "name": "scene_a.tif", "key": "images/scene_a.tif"},
+                        {"entry": "scene_b.tif", "name": "scene_b.tif", "key": "images/scene_b.tif"},
+                        {"entry": "scene_c.tif", "name": "scene_c.tif", "key": "images/scene_c.tif"},
+                    ],
+                },
+            )
+            write_json(ctx.store.run_dir / "coverage_report.json", {"scenes_processed": 1, "total_predicted_windows": 4})
+            write_json(ctx.store.run_dir / "pseudolabel_scene_results_manifest.json", {"scenes": ["scene_a.tif"]})
+
+            with patch("mlsystem.src.pipeline.airflow_tasks._run_pseudolabel_pipeline", return_value={"pseudolabel": {}}):
+                report = run_pseudolabel_inference(ctx)
+
+            self.assertEqual(report.status, "success")
+            self.assertEqual(report.counters["inference_scene_limit"], 1)
+            self.assertEqual(report.counters["pseudolabel_scenes_excluded"], 2)
+            self.assertEqual(report.counters["limit_source"], "dag_run.conf.pseudolabel.max_scenes")
+            skipped = ctx.store.run_dir / "pseudolabel_skipped_scenes.txt"
+            self.assertTrue(skipped.exists())
+            self.assertIn("scene_b.tif", skipped.read_text(encoding="utf-8"))
+
     def test_synthetic_smoke_writes_compatibility_artifacts_for_downstream_stages(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             ctx = self._context(tmp, pseudolabel={"enabled": True, "run_on": "synthetic"}, smoke=True)

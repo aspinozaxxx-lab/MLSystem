@@ -79,7 +79,7 @@ vectorization_summary.txt
 Stage report пушит scalar counters:
 
 ```text
-counter_vectorization_mode
+vectorization_mode
 counter_prediction_tiles
 counter_prediction_scenes
 counter_blocks_total
@@ -95,6 +95,8 @@ counter_final_objects
 counter_final_geojson_size_mb
 metric_vectorization_duration_sec
 metric_merge_duration_sec
+metric_area_ratio_after_merge_to_before_merge
+metric_area_ratio_final_to_before_merge
 ```
 
 ## Safety

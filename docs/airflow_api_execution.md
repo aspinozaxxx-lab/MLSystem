@@ -77,17 +77,17 @@ url_mlflow_experiment
 - container path и host path;
 - диагностические команды при failure.
 
-Для GPU stages дополнительно появляются counters:
+В XCom для GPU stages дополнительно появляются только короткие scalar keys:
 
 ```text
-counter_requested_pool
-counter_effective_pool
-counter_cuda_available
-counter_gpu_name
-counter_gpu_memory_total_mb
-counter_gpu_memory_used_mb_before
-counter_gpu_memory_used_mb_after
+requested_pool
+effective_pool
+cuda_available
+gpu_name
+device
 ```
+
+GPU memory и подробный resource snapshot остаются в full stage report и resource artifacts, а не в XCom. CPU stages не должны пушить `cuda_available` / `gpu_name`.
 
 ## Диагностика на сервере
 

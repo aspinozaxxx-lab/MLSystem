@@ -66,6 +66,7 @@ def format_stage_report(
     artifacts = _mapping(payload.get("artifacts") or _nested(payload, "stage_report", "artifacts"))
     details = _mapping(payload.get("details") or _nested(payload, "stage_report", "details"))
     input_lineage = _mapping(details.get("input_lineage") or payload.get("input_lineage"))
+    smoke_mode = _mapping(details.get("smoke_mode") or payload.get("smoke_mode"))
     resources = _mapping(payload.get("resources"))
 
     lines = [
@@ -89,6 +90,14 @@ def format_stage_report(
         _append_path(lines, "stage_json", stage_json_path or payload.get("stage_json_path"), container_status_root, host_status_root)
     if report_path or payload.get("report_path"):
         _append_path(lines, "stage_report", report_path or payload.get("report_path"), container_status_root, host_status_root)
+
+    if smoke_mode or payload.get("is_smoke_synthetic"):
+        lines += ["", "## Smoke mode"]
+        lines.append(f"- synthetic: `{bool(smoke_mode.get('synthetic', payload.get('is_smoke_synthetic')))}`")
+        lines.append("- external S3/dataset/training/inference skipped: `true`")
+        lines.append("- this run validates orchestration only, not data processing")
+        if payload.get("skip_reason"):
+            lines.append(f"- skip_reason: {mask_text(str(payload.get('skip_reason')))}")
 
     if input_lineage:
         lines += ["", "## Input lineage"]
@@ -206,6 +215,10 @@ def compact_xcom_summary(
         "key_counters": _compact_counters(counters),
         "key_metrics": _compact_counters(metrics),
     }
+    if payload.get("skip_reason"):
+        compact["skip_reason"] = mask_text(str(payload.get("skip_reason")))
+    if payload.get("is_smoke_synthetic") is not None or _nested(payload, "details", "smoke_mode", "synthetic") is not None:
+        compact["is_smoke_synthetic"] = bool(payload.get("is_smoke_synthetic") or _nested(payload, "details", "smoke_mode", "synthetic"))
     urls = _extract_url_fields(payload)
     compact.update(urls)
     encoded = json.dumps(compact, ensure_ascii=False, default=str)

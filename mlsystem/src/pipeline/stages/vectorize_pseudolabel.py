@@ -99,6 +99,13 @@ def run(ctx: StageContext) -> StageReport:
         }
         write_json(training_result_path, training_result)
         ctx.store.update_summary(training_result=training_result)
+        warnings = []
+        if (summary.get("memory_guard") or {}).get("reduced"):
+            warnings.append("memory guard reduced workers_effective")
+        for ratio_key in ("area_ratio_after_merge_to_before_merge", "area_ratio_final_to_before_merge"):
+            ratio = summary.get(ratio_key)
+            if ratio is not None and (float(ratio) < 0.5 or float(ratio) > 1.5):
+                warnings.append(f"{ratio_key}={ratio} is outside expected QA range [0.5, 1.5]")
         return StageReport(
             ctx.stage_id,
             "success",
@@ -115,11 +122,13 @@ def run(ctx: StageContext) -> StageReport:
                 "boundary_candidates": summary.get("boundary_candidates_count"),
                 "polygons_before_merge": summary.get("polygons_before_merge"),
                 "polygons_after_merge": summary.get("polygons_after_merge"),
+                "area_ratio_after_merge_to_before_merge": summary.get("area_ratio_after_merge_to_before_merge"),
+                "area_ratio_final_to_before_merge": summary.get("area_ratio_final_to_before_merge"),
                 "accepted_objects": summary.get("accepted_objects"),
                 "final_objects": summary.get("final_objects"),
                 "final_geojson_size_mb": summary.get("final_geojson_size_mb"),
             },
-            warnings=(["memory guard reduced workers_effective"] if (summary.get("memory_guard") or {}).get("reduced") else []),
+            warnings=warnings,
             artifacts={
                 "accepted_geojson": str(accepted),
                 "pseudolabel_summary.json": str(root_summary_path),
@@ -130,7 +139,15 @@ def run(ctx: StageContext) -> StageReport:
                 "block_results.json": str(ctx.store.run_dir / "vectorization_block_parallel" / "block_results.json"),
                 "processing_blocks.geojson": str(ctx.store.run_dir / "vectorization_block_parallel" / "processing_blocks.geojson"),
             },
-            details={"metrics": {"vectorization_duration_sec": summary.get("vectorization_duration_sec"), "merge_duration_sec": summary.get("merge_duration_sec")}, "summary": summary},
+            details={
+                "metrics": {
+                    "vectorization_duration_sec": summary.get("vectorization_duration_sec"),
+                    "merge_duration_sec": summary.get("merge_duration_sec"),
+                    "area_ratio_after_merge_to_before_merge": summary.get("area_ratio_after_merge_to_before_merge"),
+                    "area_ratio_final_to_before_merge": summary.get("area_ratio_final_to_before_merge"),
+                },
+                "summary": summary,
+            },
             summary="CPU block_parallel vectorization completed from saved probability maps.",
         )
     if not accepted.exists():
