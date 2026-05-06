@@ -92,7 +92,7 @@
     cmd: >-
       docker compose --env-file "{{ mlsystem_gpu_env_path }}"
       -f "{{ mlsystem_gpu_compose_path }}"
-      up -d --build --no-deps mlsystem-frontend mlsystem-frontend-proxy
+      up -d --build --force-recreate --no-deps mlsystem-frontend mlsystem-frontend-proxy
   changed_when: true
   when:
     - frontend_compose_stat.stat.exists
