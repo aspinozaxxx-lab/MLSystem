@@ -17,6 +17,13 @@ Runtime data, API jobs, Airflow stage status, model artifacts, probability maps,
 
 Deployment is managed through the repository, GitHub Actions and Ansible. Do not edit server compose files, env files, containers or secrets by hand.
 
+GitHub Actions are split by responsibility:
+
+- `mlservice` (`.github/workflows/mlservice.yml`) validates Python code, service contracts and deploys the MLSystem service code to the GPU server.
+- `ansible` (`.github/workflows/ansible.yml`) validates and applies infrastructure changes: Ansible roles, compose templates, env generation, Airflow pools and platform services.
+
+The retired combined workflow must not be restored. Code/service rollout and infrastructure rollout must stay separate.
+
 Main references:
 
 - [MLSystem API service](docs/mlsystem_api_service.md)

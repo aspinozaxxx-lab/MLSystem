@@ -1,0 +1,187 @@
+name: mlservice
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "mlsystem/**"
+      - "airflow/**"
+      - "tests/**"
+      - "requirements*.txt"
+      - "pyproject.toml"
+      - "setup.cfg"
+      - "Dockerfile*"
+      - "docker/**"
+      - "scripts/**"
+      - ".github/workflows/mlservice.yml"
+  push:
+    branches: [main, master]
+    paths:
+      - "mlsystem/**"
+      - "airflow/**"
+      - "tests/**"
+      - "requirements*.txt"
+      - "pyproject.toml"
+      - "setup.cfg"
+      - "Dockerfile*"
+      - "docker/**"
+      - "scripts/**"
+      - ".github/workflows/mlservice.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mlsystem-mlservice-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install \
+            PyYAML pydantic fastapi uvicorn requests mlflow boto3 numpy shapely rasterio pillow \
+            onnx onnxscript tritonclient[http] segmentation-models-pytorch
+
+      - name: Run unit tests
+        run: python -m unittest discover -s tests
+
+      - name: Compile Python modules
+        run: python -m compileall -q mlsystem airflow tests
+
+      - name: Check whitespace
+        run: git diff --check
+
+      - name: Validate stage contracts
+        run: |
+          python - <<'PY'
+          from mlsystem.src.pipeline.airflow_tasks import MAIN_DAG_STAGES, STAGE_POOLS
+          print("stages", len(MAIN_DAG_STAGES))
+          missing = [stage for stage in MAIN_DAG_STAGES if stage not in STAGE_POOLS]
+          assert not missing, missing
+          PY
+          python - <<'PY'
+          from mlsystem.src.pipeline.stages.registry import known_stages
+          print("registry_stages", known_stages())
+          PY
+
+  build:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Record service build metadata
+        run: |
+          mkdir -p build
+          printf '%s\n' "${GITHUB_SHA}" > build/mlsystem_commit.txt
+          tar --exclude='.git' --exclude='build' -czf build/mlsystem-service-source.tgz \
+            mlsystem airflow tests README.md docs
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mlsystem-service-source
+          path: |
+            build/mlsystem_commit.txt
+            build/mlsystem-service-source.tgz
+
+  deploy-mlservice:
+    runs-on: ubuntu-latest
+    needs: build
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')) }}
+    env:
+      GPU_SERVER_HOST: ${{ secrets.GPU_SERVER_HOST }}
+      GPU_SERVER_USER: ${{ secrets.GPU_SERVER_USER }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check required deployment secrets
+        run: |
+          missing=0
+          for name in GPU_SERVER_HOST GPU_SERVER_USER; do
+            if [ -z "${!name:-}" ]; then
+              echo "Missing GitHub secret: ${name}" >&2
+              missing=1
+            fi
+          done
+          if [ -z "${{ secrets.GPU_SERVER_SSH_KEY }}" ]; then
+            echo "Missing GitHub secret: GPU_SERVER_SSH_KEY" >&2
+            missing=1
+          fi
+          exit "$missing"
+
+      - name: Install Ansible
+        run: |
+          python3 -m pip install --user ansible-core PyYAML
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Configure SSH inventory
+        run: |
+          mkdir -p ~/.ssh
+          umask 077
+          cat > ~/.ssh/gpu_server_key <<'KEY'
+          ${{ secrets.GPU_SERVER_SSH_KEY }}
+          KEY
+          sed -i 's/^          //' ~/.ssh/gpu_server_key
+          ssh-keyscan -H "$GPU_SERVER_HOST" >> ~/.ssh/known_hosts
+          cat > ansible/inventory/gpu-ci.ini <<EOF
+          [gpu_mlserver]
+          gpu-mlserver ansible_host=${GPU_SERVER_HOST} ansible_user=${GPU_SERVER_USER} ansible_ssh_private_key_file=$HOME/.ssh/gpu_server_key ansible_python_interpreter=/usr/bin/python3
+          EOF
+
+      - name: Check service deploy playbook syntax
+        run: ansible-playbook -i ansible/inventory/gpu-ci.ini ansible/playbooks/deploy_mlsystem_code.yml --syntax-check
+
+      - name: Deploy MLSystem service code
+        run: ansible-playbook -i ansible/inventory/gpu-ci.ini ansible/playbooks/deploy_mlsystem_code.yml -e "mlsystem_git_commit=${GITHUB_SHA}"
+
+  validate-service:
+    runs-on: ubuntu-latest
+    needs: deploy-mlservice
+    if: ${{ needs.deploy-mlservice.result == 'success' }}
+    env:
+      GPU_SERVER_HOST: ${{ secrets.GPU_SERVER_HOST }}
+      GPU_SERVER_USER: ${{ secrets.GPU_SERVER_USER }}
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          umask 077
+          cat > ~/.ssh/gpu_server_key <<'KEY'
+          ${{ secrets.GPU_SERVER_SSH_KEY }}
+          KEY
+          sed -i 's/^          //' ~/.ssh/gpu_server_key
+          ssh-keyscan -H "$GPU_SERVER_HOST" >> ~/.ssh/known_hosts
+
+      - name: Validate MLSystem service deployment
+        run: |
+          SSH="ssh -i ~/.ssh/gpu_server_key -o StrictHostKeyChecking=yes ${GPU_SERVER_USER}@${GPU_SERVER_HOST}"
+          $SSH "curl -fsS http://127.0.0.1:8088/health | python3 -m json.tool"
+          commit="$($SSH "python3 - <<'PY'
+          import json, urllib.request
+          print(json.load(urllib.request.urlopen('http://127.0.0.1:8088/health')).get('commit'))
+          PY")"
+          test "$commit" != "unknown"
+          test "$commit" = "$GITHUB_SHA"
+          $SSH "curl -fsS http://127.0.0.1:8088/ready | python3 -m json.tool"
+          COMPOSE="docker compose --env-file /etc/mlsystem/gpu-platform.env -f /data/mlsystem/platform/docker-compose.yml"
+          $SSH "$COMPOSE exec -T airflow-scheduler airflow dags list-import-errors"
+          $SSH "$COMPOSE exec -T airflow-scheduler airflow dags list | grep mlsystem"
+          $SSH "$COMPOSE exec -T airflow-scheduler airflow tasks list mlsystem_experiment_pipeline"
+          stages="$($SSH "$COMPOSE exec -T airflow-scheduler curl -fsS http://mlsystem-api:8088/api/v1/stages")"
+          echo "$stages" | python3 -m json.tool
+          STAGES_JSON="$stages" python3 - <<'PY'
+          import json, os
+          data = json.loads(os.environ["STAGES_JSON"])
+          assert data.get("aliases") == {}, data.get("aliases")
+          PY

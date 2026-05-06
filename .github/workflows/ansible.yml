@@ -1,0 +1,204 @@
+name: ansible
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Run infrastructure check or apply"
+        required: true
+        default: "check"
+        type: choice
+        options:
+          - check
+          - apply
+      bootstrap:
+        description: "Install/repair Docker, NVIDIA driver and NVIDIA container toolkit before apply"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+  pull_request:
+    paths:
+      - "ansible/**"
+      - "deploy/**"
+      - "inventory/**"
+      - "group_vars/**"
+      - "host_vars/**"
+      - "docker-compose*.yml"
+      - ".github/workflows/ansible.yml"
+      - "docs/airflow_deploy_validation.md"
+      - "docs/airflow_api_execution.md"
+      - "docs/mlsystem_api_service.md"
+      - "README.md"
+  push:
+    branches: [main, master]
+    paths:
+      - "ansible/**"
+      - "deploy/**"
+      - "inventory/**"
+      - "group_vars/**"
+      - "host_vars/**"
+      - "docker-compose*.yml"
+      - ".github/workflows/ansible.yml"
+      - "docs/airflow_deploy_validation.md"
+      - "docs/airflow_api_execution.md"
+      - "docs/mlsystem_api_service.md"
+      - "README.md"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mlsystem-ansible-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Ansible
+        run: |
+          python3 -m pip install --user ansible-core PyYAML
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install Ansible collections
+        run: |
+          if [ -f ansible/requirements.yml ]; then
+            ansible-galaxy collection install -r ansible/requirements.yml
+          fi
+
+      - name: Parse Ansible YAML
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import yaml
+          for path in list(Path('ansible').rglob('*.yml')) + list(Path('ansible').rglob('*.yaml')):
+              yaml.safe_load(path.read_text(encoding='utf-8'))
+              print(f'ok yaml {path}')
+          PY
+
+      - name: Syntax check current playbooks
+        run: |
+          cat > ansible/inventory/gpu-ci.ini <<'EOF'
+          [gpu_mlserver]
+          gpu-mlserver ansible_host=127.0.0.1 ansible_user=root ansible_python_interpreter=/usr/bin/python3
+          EOF
+          ansible --version
+          ansible-playbook -i ansible/inventory/gpu-ci.ini ansible/playbooks/bootstrap_gpu_server.yml --syntax-check
+          ansible-playbook -i ansible/inventory/gpu-ci.ini ansible/playbooks/deploy_mlsystem_code.yml --syntax-check
+          ansible-playbook -i ansible/inventory/gpu-ci.ini ansible/playbooks/deploy_ml_platform.yml --syntax-check
+          ansible-playbook -i ansible/inventory/gpu-ci.ini ansible/playbooks/deploy_triton.yml --syntax-check
+
+      - name: Optional Ansible lint
+        run: |
+          if command -v ansible-lint >/dev/null 2>&1; then
+            ansible-lint ansible
+          else
+            echo "ansible-lint is not installed; syntax-check is the required gate"
+          fi
+
+  plan-or-check:
+    runs-on: ubuntu-latest
+    needs: syntax
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check infra workflow scope
+        run: |
+          test -f ansible/playbooks/deploy_ml_platform.yml
+          test -f ansible/playbooks/deploy_mlsystem_code.yml
+          test -f deploy/docker-compose.gpu.yml
+
+  apply-infra:
+    runs-on: ubuntu-latest
+    needs: plan-or-check
+    if: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')) || (github.event_name == 'workflow_dispatch' && inputs.mode == 'apply') }}
+    env:
+      GPU_SERVER_HOST: ${{ secrets.GPU_SERVER_HOST }}
+      GPU_SERVER_USER: ${{ secrets.GPU_SERVER_USER }}
+      MINIO_ROOT_USER: ${{ secrets.MINIO_ROOT_USER }}
+      MINIO_ROOT_PASSWORD: ${{ secrets.MINIO_ROOT_PASSWORD }}
+      MLFLOW_DB_PASSWORD: ${{ secrets.MLFLOW_DB_PASSWORD }}
+      AIRFLOW_ADMIN_USER: ${{ secrets.AIRFLOW_ADMIN_USER }}
+      AIRFLOW_ADMIN_PASSWORD: ${{ secrets.AIRFLOW_ADMIN_PASSWORD }}
+      AIRFLOW_POSTGRES_PASSWORD: ${{ secrets.AIRFLOW_POSTGRES_PASSWORD }}
+      AIRFLOW_FERNET_KEY: ${{ secrets.AIRFLOW_FERNET_KEY }}
+      AIRFLOW_SECRET_KEY: ${{ secrets.AIRFLOW_SECRET_KEY }}
+      MLSYSTEM_API_TOKEN: ${{ secrets.MLSYSTEM_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check required infrastructure secrets
+        run: |
+          missing=0
+          for name in GPU_SERVER_HOST GPU_SERVER_USER MINIO_ROOT_USER MINIO_ROOT_PASSWORD MLFLOW_DB_PASSWORD AIRFLOW_ADMIN_USER AIRFLOW_ADMIN_PASSWORD AIRFLOW_POSTGRES_PASSWORD AIRFLOW_FERNET_KEY AIRFLOW_SECRET_KEY; do
+            if [ -z "${!name:-}" ]; then
+              echo "Missing GitHub secret: ${name}" >&2
+              missing=1
+            fi
+          done
+          if [ -z "${{ secrets.GPU_SERVER_SSH_KEY }}" ]; then
+            echo "Missing GitHub secret: GPU_SERVER_SSH_KEY" >&2
+            missing=1
+          fi
+          exit "$missing"
+
+      - name: Install Ansible
+        run: |
+          python3 -m pip install --user ansible-core PyYAML
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Configure SSH inventory
+        run: |
+          mkdir -p ~/.ssh
+          umask 077
+          cat > ~/.ssh/gpu_server_key <<'KEY'
+          ${{ secrets.GPU_SERVER_SSH_KEY }}
+          KEY
+          sed -i 's/^          //' ~/.ssh/gpu_server_key
+          ssh-keyscan -H "$GPU_SERVER_HOST" >> ~/.ssh/known_hosts
+          cat > ansible/inventory/gpu-ci.ini <<EOF
+          [gpu_mlserver]
+          gpu-mlserver ansible_host=${GPU_SERVER_HOST} ansible_user=${GPU_SERVER_USER} ansible_ssh_private_key_file=$HOME/.ssh/gpu_server_key ansible_python_interpreter=/usr/bin/python3
+          EOF
+
+      - name: Bootstrap GPU server
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.bootstrap == 'true' }}
+        run: ansible-playbook -i ansible/inventory/gpu-ci.ini ansible/playbooks/bootstrap_gpu_server.yml
+
+      - name: Apply GPU ML platform infrastructure
+        run: ansible-playbook -i ansible/inventory/gpu-ci.ini ansible/playbooks/deploy_ml_platform.yml -e "mlsystem_git_commit=${GITHUB_SHA}"
+
+  validate-infra:
+    runs-on: ubuntu-latest
+    needs: apply-infra
+    if: ${{ needs.apply-infra.result == 'success' }}
+    env:
+      GPU_SERVER_HOST: ${{ secrets.GPU_SERVER_HOST }}
+      GPU_SERVER_USER: ${{ secrets.GPU_SERVER_USER }}
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          umask 077
+          cat > ~/.ssh/gpu_server_key <<'KEY'
+          ${{ secrets.GPU_SERVER_SSH_KEY }}
+          KEY
+          sed -i 's/^          //' ~/.ssh/gpu_server_key
+          ssh-keyscan -H "$GPU_SERVER_HOST" >> ~/.ssh/known_hosts
+
+      - name: Validate infrastructure deployment
+        run: |
+          SSH="ssh -i ~/.ssh/gpu_server_key -o StrictHostKeyChecking=yes ${GPU_SERVER_USER}@${GPU_SERVER_HOST}"
+          $SSH "docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'"
+          $SSH "curl -fsS http://127.0.0.1:8088/health | python3 -m json.tool"
+          $SSH "curl -fsS http://127.0.0.1:8088/ready | python3 -m json.tool"
+          COMPOSE="docker compose --env-file /etc/mlsystem/gpu-platform.env -f /data/mlsystem/platform/docker-compose.yml"
+          $SSH "$COMPOSE exec -T airflow-scheduler airflow dags list-import-errors"
+          $SSH "$COMPOSE exec -T airflow-scheduler airflow dags list | grep mlsystem"
+          $SSH "$COMPOSE exec -T airflow-scheduler airflow tasks list mlsystem_experiment_pipeline"
+          $SSH "$COMPOSE exec -T airflow-scheduler airflow pools list"

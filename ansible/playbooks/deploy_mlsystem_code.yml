@@ -52,6 +52,15 @@
         path: "{{ mlsystem_gpu_env_path }}"
       register: gpu_platform_env_stat
 
+    - name: Update deployed MLSystem commit marker
+      ansible.builtin.lineinfile:
+        path: "{{ mlsystem_gpu_env_path }}"
+        regexp: "^MLSYSTEM_COMMIT="
+        line: "MLSYSTEM_COMMIT={{ mlsystem_git_commit | default('unknown') }}"
+        create: false
+        mode: "0600"
+      when: gpu_platform_env_stat.stat.exists
+
     - name: Ensure MLSystem API container exists after code deploy
       ansible.builtin.command:
         cmd: >-
