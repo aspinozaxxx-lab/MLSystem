@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}MLSystem{% endblock %}
+{% block content %}
+<section class="hero">
+  <h1>MLSystem</h1>
+  <p>Панель управления и проверки данных</p>
+</section>
+<section class="grid">
+  <a class="card active" href="/annotation-check">
+    <h2>Проверка разметок</h2>
+    <p>Загрузка GeoJSON и списка сцен, запуск production stages inventory_scenes и prepare_dataset.</p>
+  </a>
+  <div class="card disabled">
+    <h2>Запуски и отчеты</h2>
+    <p>Раздел в подготовке.</p>
+  </div>
+  <div class="card disabled">
+    <h2>Состояние сервисов</h2>
+    <p>Раздел в подготовке.</p>
+  </div>
+  <a class="card active" href="/docs/frontend">
+    <h2>Документация</h2>
+    <p>Описание frontend workflow и проверки данных.</p>
+  </a>
+</section>
+{% endblock %}

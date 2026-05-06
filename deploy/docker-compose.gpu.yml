@@ -187,6 +187,44 @@ services:
     restart: unless-stopped
     networks: [mlsystem-gpu]
 
+  mlsystem-frontend:
+    build:
+      context: ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}
+      dockerfile: frontend/Dockerfile
+    container_name: mlsystem-gpu-frontend
+    depends_on:
+      mlsystem-api:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    env_file: /etc/mlsystem/gpu-platform.env
+    environment:
+      MLSYSTEM_API_BASE_URL: http://mlsystem-api:8088
+      MLSYSTEM_AIRFLOW_STATUS_ROOT: /data/mlsystem/airflow/status
+      MLSYSTEM_FRONTEND_UPLOAD_ROOT: /data/mlsystem/frontend/uploads
+    command:
+      - python
+      - -m
+      - uvicorn
+      - frontend.app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8090"
+    ports:
+      - "127.0.0.1:${MLSYSTEM_FRONTEND_PORT:-8090}:8090"
+    volumes:
+      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/frontend/uploads:/data/mlsystem/frontend/uploads
+      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/airflow/status:/data/mlsystem/airflow/status:ro
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8090/health', timeout=5)\" || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+    networks: [mlsystem-gpu]
+
   airflow-webserver:
     image: ${AIRFLOW_IMAGE:-apache/airflow:2.9.3-python3.11}
     container_name: mlsystem-gpu-airflow-webserver

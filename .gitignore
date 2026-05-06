@@ -6,6 +6,11 @@ __pycache__/
 .ruff_cache/
 .tmp/
 .venv/
+frontend/.venv/
+frontend/.env
+frontend/uploads/
+frontend/reports/
+frontend/dist/
 venv/
 env/
 

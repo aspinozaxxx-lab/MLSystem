@@ -1,0 +1,82 @@
+---
+- name: Check GPU platform compose file
+  ansible.builtin.stat:
+    path: "{{ mlsystem_gpu_compose_path }}"
+  register: frontend_compose_stat
+
+- name: Check GPU platform env file
+  ansible.builtin.stat:
+    path: "{{ mlsystem_gpu_env_path }}"
+  register: frontend_env_stat
+
+- name: Read existing GPU platform env for frontend
+  ansible.builtin.slurp:
+    src: "{{ mlsystem_gpu_env_path }}"
+  register: frontend_env_file
+  when: frontend_env_stat.stat.exists
+
+- name: Parse existing GPU platform env for frontend
+  ansible.builtin.set_fact:
+    frontend_existing_env: "{{ dict((frontend_env_file.content | b64decode | regex_findall('(?m)^([A-Z0-9_]+)=(.*)$'))) }}"
+  when: frontend_env_stat.stat.exists
+
+- name: Resolve frontend settings
+  ansible.builtin.set_fact:
+    frontend_user_resolved: "{{ lookup('env', 'MLSYSTEM_FRONTEND_USER') | default('', true) or (frontend_existing_env | default({})).get('MLSYSTEM_FRONTEND_USER', mlsystem_gpu_frontend_user) }}"
+    frontend_password_resolved: "{{ lookup('env', 'MLSYSTEM_FRONTEND_PASSWORD') | default('', true) or (frontend_existing_env | default({})).get('MLSYSTEM_FRONTEND_PASSWORD', mlsystem_gpu_frontend_default_password) }}"
+    frontend_session_secret_resolved: "{{ lookup('env', 'MLSYSTEM_FRONTEND_SESSION_SECRET') | default('', true) or (frontend_existing_env | default({})).get('MLSYSTEM_FRONTEND_SESSION_SECRET', lookup('password', '/dev/null length=48 chars=ascii_letters,digits')) }}"
+
+- name: Ensure frontend upload directory exists
+  ansible.builtin.file:
+    path: "{{ mlsystem_gpu_data_root }}/frontend/uploads"
+    state: directory
+    owner: root
+    group: root
+    mode: "0775"
+
+- name: Ensure frontend env values are present
+  ansible.builtin.lineinfile:
+    path: "{{ mlsystem_gpu_env_path }}"
+    regexp: "^{{ item.key }}="
+    line: "{{ item.key }}={{ item.value }}"
+    create: false
+    mode: "0600"
+  loop:
+    - { key: "MLSYSTEM_FRONTEND_PORT", value: "{{ mlsystem_gpu_frontend_port }}" }
+    - { key: "MLSYSTEM_FRONTEND_USER", value: "{{ frontend_user_resolved }}" }
+    - { key: "MLSYSTEM_FRONTEND_PASSWORD", value: "{{ frontend_password_resolved }}" }
+    - { key: "MLSYSTEM_FRONTEND_SESSION_SECRET", value: "{{ frontend_session_secret_resolved }}" }
+    - { key: "MLSYSTEM_FRONTEND_SESSION_TTL_SECONDS", value: "28800" }
+    - { key: "MLSYSTEM_FRONTEND_UPLOAD_ROOT", value: "/data/mlsystem/frontend/uploads" }
+    - { key: "MLSYSTEM_AIRFLOW_STATUS_ROOT", value: "/data/mlsystem/airflow/status" }
+    - { key: "MLSYSTEM_API_BASE_URL", value: "http://mlsystem-api:8088" }
+    - { key: "MLSYSTEM_FRONTEND_DEFAULT_IMAGES_URI", value: "{{ mlsystem_gpu_frontend_default_images_uri }}" }
+    - { key: "MLSYSTEM_FRONTEND_DEFAULT_LAYOUT_URI", value: "{{ mlsystem_gpu_frontend_default_layout_uri }}" }
+    - { key: "MLSYSTEM_FRONTEND_DEFAULT_SPLIT_STRATEGY", value: "{{ mlsystem_gpu_frontend_default_split_strategy }}" }
+    - { key: "MLSYSTEM_FRONTEND_MAX_UPLOAD_MB", value: "{{ mlsystem_gpu_frontend_max_upload_mb }}" }
+    - { key: "MLSYSTEM_FRONTEND_S3_PREFIX", value: "frontend-checks" }
+  when: frontend_env_stat.stat.exists
+
+- name: Deploy MLSystem frontend container
+  ansible.builtin.command:
+    cmd: >-
+      docker compose --env-file "{{ mlsystem_gpu_env_path }}"
+      -f "{{ mlsystem_gpu_compose_path }}"
+      up -d --build --no-deps mlsystem-frontend
+  changed_when: true
+  when:
+    - frontend_compose_stat.stat.exists
+    - frontend_env_stat.stat.exists
+
+- name: Wait for MLSystem frontend health
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ mlsystem_gpu_frontend_port }}/health"
+    status_code: 200
+  retries: 30
+  delay: 5
+  register: frontend_health
+  until: frontend_health.status == 200
+  when:
+    - frontend_compose_stat.stat.exists
+    - frontend_env_stat.stat.exists
+

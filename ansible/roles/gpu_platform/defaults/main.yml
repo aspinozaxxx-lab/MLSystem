@@ -27,3 +27,10 @@ mlsystem_gpu_airflow_cpu_heavy_slots: 6
 mlsystem_gpu_airflow_cpu_light_slots: 12
 mlsystem_gpu_airflow_io_light_slots: 8
 mlsystem_gpu_api_port: 8088
+mlsystem_gpu_frontend_port: 8090
+mlsystem_gpu_frontend_user: mluser
+mlsystem_gpu_frontend_default_password: qazwsxedc
+mlsystem_gpu_frontend_default_images_uri: "s3://mlsystems/images/"
+mlsystem_gpu_frontend_default_layout_uri: "s3://mlsystems/frontend-checks/"
+mlsystem_gpu_frontend_default_split_strategy: object_balanced
+mlsystem_gpu_frontend_max_upload_mb: 100

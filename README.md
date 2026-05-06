@@ -21,8 +21,19 @@ GitHub Actions are split by responsibility:
 
 - `mlservice` (`.github/workflows/mlservice.yml`) validates Python code, service contracts and deploys the MLSystem service code to the GPU server.
 - `ansible` (`.github/workflows/ansible.yml`) validates and applies infrastructure changes: Ansible roles, compose templates, env generation, Airflow pools and platform services.
+- `frontend` (`.github/workflows/frontend.yml`) validates and deploys the MLSystem web frontend.
 
-The retired combined workflow must not be restored. Code/service rollout and infrastructure rollout must stay separate.
+The retired combined workflow must not be restored. Code/service rollout, infrastructure rollout and frontend rollout must stay separate.
+
+Frontend lives in `frontend/` and is deployed with `ansible/playbooks/deploy_frontend.yml`.
+It provides login and annotation checks. Annotation checks call `mlsystem-api`
+stages `inventory_scenes` and `prepare_dataset`; they do not trigger Airflow DAGs.
+
+Frontend runtime data is not stored in git:
+
+```text
+/data/mlsystem/frontend/uploads/
+```
 
 Main references:
 
@@ -30,3 +41,4 @@ Main references:
 - [Airflow API execution](docs/airflow_api_execution.md)
 - [Airflow stage inventory](docs/airflow_stage_inventory.md)
 - [Airflow deploy validation](docs/airflow_deploy_validation.md)
+- [Frontend](docs/frontend.md)

@@ -1,0 +1,13 @@
+---
+mlsystem_gpu_repo_root: /opt/mlsystem/repo
+mlsystem_gpu_data_root: /data/mlsystem
+mlsystem_gpu_env_path: /etc/mlsystem/gpu-platform.env
+mlsystem_gpu_compose_path: /data/mlsystem/platform/docker-compose.yml
+mlsystem_gpu_frontend_port: 8090
+mlsystem_gpu_frontend_user: mluser
+mlsystem_gpu_frontend_default_password: qazwsxedc
+mlsystem_gpu_frontend_default_images_uri: "s3://mlsystems/images/"
+mlsystem_gpu_frontend_default_layout_uri: "s3://mlsystems/frontend-checks/"
+mlsystem_gpu_frontend_default_split_strategy: object_balanced
+mlsystem_gpu_frontend_max_upload_mb: 100
+

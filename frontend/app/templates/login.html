@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Вход - MLSystem</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body class="login-body">
+  <main class="login-card">
+    <div class="login-mark">MLSystem</div>
+    <h1>Вход</h1>
+    <form method="post" action="/login" class="form-stack">
+      <label>Логин
+        <input name="username" autocomplete="username" required>
+      </label>
+      <label>Пароль
+        <input name="password" type="password" autocomplete="current-password" required>
+      </label>
+      {% if error %}
+        <div class="error">{{ error }}</div>
+      {% endif %}
+      <button type="submit" class="primary">Войти</button>
+    </form>
+  </main>
+</body>
+</html>
+

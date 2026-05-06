@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Проверка разметок - MLSystem{% endblock %}
+{% block content %}
+<section class="panel">
+  <h1>Проверка разметок</h1>
+  <p class="muted">Файлы загружаются во временный MinIO prefix, затем mlsystem-api запускает stages <code>inventory_scenes</code> и <code>prepare_dataset</code>.</p>
+  <form id="annotation-form" class="form-stack">
+    <label>GeoJSON файл разметки
+      <input type="file" name="annotation_file" accept=".geojson,.json" required>
+    </label>
+    <label>TXT файл со списком сцен
+      <input type="file" name="scenes_file" accept=".txt" required>
+    </label>
+    <label>Название проверки / комментарий
+      <input name="title" placeholder="Например: lakes annotation QA">
+    </label>
+    <details>
+      <summary>Advanced</summary>
+      <div class="form-stack details-body">
+        <label>images_uri
+          <input name="images_uri" value="{{ defaults.images_uri }}">
+        </label>
+        <label>layout_uri
+          <input name="layout_uri" value="{{ defaults.layout_uri }}">
+        </label>
+        <label>preprocess.split_strategy
+          <select name="split_strategy">
+            <option value="object_balanced" {% if defaults.split_strategy == "object_balanced" %}selected{% endif %}>object_balanced</option>
+            <option value="legacy_75_25" {% if defaults.split_strategy == "legacy_75_25" %}selected{% endif %}>legacy_75_25</option>
+          </select>
+        </label>
+        <label>preprocess.annotation_crs
+          <input name="annotation_crs" placeholder="Например: EPSG:3857">
+        </label>
+        <label class="inline">
+          <input type="checkbox" name="allow_inferred_annotation_crs" value="true" checked>
+          allow_inferred_annotation_crs
+        </label>
+      </div>
+    </details>
+    <button type="submit" class="primary">Проверить</button>
+  </form>
+</section>
+
+<section class="panel" id="progress-panel" hidden>
+  <h2>Ход проверки</h2>
+  <ol class="progress">
+    <li data-step="upload">Загрузка файлов</li>
+    <li data-step="inventory_scenes">inventory_scenes</li>
+    <li data-step="prepare_dataset">prepare_dataset</li>
+    <li data-step="report">Формирование отчета</li>
+  </ol>
+  <div id="run-id" class="muted"></div>
+</section>
+
+<section class="panel" id="result-panel" hidden>
+  <h2>Результат</h2>
+  <div id="result-summary" class="summary-grid"></div>
+  <div id="stage-results"></div>
+  <h3>Сцены</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Сцена</th><th>Объектов</th><th>Статус</th><th>Split</th></tr></thead>
+      <tbody id="scene-table"></tbody>
+    </table>
+  </div>
+  <h3>Artifacts</h3>
+  <ul id="artifact-list"></ul>
+</section>
+
+<script src="/static/js/annotation_check.js"></script>
+{% endblock %}
+

@@ -26,6 +26,9 @@
     mlsystem_gpu_airflow_fernet_key_resolved: "{{ lookup('env', 'AIRFLOW_FERNET_KEY') | default('', true) or (gpu_existing_env | default({})).get('AIRFLOW_FERNET_KEY', lookup('password', '/dev/null length=44 chars=ascii_letters,digits')) }}"
     mlsystem_gpu_airflow_secret_key_resolved: "{{ lookup('env', 'AIRFLOW_SECRET_KEY') | default('', true) or (gpu_existing_env | default({})).get('AIRFLOW_SECRET_KEY', lookup('password', '/dev/null length=48 chars=ascii_letters,digits')) }}"
     mlsystem_gpu_api_token_resolved: "{{ lookup('env', 'MLSYSTEM_API_TOKEN') | default('', true) or (gpu_existing_env | default({})).get('MLSYSTEM_API_TOKEN', lookup('password', '/dev/null length=40 chars=ascii_letters,digits')) }}"
+    mlsystem_gpu_frontend_user_resolved: "{{ lookup('env', 'MLSYSTEM_FRONTEND_USER') | default('', true) or (gpu_existing_env | default({})).get('MLSYSTEM_FRONTEND_USER', mlsystem_gpu_frontend_user) }}"
+    mlsystem_gpu_frontend_password_resolved: "{{ lookup('env', 'MLSYSTEM_FRONTEND_PASSWORD') | default('', true) or (gpu_existing_env | default({})).get('MLSYSTEM_FRONTEND_PASSWORD', mlsystem_gpu_frontend_default_password) }}"
+    mlsystem_gpu_frontend_session_secret_resolved: "{{ lookup('env', 'MLSYSTEM_FRONTEND_SESSION_SECRET') | default('', true) or (gpu_existing_env | default({})).get('MLSYSTEM_FRONTEND_SESSION_SECRET', lookup('password', '/dev/null length=48 chars=ascii_letters,digits')) }}"
 
 - name: Ensure GPU platform directories exist
   ansible.builtin.file:
@@ -41,6 +44,7 @@
     - "{{ mlsystem_gpu_data_root }}/airflow/logs"
     - "{{ mlsystem_gpu_data_root }}/airflow/status"
     - "{{ mlsystem_gpu_data_root }}/api/jobs"
+    - "{{ mlsystem_gpu_data_root }}/frontend/uploads"
     - "{{ mlsystem_gpu_data_root }}/airflow/postgres"
     - "{{ mlsystem_gpu_data_root }}/triton/model_repository/identity_python/1"
     - "{{ mlsystem_gpu_data_root }}/models"
