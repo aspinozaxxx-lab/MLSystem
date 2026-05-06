@@ -6,26 +6,12 @@ on:
     paths:
       - "mlsystem/**"
       - "airflow/**"
-      - "tests/**"
-      - "requirements*.txt"
-      - "pyproject.toml"
-      - "setup.cfg"
-      - "Dockerfile*"
-      - "docker/**"
-      - "scripts/**"
       - ".github/workflows/mlservice.yml"
   push:
     branches: [main, master]
     paths:
       - "mlsystem/**"
       - "airflow/**"
-      - "tests/**"
-      - "requirements*.txt"
-      - "pyproject.toml"
-      - "setup.cfg"
-      - "Dockerfile*"
-      - "docker/**"
-      - "scripts/**"
       - ".github/workflows/mlservice.yml"
 
 permissions:

@@ -23,30 +23,13 @@ on:
     paths:
       - "ansible/**"
       - "deploy/**"
-      - "inventory/**"
-      - "group_vars/**"
-      - "host_vars/**"
-      - "docker-compose*.yml"
-      - ".github/workflows/ansible.yml"
-      - "docs/airflow_deploy_validation.md"
-      - "docs/airflow_api_execution.md"
-      - "docs/mlsystem_api_service.md"
-      - "README.md"
+      - ".github/workflows/ansible.yml"    
   push:
     branches: [main, master]
     paths:
       - "ansible/**"
       - "deploy/**"
-      - "inventory/**"
-      - "group_vars/**"
-      - "host_vars/**"
-      - "docker-compose*.yml"
       - ".github/workflows/ansible.yml"
-      - "docs/airflow_deploy_validation.md"
-      - "docs/airflow_api_execution.md"
-      - "docs/mlsystem_api_service.md"
-      - "README.md"
-
 permissions:
   contents: read
 
