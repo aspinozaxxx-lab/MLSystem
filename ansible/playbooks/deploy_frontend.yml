@@ -23,6 +23,7 @@
         --exclude __pycache__
         --exclude .pytest_cache
         --exclude .tmp_*
+        --filter 'P mlsystem/configs/'
         -e "ssh -o StrictHostKeyChecking=yes{% if ansible_ssh_private_key_file is defined %} -i {{ ansible_ssh_private_key_file }}{% endif %}"
         "{{ playbook_dir }}/../../"
         "{{ ansible_user | default('root') }}@{{ ansible_host | default(inventory_hostname) }}:{{ mlsystem_gpu_repo_root }}/"
@@ -30,7 +31,22 @@
       become: false
       changed_when: true
 
+    - name: Ensure deployed MLSystem config directory exists
+      ansible.builtin.file:
+        path: "{{ mlsystem_gpu_repo_root }}/mlsystem/configs"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Install GPU pipeline config into deployed repo
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../roles/gpu_platform/templates/pipeline.server.yaml.j2"
+        dest: "{{ mlsystem_gpu_repo_root }}/mlsystem/configs/pipeline.server.yaml"
+        owner: root
+        group: root
+        mode: "0644"
+
     - name: Deploy frontend role
       ansible.builtin.import_role:
         name: frontend
-
