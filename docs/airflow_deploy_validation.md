@@ -45,6 +45,11 @@ ssh gpu-mlserver "curl -fsS http://127.0.0.1:8088/health"
 ssh gpu-mlserver "curl -fsS http://127.0.0.1:8088/ready"
 ssh gpu-mlserver "curl -fsS http://127.0.0.1:8090/health"
 ssh gpu-mlserver "curl -fsS -I http://127.0.0.1:8090/login"
+ssh gpu-mlserver "curl -fsS http://127.0.0.1/health"
+ssh gpu-mlserver "curl -fsS -I http://127.0.0.1/login"
+curl -fsS http://31.192.104.147/health
+curl -fsS -I http://31.192.104.147/login
+curl -fsS -I http://31.192.104.147/
 ```
 
 `/health` у `mlsystem-api` должен показывать git commit текущего service deploy. Значение `unknown` означает, что `mlservice` не прокинул `MLSYSTEM_COMMIT` или контейнер не перезапущен.
@@ -94,8 +99,15 @@ Frontend проверяется отдельно от Airflow:
 
 ```bash
 ssh gpu-mlserver "docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | grep mlsystem-gpu-frontend"
+ssh gpu-mlserver "docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | grep mlsystem-gpu-frontend-proxy"
+ssh gpu-mlserver "sudo ss -ltnp | egrep ':(80|8090|8088)\s' || true"
 ssh gpu-mlserver "curl -fsS http://127.0.0.1:8090/health"
 ssh gpu-mlserver "curl -fsS -I http://127.0.0.1:8090/login"
+ssh gpu-mlserver "curl -fsS http://127.0.0.1/health"
+ssh gpu-mlserver "curl -fsS -I http://127.0.0.1/login"
+curl -fsS http://31.192.104.147/health
+curl -fsS -I http://31.192.104.147/login
+curl -fsS -I http://31.192.104.147/
 ssh gpu-mlserver "docker exec mlsystem-gpu-frontend python - <<'PY'
 import os, urllib.request
 base = os.environ.get('MLSYSTEM_API_BASE_URL', 'http://mlsystem-api:8088')
@@ -104,6 +116,12 @@ PY"
 ```
 
 Страница проверки разметок запускает только `mlsystem-api` stages `inventory_scenes` и `prepare_dataset`. Airflow DAG для этой проверки не запускается.
+
+Публичный URL сайта:
+
+- `http://31.192.104.147/`
+
+Внутренний порт `8090` используется только как upstream для reverse proxy. Наружу должен быть открыт port 80, а не `8090`.
 
 Uploads находятся вне git:
 

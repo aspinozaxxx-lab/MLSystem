@@ -34,6 +34,30 @@
     group: root
     mode: "0775"
 
+- name: Check UFW status for frontend proxy
+  ansible.builtin.command:
+    cmd: ufw status
+  register: frontend_ufw_status
+  changed_when: false
+  failed_when: false
+
+- name: Allow frontend HTTP proxy in UFW
+  ansible.builtin.command:
+    cmd: "ufw allow {{ mlsystem_gpu_frontend_proxy_port }}/tcp"
+  register: frontend_ufw_allow
+  changed_when: "'Skipping' not in frontend_ufw_allow.stdout"
+  when:
+    - frontend_ufw_status.rc == 0
+    - "'Status: active' in frontend_ufw_status.stdout"
+
+- name: Install frontend reverse proxy config
+  ansible.builtin.template:
+    src: frontend-nginx.conf.j2
+    dest: "{{ mlsystem_gpu_platform_root }}/frontend-nginx.conf"
+    owner: root
+    group: root
+    mode: "0644"
+
 - name: Ensure frontend env values are present
   ansible.builtin.lineinfile:
     path: "{{ mlsystem_gpu_env_path }}"
@@ -42,7 +66,13 @@
     create: false
     mode: "0600"
   loop:
+    - { key: "MLSYSTEM_PLATFORM_ROOT", value: "{{ mlsystem_gpu_platform_root }}" }
     - { key: "MLSYSTEM_FRONTEND_PORT", value: "{{ mlsystem_gpu_frontend_port }}" }
+    - { key: "MLSYSTEM_FRONTEND_PUBLIC_BASE_URL", value: "{{ mlsystem_gpu_frontend_public_url }}" }
+    - { key: "MLSYSTEM_FRONTEND_COOKIE_SECURE", value: "{{ mlsystem_gpu_frontend_cookie_secure }}" }
+    - { key: "MLSYSTEM_FRONTEND_ALLOWED_HOSTS", value: "{{ mlsystem_gpu_frontend_allowed_hosts }}" }
+    - { key: "MLSYSTEM_FRONTEND_PROXY_LISTEN_HOST", value: "{{ mlsystem_gpu_frontend_proxy_listen_host }}" }
+    - { key: "MLSYSTEM_FRONTEND_PROXY_PORT", value: "{{ mlsystem_gpu_frontend_proxy_port }}" }
     - { key: "MLSYSTEM_FRONTEND_USER", value: "{{ frontend_user_resolved }}" }
     - { key: "MLSYSTEM_FRONTEND_PASSWORD", value: "{{ frontend_password_resolved }}" }
     - { key: "MLSYSTEM_FRONTEND_SESSION_SECRET", value: "{{ frontend_session_secret_resolved }}" }
@@ -62,7 +92,7 @@
     cmd: >-
       docker compose --env-file "{{ mlsystem_gpu_env_path }}"
       -f "{{ mlsystem_gpu_compose_path }}"
-      up -d --build --no-deps mlsystem-frontend
+      up -d --build --no-deps mlsystem-frontend mlsystem-frontend-proxy
   changed_when: true
   when:
     - frontend_compose_stat.stat.exists
@@ -80,3 +110,14 @@
     - frontend_compose_stat.stat.exists
     - frontend_env_stat.stat.exists
 
+- name: Wait for MLSystem frontend public proxy health
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ mlsystem_gpu_frontend_proxy_port }}/health"
+    status_code: 200
+  retries: 30
+  delay: 5
+  register: frontend_proxy_health
+  until: frontend_proxy_health.status == 200
+  when:
+    - frontend_compose_stat.stat.exists
+    - frontend_env_stat.stat.exists

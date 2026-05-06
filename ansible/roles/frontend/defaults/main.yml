@@ -6,8 +6,12 @@ mlsystem_gpu_compose_path: /data/mlsystem/platform/docker-compose.yml
 mlsystem_gpu_frontend_port: 8090
 mlsystem_gpu_frontend_user: mluser
 mlsystem_gpu_frontend_default_password: qazwsxedc
+mlsystem_gpu_frontend_public_url: "http://31.192.104.147"
+mlsystem_gpu_frontend_proxy_listen_host: "0.0.0.0"
+mlsystem_gpu_frontend_proxy_port: 80
+mlsystem_gpu_frontend_cookie_secure: "false"
+mlsystem_gpu_frontend_allowed_hosts: "31.192.104.147,localhost,127.0.0.1"
 mlsystem_gpu_frontend_default_images_uri: "s3://mlsystems/images/"
 mlsystem_gpu_frontend_default_layout_uri: "s3://mlsystems/frontend-checks/"
 mlsystem_gpu_frontend_default_split_strategy: object_balanced
 mlsystem_gpu_frontend_max_upload_mb: 100
-

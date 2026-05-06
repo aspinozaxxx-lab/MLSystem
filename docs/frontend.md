@@ -2,12 +2,23 @@
 
 Frontend - отдельный FastAPI BFF-сервис для веб-интерфейса MLSystem.
 
+## URL
+
+Публичный вход:
+
+- `http://31.192.104.147/`
+- `http://31.192.104.147/login`
+- `http://31.192.104.147/health`
+
+Внутренний backend port frontend:
+
+- `http://127.0.0.1:8090/health`
+
+Пользователь не должен открывать `:8090` снаружи. Внешний HTTP идет через reverse proxy на порту 80.
+
 ## Назначение
 
-Сервис дает единый вход по логину/паролю и страницу проверки разметок.
-Проверка разметок не запускает Airflow DAG и не содержит собственной
-ML-логики. Frontend вызывает внутренний `mlsystem-api` тем же контрактом,
-который использует Airflow:
+Сервис дает единый вход по логину/паролю и страницу проверки разметок. Проверка разметок не запускает Airflow DAG и не содержит собственной ML-логики. Frontend вызывает внутренний `mlsystem-api` тем же stage-контрактом, который использует Airflow:
 
 1. `POST /api/v1/runs/{run_id}/stages/inventory_scenes/start`
 2. `GET /api/v1/jobs/{job_id}`
@@ -22,10 +33,9 @@ ML-логики. Frontend вызывает внутренний `mlsystem-api` �
 - `MLSYSTEM_FRONTEND_PASSWORD`, default для dev/test: `qazwsxedc`
 - `MLSYSTEM_FRONTEND_SESSION_SECRET`
 - `MLSYSTEM_FRONTEND_SESSION_TTL_SECONDS`
+- `MLSYSTEM_FRONTEND_COOKIE_SECURE=false` для текущего HTTP-доступа
 
-Пароль и session secret должны переопределяться через Ansible/GitHub
-secrets для production. API token хранится только в контейнере frontend и
-не отдается браузеру.
+Пароль и session secret должны переопределяться через Ansible/GitHub secrets для production. API token хранится только в контейнере frontend и не отдается браузеру.
 
 ## Проверка разметок
 
@@ -33,11 +43,15 @@ secrets для production. API token хранится только в конте
 
 Frontend сохраняет файлы вне git:
 
-`/data/mlsystem/frontend/uploads/<run_id>/`
+```text
+/data/mlsystem/frontend/uploads/<run_id>/
+```
 
 Затем загружает их в MinIO prefix:
 
-`s3://mlsystems/frontend-checks/<run_id>/`
+```text
+s3://mlsystems/frontend-checks/<run_id>/
+```
 
 После этого stages получают обычный production payload:
 
@@ -53,34 +67,55 @@ Frontend сохраняет файлы вне git:
 
 Frontend читает готовые artifacts stage run из:
 
-`/data/mlsystem/airflow/status/<run_id>/`
+```text
+/data/mlsystem/airflow/status/<run_id>/
+```
 
-Используются `inventory_scenes.json`, `scene_matching_report.json`,
-`matched_scenes.txt`, `missing_scenes.txt`, `dataset_manifest.json`,
-`scene_object_counts.txt`, `split_summary.json`,
-`dataset_validation_report.json` и stage JSON reports.
+Используются:
 
-Frontend не пересчитывает GeoJSON, не ищет сцены в S3 и не делает train/val
-split самостоятельно.
+- `inventory_scenes.json`
+- `scene_matching_report.json`
+- `matched_scenes.txt`
+- `missing_scenes.txt`
+- `dataset_manifest.json`
+- `scene_object_counts.txt`
+- `split_summary.json`
+- `dataset_validation_report.json`
+- stage JSON reports
+
+Frontend не пересчитывает GeoJSON, не ищет сцены в S3 и не делает train/val split самостоятельно.
 
 ## Deploy
 
 GitHub Actions workflow:
 
-`.github/workflows/frontend.yml`
+```text
+.github/workflows/frontend.yml
+```
 
 Ansible playbook:
 
-`ansible/playbooks/deploy_frontend.yml`
+```text
+ansible/playbooks/deploy_frontend.yml
+```
 
-Контейнер:
+Контейнеры:
 
-`mlsystem-gpu-frontend`
+- `mlsystem-gpu-frontend`
+- `mlsystem-gpu-frontend-proxy`
+
+Reverse proxy:
+
+- host port `0.0.0.0:80`
+- upstream `mlsystem-frontend:8090` inside docker network
 
 Health checks:
 
 ```bash
 curl -fsS http://127.0.0.1:8090/health
-curl -fsS -I http://127.0.0.1:8090/login
+curl -fsS http://127.0.0.1/health
+curl -fsS http://31.192.104.147/health
+curl -fsSI http://31.192.104.147/login
 ```
 
+Deploy and proxy setup are managed only through GitHub Actions and Ansible. Server-side manual edits to compose/env/container state are not part of the deployment process.

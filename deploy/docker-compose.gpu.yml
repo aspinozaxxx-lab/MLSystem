@@ -225,6 +225,25 @@ services:
     restart: unless-stopped
     networks: [mlsystem-gpu]
 
+  mlsystem-frontend-proxy:
+    image: nginx:1.27-alpine
+    container_name: mlsystem-gpu-frontend-proxy
+    depends_on:
+      mlsystem-frontend:
+        condition: service_healthy
+    ports:
+      - "${MLSYSTEM_FRONTEND_PROXY_LISTEN_HOST:-0.0.0.0}:${MLSYSTEM_FRONTEND_PROXY_PORT:-80}:80"
+    volumes:
+      - ${MLSYSTEM_PLATFORM_ROOT:-/data/mlsystem/platform}/frontend-nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost/health >/dev/null || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 15s
+    restart: unless-stopped
+    networks: [mlsystem-gpu]
+
   airflow-webserver:
     image: ${AIRFLOW_IMAGE:-apache/airflow:2.9.3-python3.11}
     container_name: mlsystem-gpu-airflow-webserver

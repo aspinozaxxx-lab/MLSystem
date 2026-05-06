@@ -137,7 +137,12 @@ jobs:
         run: |
           SSH="ssh -i ~/.ssh/gpu_server_key -o StrictHostKeyChecking=yes ${GPU_SERVER_USER}@${GPU_SERVER_HOST}"
           $SSH "docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | grep mlsystem-gpu-frontend"
+          $SSH "docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | grep mlsystem-gpu-frontend-proxy"
+          $SSH "sudo ss -ltnp | egrep ':(80|8090|8088)\s' || true"
           $SSH "curl -fsS http://127.0.0.1:8090/health | python3 -m json.tool"
           $SSH "curl -fsS -I http://127.0.0.1:8090/login"
+          $SSH "curl -fsS http://127.0.0.1/health | python3 -m json.tool"
+          $SSH "curl -fsS -I http://127.0.0.1/login"
           $SSH "curl -fsS http://127.0.0.1:8088/ready >/dev/null"
           $SSH "docker exec mlsystem-gpu-frontend python -c \"import os, urllib.request; base=os.environ.get('MLSYSTEM_API_BASE_URL','http://mlsystem-api:8088'); print(urllib.request.urlopen(base + '/ready', timeout=5).status)\""
+          python -c "import urllib.request; urls=['http://31.192.104.147/health','http://31.192.104.147/login','http://31.192.104.147/']; [print('checking', u) or (lambda r: (print(r.status, r.geturl()), (_ for _ in ()).throw(AssertionError(r.status)) if not (200 <= r.status < 400) else None))(urllib.request.urlopen(u, timeout=15)) for u in urls]"

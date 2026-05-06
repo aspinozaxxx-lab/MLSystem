@@ -20,7 +20,12 @@ class FrontendConfig:
     password: str = os.getenv("MLSYSTEM_FRONTEND_PASSWORD", "qazwsxedc")
     session_secret: str = os.getenv("MLSYSTEM_FRONTEND_SESSION_SECRET", "dev-only-change-me")
     session_ttl_seconds: int = int(os.getenv("MLSYSTEM_FRONTEND_SESSION_TTL_SECONDS", "28800"))
-    secure_cookies: bool = _bool_env("MLSYSTEM_FRONTEND_SECURE_COOKIES", False)
+    secure_cookies: bool = _bool_env(
+        "MLSYSTEM_FRONTEND_COOKIE_SECURE",
+        _bool_env("MLSYSTEM_FRONTEND_SECURE_COOKIES", False),
+    )
+    public_base_url: str = os.getenv("MLSYSTEM_FRONTEND_PUBLIC_BASE_URL", "").rstrip("/")
+    allowed_hosts: str = os.getenv("MLSYSTEM_FRONTEND_ALLOWED_HOSTS", "")
     api_base_url: str = os.getenv("MLSYSTEM_API_BASE_URL", os.getenv("MLSYSTEM_API_URL", "http://mlsystem-api:8088")).rstrip("/")
     api_token: str | None = os.getenv("MLSYSTEM_API_TOKEN")
     upload_root: Path = Path(os.getenv("MLSYSTEM_FRONTEND_UPLOAD_ROOT", "/data/mlsystem/frontend/uploads"))
@@ -38,4 +43,3 @@ class FrontendConfig:
 
 def get_config() -> FrontendConfig:
     return FrontendConfig()
-

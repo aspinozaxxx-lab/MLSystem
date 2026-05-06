@@ -28,6 +28,8 @@ The retired combined workflow must not be restored. Code/service rollout, infras
 Frontend lives in `frontend/` and is deployed with `ansible/playbooks/deploy_frontend.yml`.
 It provides login and annotation checks. Annotation checks call `mlsystem-api`
 stages `inventory_scenes` and `prepare_dataset`; they do not trigger Airflow DAGs.
+Public frontend URL is `http://31.192.104.147/`; port `8090` is only the internal
+frontend upstream behind the port 80 reverse proxy.
 
 Frontend runtime data is not stored in git:
 

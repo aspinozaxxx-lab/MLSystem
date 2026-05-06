@@ -15,6 +15,7 @@ mlsystem_gpu_triton_grpc_port: 8001
 mlsystem_gpu_triton_metrics_port: 8002
 mlsystem_gpu_api_port: 8088
 mlsystem_gpu_frontend_port: 8090
+mlsystem_gpu_frontend_public_url: "http://31.192.104.147"
 mlsystem_gpu_bucket: mlsystems
 mlsystem_gpu_mlflow_bucket: mlflow-artifacts
 mlsystem_gpu_triton_image: nvcr.io/nvidia/tritonserver:25.03-py3
