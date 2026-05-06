@@ -86,6 +86,7 @@
     - { key: "MLSYSTEM_FRONTEND_MAX_UPLOAD_MB", value: "{{ mlsystem_gpu_frontend_max_upload_mb }}" }
     - { key: "MLSYSTEM_FRONTEND_S3_PREFIX", value: "frontend-checks" }
   when: frontend_env_stat.stat.exists
+  no_log: true
 
 - name: Deploy MLSystem frontend container
   ansible.builtin.command:
