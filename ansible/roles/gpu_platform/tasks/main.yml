@@ -128,17 +128,17 @@
 
 - name: Initialize Airflow metadata DB and admin user
   ansible.builtin.command:
-    cmd: docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}" up airflow-init
+    cmd: docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}" up --remove-orphans airflow-init
   changed_when: true
 
 - name: Start GPU ML platform core services
   ansible.builtin.command:
-    cmd: docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}" up -d minio mlflow-postgres mlflow triton
+    cmd: docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}" up -d --remove-orphans minio mlflow-postgres mlflow triton
   changed_when: true
 
 - name: Start MLSystem API service
   ansible.builtin.command:
-    cmd: docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}" up -d mlsystem-api
+    cmd: docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}" up -d --remove-orphans mlsystem-api
   changed_when: true
 
 - name: Wait for MinIO health
@@ -179,7 +179,7 @@
 
 - name: Start Airflow services after MLSystem API is ready
   ansible.builtin.command:
-    cmd: docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}" up -d airflow-webserver airflow-scheduler airflow-triggerer
+    cmd: docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}" up -d --remove-orphans airflow-webserver airflow-scheduler airflow-triggerer
   changed_when: true
 
 - name: Wait for Airflow health
