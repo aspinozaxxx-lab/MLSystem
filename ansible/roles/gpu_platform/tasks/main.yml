@@ -121,6 +121,13 @@
     cmd: docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}" config
   changed_when: false
 
+- name: Remove retired RabbitMQ container
+  ansible.builtin.command:
+    cmd: docker rm -f mlsystem-gpu-rabbitmq
+  register: retired_rabbitmq_remove
+  changed_when: retired_rabbitmq_remove.rc == 0
+  failed_when: false
+
 - name: Pull GPU platform images
   ansible.builtin.command:
     cmd: docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}" pull
