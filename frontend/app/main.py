@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 import uuid
@@ -18,11 +19,12 @@ from .auth import is_authenticated, login_session, logout_session, redirect_if_u
 from .config import FrontendConfig, get_config
 from .mlsystem_api import MLSystemApiClient
 from .report_builder import build_annotation_report
-from .upload_store import UploadValidationError, store_uploads
+from .upload_store import UploadValidationError, store_uploads, uploads_diagnostics
 
 
 BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+logger = logging.getLogger("mlsystem.frontend")
 
 
 def create_app(config: FrontendConfig | None = None) -> FastAPI:
@@ -118,7 +120,31 @@ def create_app(config: FrontendConfig | None = None) -> FastAPI:
         try:
             uploads = await store_uploads(run_id=run_id, annotation=annotation_file, scenes=scenes_file, config=config)
         except UploadValidationError as exc:
-            return JSONResponse({"status": "failed", "error": str(exc)}, status_code=400)
+            _write_frontend_status(
+                config,
+                run_id,
+                {
+                    "status": "failed",
+                    "run_id": run_id,
+                    "failed_step": "parse_uploads",
+                    "error": str(exc),
+                    "jobs": [],
+                    "stage_statuses": [],
+                },
+            )
+            return JSONResponse({"status": "failed", "run_id": run_id, "error": str(exc)}, status_code=400)
+        upload_info = uploads_diagnostics(uploads, config.s3_bucket)
+        logger.info(
+            "annotation_check upload run_id=%s annotation=%s annotation_bytes=%s scenes=%s scenes_bytes=%s scene_count=%s scene_preview=%s layout_uri=%s",
+            run_id,
+            uploads.annotation_file,
+            uploads.annotation_size_bytes,
+            uploads.scenes_file,
+            uploads.scenes_size_bytes,
+            uploads.scene_count,
+            uploads.scene_preview,
+            uploads.layout_uri,
+        )
         effective_layout_uri = uploads.layout_uri
         requested_layout_uri = (layout_uri or "").strip()
         if requested_layout_uri and requested_layout_uri != config.default_layout_uri:
@@ -142,7 +168,19 @@ def create_app(config: FrontendConfig | None = None) -> FastAPI:
             "mlflow": {"experiment": "mlsystem-annotation-checks"},
             "params": {"title": title.strip(), "source": "frontend"},
         }
-        _write_frontend_status(config, run_id, {"status": "queued", "run_id": run_id, "payload": _public_payload(payload), "jobs": []})
+        _write_frontend_status(
+            config,
+            run_id,
+            {
+                "status": "queued",
+                "run_id": run_id,
+                "payload": _public_payload(payload),
+                "jobs": [],
+                "stage_statuses": [],
+                "uploaded_files": upload_info,
+                "scene_count": uploads.scene_count,
+            },
+        )
         thread = threading.Thread(target=_run_annotation_check, args=(config, run_id, payload), daemon=True)
         thread.start()
         return JSONResponse({"status": "queued", "run_id": run_id})
@@ -150,7 +188,7 @@ def create_app(config: FrontendConfig | None = None) -> FastAPI:
     @app.get("/api/annotation-check/{run_id}")
     def annotation_check_status(run_id: str, _user: str = Depends(require_user)) -> dict[str, Any]:
         status = _read_frontend_status(config, run_id)
-        report = build_annotation_report(run_id, config.status_root, jobs=status.get("jobs") or [])
+        report = build_annotation_report(run_id, config.status_root, jobs=status.get("jobs") or [], frontend_status=status)
         if status.get("status") in {"queued", "running", "failed", "succeeded"}:
             report["status"] = status["status"] if status["status"] != "succeeded" else report["status"]
         if status.get("error"):
@@ -164,44 +202,127 @@ def _run_annotation_check(config: FrontendConfig, run_id: str, experiment_config
     client = MLSystemApiClient(config.api_base_url, config.api_token)
     jobs: list[dict[str, Any]] = []
     try:
-        _write_frontend_status(config, run_id, {"status": "running", "run_id": run_id, "current_stage": "inventory_scenes", "jobs": jobs})
+        _merge_frontend_status(
+            config,
+            run_id,
+            {
+                "status": "running",
+                "current_stage": "inventory_scenes",
+                "jobs": jobs,
+                "stage_statuses": [{"name": "inventory_scenes", "status": "running", "summary": "Starting inventory_scenes"}],
+            },
+        )
+        stage_payload = {
+            "experiment_config": experiment_config,
+            "airflow_run_id": run_id,
+            "status_root": str(config.status_root),
+            "source": "frontend",
+        }
+        logger.info(
+            "annotation_check start_stage run_id=%s stage=inventory_scenes api_url=%s payload=%s",
+            run_id,
+            f"{config.api_base_url}/api/v1/runs/{run_id}/stages/inventory_scenes/start",
+            json.dumps(_public_payload(stage_payload), ensure_ascii=False)[:2000],
+        )
         inventory_job = client.start_stage(
             run_id,
             "inventory_scenes",
-            {
-                "experiment_config": experiment_config,
-                "airflow_run_id": run_id,
-                "status_root": str(config.status_root),
-                "source": "frontend",
-            },
+            stage_payload,
         )
         jobs.append({"stage": "inventory_scenes", "job_id": inventory_job["job_id"], "state": inventory_job.get("state")})
-        _write_frontend_status(config, run_id, {"status": "running", "run_id": run_id, "current_stage": "inventory_scenes", "jobs": jobs})
+        _merge_frontend_status(config, run_id, {"status": "running", "current_stage": "inventory_scenes", "jobs": jobs})
         inventory_status = client.wait_for_job(inventory_job["job_id"])
         jobs[-1]["state"] = inventory_status.get("state")
         if inventory_status.get("state") != "succeeded":
+            _merge_frontend_status(
+                config,
+                run_id,
+                {
+                    "status": "failed",
+                    "failed_step": "inventory_scenes",
+                    "jobs": jobs,
+                    "stage_statuses": [{"name": "inventory_scenes", "status": "failed", "summary": _job_error_message(inventory_status)}],
+                },
+            )
             raise RuntimeError(_job_error_message(inventory_status))
 
-        _write_frontend_status(config, run_id, {"status": "running", "run_id": run_id, "current_stage": "prepare_dataset", "jobs": jobs})
+        _merge_frontend_status(
+            config,
+            run_id,
+            {
+                "status": "running",
+                "current_stage": "prepare_dataset",
+                "jobs": jobs,
+                "stage_statuses": [
+                    {"name": "inventory_scenes", "status": "success", "summary": "inventory_scenes completed"},
+                    {"name": "prepare_dataset", "status": "running", "summary": "Starting prepare_dataset"},
+                ],
+            },
+        )
+        stage_payload = {
+            "experiment_config": experiment_config,
+            "airflow_run_id": run_id,
+            "status_root": str(config.status_root),
+            "source": "frontend",
+        }
+        logger.info(
+            "annotation_check start_stage run_id=%s stage=prepare_dataset api_url=%s payload=%s",
+            run_id,
+            f"{config.api_base_url}/api/v1/runs/{run_id}/stages/prepare_dataset/start",
+            json.dumps(_public_payload(stage_payload), ensure_ascii=False)[:2000],
+        )
         dataset_job = client.start_stage(
             run_id,
             "prepare_dataset",
-            {
-                "experiment_config": experiment_config,
-                "airflow_run_id": run_id,
-                "status_root": str(config.status_root),
-                "source": "frontend",
-            },
+            stage_payload,
         )
         jobs.append({"stage": "prepare_dataset", "job_id": dataset_job["job_id"], "state": dataset_job.get("state")})
-        _write_frontend_status(config, run_id, {"status": "running", "run_id": run_id, "current_stage": "prepare_dataset", "jobs": jobs})
+        _merge_frontend_status(config, run_id, {"status": "running", "current_stage": "prepare_dataset", "jobs": jobs})
         dataset_status = client.wait_for_job(dataset_job["job_id"])
         jobs[-1]["state"] = dataset_status.get("state")
         if dataset_status.get("state") != "succeeded":
+            _merge_frontend_status(
+                config,
+                run_id,
+                {
+                    "status": "failed",
+                    "failed_step": "prepare_dataset",
+                    "jobs": jobs,
+                    "stage_statuses": [{"name": "prepare_dataset", "status": "failed", "summary": _job_error_message(dataset_status)}],
+                },
+            )
             raise RuntimeError(_job_error_message(dataset_status))
-        _write_frontend_status(config, run_id, {"status": "succeeded", "run_id": run_id, "jobs": jobs, "finished_at": time.time()})
+        _merge_frontend_status(
+            config,
+            run_id,
+            {
+                "status": "succeeded",
+                "jobs": jobs,
+                "stage_statuses": [
+                    {"name": "inventory_scenes", "status": "success", "summary": "inventory_scenes completed"},
+                    {"name": "prepare_dataset", "status": "success", "summary": "prepare_dataset completed"},
+                ],
+                "finished_at": time.time(),
+            },
+        )
     except Exception as exc:  # noqa: BLE001
-        _write_frontend_status(config, run_id, {"status": "failed", "run_id": run_id, "jobs": jobs, "error": str(exc), "finished_at": time.time()})
+        logger.exception("annotation_check failed run_id=%s error=%s", run_id, exc)
+        failed_step = _read_frontend_status(config, run_id).get("failed_step") or _read_frontend_status(config, run_id).get("current_stage") or "api_stage_start"
+        stage_statuses = _read_frontend_status(config, run_id).get("stage_statuses") or []
+        if not jobs and failed_step in {"inventory_scenes", "api_stage_start"}:
+            stage_statuses = [{"name": "inventory_scenes", "status": "failed", "summary": str(exc)}]
+        _merge_frontend_status(
+            config,
+            run_id,
+            {
+                "status": "failed",
+                "failed_step": failed_step,
+                "jobs": jobs,
+                "stage_statuses": stage_statuses,
+                "error": str(exc),
+                "finished_at": time.time(),
+            },
+        )
 
 
 def _job_error_message(status: dict[str, Any]) -> str:
@@ -228,6 +349,12 @@ def _write_frontend_status(config: FrontendConfig, run_id: str, payload: dict[st
     path = _status_path(config, run_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _merge_frontend_status(config: FrontendConfig, run_id: str, updates: dict[str, Any]) -> None:
+    current = _read_frontend_status(config, run_id)
+    current.update({"run_id": run_id, **updates})
+    _write_frontend_status(config, run_id, current)
 
 
 def _read_frontend_status(config: FrontendConfig, run_id: str) -> dict[str, Any]:

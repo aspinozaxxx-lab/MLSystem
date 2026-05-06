@@ -43,6 +43,8 @@ function render(payload) {
   const s = payload.summary || {};
   resultSummary.innerHTML = [
     ["Статус", payload.status],
+    ["Ошибка", payload.error],
+    ["Шаг ошибки", payload.failed_step],
     ["Сцен в списке", s.total_scenes_requested],
     ["Найдено сцен", s.matched_scenes],
     ["Отсутствует", s.missing_scenes],
@@ -97,4 +99,3 @@ function listBlock(title, rows, cls) {
 function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
 }
-

@@ -17,6 +17,8 @@ class MLSystemApiClient:
     base_url: str
     token: str | None = None
     timeout_sec: float = 30.0
+    retries: int = 3
+    retry_delay_sec: float = 2.0
 
     def start_stage(self, run_id: str, stage: str, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", f"/api/v1/runs/{run_id}/stages/{stage}/start", payload)
@@ -46,12 +48,15 @@ class MLSystemApiClient:
             request.add_header("Content-Type", "application/json")
         if self.token:
             request.add_header("Authorization", f"Bearer {self.token}")
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout_sec) as response:
-                return json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            text = exc.read().decode("utf-8", errors="replace")
-            raise MLSystemApiError(f"MLSystem API HTTP {exc.code}: {text}") from exc
-        except urllib.error.URLError as exc:
-            raise MLSystemApiError(f"MLSystem API request failed: {exc}") from exc
-
+        for attempt in range(1, self.retries + 1):
+            try:
+                with urllib.request.urlopen(request, timeout=self.timeout_sec) as response:
+                    return json.loads(response.read().decode("utf-8"))
+            except urllib.error.HTTPError as exc:
+                text = exc.read().decode("utf-8", errors="replace")
+                raise MLSystemApiError(f"MLSystem API HTTP {exc.code}: {text[:2000]}") from exc
+            except urllib.error.URLError as exc:
+                if attempt >= self.retries:
+                    raise MLSystemApiError(f"MLSystem API request failed after {attempt} attempts: {exc}") from exc
+                time.sleep(self.retry_delay_sec)
+        raise MLSystemApiError("MLSystem API request failed")

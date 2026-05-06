@@ -14,7 +14,13 @@ def read_json(path: Path) -> dict[str, Any]:
         return {}
 
 
-def build_annotation_report(run_id: str, status_root: Path, jobs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def build_annotation_report(
+    run_id: str,
+    status_root: Path,
+    jobs: list[dict[str, Any]] | None = None,
+    frontend_status: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    frontend_status = frontend_status or {}
     run_dir = (status_root / run_id).resolve()
     status_root_resolved = status_root.resolve()
     if status_root_resolved not in [run_dir, *run_dir.parents]:
@@ -48,20 +54,39 @@ def build_annotation_report(run_id: str, status_root: Path, jobs: list[dict[str,
     for scene in inventory.get("missing") or []:
         rows.append({"scene": str(scene), "objects": None, "storage_status": "missing", "split": "none"})
 
-    stages = [_stage_view("inventory_scenes", inv_stage), _stage_view("prepare_dataset", prep_stage)]
+    frontend_stage_statuses = {
+        str(item.get("name")): item
+        for item in (frontend_status.get("stage_statuses") or [])
+        if item.get("name")
+    }
+    stages = [
+        _stage_view("inventory_scenes", inv_stage, frontend_stage_statuses.get("inventory_scenes")),
+        _stage_view("prepare_dataset", prep_stage, frontend_stage_statuses.get("prepare_dataset")),
+    ]
     status = "running"
-    if any(stage.get("status") == "failed" for stage in stages):
+    if frontend_status.get("status") == "failed":
+        status = "failed"
+    elif any(stage.get("status") == "failed" for stage in stages):
         status = "failed"
     elif prep_stage.get("status") in {"success", "success_with_warning"}:
         status = "succeeded"
+    elif frontend_status.get("status") in {"queued", "running"}:
+        status = str(frontend_status["status"])
 
+    has_inventory_artifact = bool(inventory)
+    has_manifest_artifact = bool(manifest)
+    uploaded = frontend_status.get("uploaded_files") or {}
     summary = {
-        "total_scenes_requested": inventory.get("scene_count") or inventory.get("scene_rows") or len(rows),
-        "matched_scenes": inventory.get("matched_count") or len(inventory.get("matched") or []),
-        "missing_scenes": inventory.get("missing_count") or len(inventory.get("missing") or []),
+        "total_scenes_requested": (
+            inventory.get("scene_count")
+            if has_inventory_artifact
+            else frontend_status.get("scene_count") or uploaded.get("scene_count")
+        ),
+        "matched_scenes": inventory.get("matched_count") if has_inventory_artifact else None,
+        "missing_scenes": inventory.get("missing_count") if has_inventory_artifact else None,
         "total_objects": (prep_stage.get("counters") or {}).get("total_objects") or split_summary.get("total_objects"),
-        "train_scenes": (prep_stage.get("counters") or {}).get("train_scenes") or manifest.get("train_scene_count"),
-        "val_scenes": (prep_stage.get("counters") or {}).get("val_scenes") or manifest.get("val_scene_count"),
+        "train_scenes": (prep_stage.get("counters") or {}).get("train_scenes") or (manifest.get("train_scene_count") if has_manifest_artifact else None),
+        "val_scenes": (prep_stage.get("counters") or {}).get("val_scenes") or (manifest.get("val_scene_count") if has_manifest_artifact else None),
         "train_objects": (prep_stage.get("counters") or {}).get("train_objects") or split_summary.get("train_objects"),
         "val_objects": (prep_stage.get("counters") or {}).get("val_objects") or split_summary.get("val_objects"),
         "split_strategy": (prep_stage.get("counters") or {}).get("split_strategy") or manifest.get("split_strategy"),
@@ -89,6 +114,9 @@ def build_annotation_report(run_id: str, status_root: Path, jobs: list[dict[str,
         "scene_rows": rows,
         "artifacts": artifacts,
         "validation": validation,
+        "error": frontend_status.get("error"),
+        "failed_step": frontend_status.get("failed_step"),
+        "uploaded_files": uploaded,
     }
 
 
@@ -96,15 +124,15 @@ def _scene_name(item: dict[str, Any]) -> str:
     return str(item.get("entry") or item.get("name") or item.get("scene_name") or "")
 
 
-def _stage_view(name: str, data: dict[str, Any]) -> dict[str, Any]:
+def _stage_view(name: str, data: dict[str, Any], frontend_stage: dict[str, Any] | None = None) -> dict[str, Any]:
+    frontend_stage = frontend_stage or {}
     return {
         "name": name,
-        "status": data.get("status") or "pending",
-        "summary": data.get("summary") or "",
+        "status": data.get("status") or frontend_stage.get("status") or "pending",
+        "summary": data.get("summary") or frontend_stage.get("summary") or "",
         "checks": data.get("checks") or [],
         "counters": data.get("counters") or {},
         "warnings": data.get("warnings") or [],
-        "errors": data.get("errors") or [],
+        "errors": data.get("errors") or frontend_stage.get("errors") or [],
         "artifacts": data.get("artifacts") or {},
     }
-

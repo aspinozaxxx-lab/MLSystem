@@ -4,6 +4,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from fastapi import UploadFile
 
@@ -25,6 +26,12 @@ class StoredUploads:
     layout_uri: str
     annotation_file: str
     scenes_file: str
+    annotation_size_bytes: int
+    scenes_size_bytes: int
+    scene_count: int
+    scene_preview: list[str]
+    annotation_s3_key: str
+    scenes_s3_key: str
 
 
 def sanitize_filename(name: str, fallback: str) -> str:
@@ -58,7 +65,8 @@ async def store_uploads(
         json.loads(annotation_bytes.decode("utf-8-sig"))
     except Exception as exc:  # noqa: BLE001
         raise UploadValidationError(f"GeoJSON is not valid JSON: {exc}") from exc
-    if not any(line.strip() and not line.strip().startswith("#") for line in scenes_bytes.decode("utf-8-sig", errors="replace").splitlines()):
+    scene_names = parse_scene_names(scenes_bytes)
+    if not scene_names:
         raise UploadValidationError("Scene list must contain at least one non-comment scene row")
 
     run_dir = config.upload_root / run_id
@@ -68,8 +76,10 @@ async def store_uploads(
     annotation_path.write_bytes(annotation_bytes)
     scenes_path.write_bytes(scenes_bytes)
 
-    _upload_to_s3(config, f"{config.s3_prefix.rstrip('/')}/{run_id}/{annotation_name}", annotation_bytes, "application/geo+json")
-    _upload_to_s3(config, f"{config.s3_prefix.rstrip('/')}/{run_id}/{scenes_name}", scenes_bytes, "text/plain")
+    annotation_s3_key = f"{config.s3_prefix.rstrip('/')}/{run_id}/{annotation_name}"
+    scenes_s3_key = f"{config.s3_prefix.rstrip('/')}/{run_id}/{scenes_name}"
+    _upload_to_s3(config, annotation_s3_key, annotation_bytes, "application/geo+json")
+    _upload_to_s3(config, scenes_s3_key, scenes_bytes, "text/plain")
     return StoredUploads(
         run_dir=run_dir,
         annotation_path=annotation_path,
@@ -77,7 +87,40 @@ async def store_uploads(
         layout_uri=f"s3://{config.s3_bucket}/{config.s3_prefix.rstrip('/')}/{run_id}/",
         annotation_file=annotation_name,
         scenes_file=scenes_name,
+        annotation_size_bytes=len(annotation_bytes),
+        scenes_size_bytes=len(scenes_bytes),
+        scene_count=len(scene_names),
+        scene_preview=scene_names[:5],
+        annotation_s3_key=annotation_s3_key,
+        scenes_s3_key=scenes_s3_key,
     )
+
+
+def parse_scene_names(content: bytes | str) -> list[str]:
+    text = content.decode("utf-8-sig", errors="replace") if isinstance(content, bytes) else content
+    names: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.lstrip("\ufeff").strip()
+        if not line or line.startswith("#"):
+            continue
+        names.append(line)
+    return names
+
+
+def uploads_diagnostics(uploads: StoredUploads, bucket: str) -> dict[str, Any]:
+    return {
+        "run_dir": str(uploads.run_dir),
+        "annotation_file": uploads.annotation_file,
+        "scenes_file": uploads.scenes_file,
+        "annotation_size_bytes": uploads.annotation_size_bytes,
+        "scenes_size_bytes": uploads.scenes_size_bytes,
+        "scene_count": uploads.scene_count,
+        "scene_preview": uploads.scene_preview,
+        "s3_bucket": bucket,
+        "annotation_s3_key": uploads.annotation_s3_key,
+        "scenes_s3_key": uploads.scenes_s3_key,
+        "layout_uri": uploads.layout_uri,
+    }
 
 
 def _upload_to_s3(config: FrontendConfig, key: str, content: bytes, content_type: str) -> None:
@@ -93,4 +136,3 @@ def _upload_to_s3(config: FrontendConfig, key: str, content: bytes, content_type
         config=Config(s3={"addressing_style": "path"}),
     )
     client.put_object(Bucket=config.s3_bucket, Key=key, Body=content, ContentType=content_type)
-

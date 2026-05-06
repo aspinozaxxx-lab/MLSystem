@@ -47,7 +47,27 @@ class ReportBuilderTests(unittest.TestCase):
             self.assertEqual(report["scene_rows"][0]["objects"], 3)
             self.assertEqual(report["scene_rows"][1]["storage_status"], "missing")
 
+    def test_missing_artifacts_do_not_become_zero_counts(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            report = build_annotation_report(
+                "run1",
+                root,
+                frontend_status={
+                    "status": "failed",
+                    "error": "MLSystem API request failed",
+                    "failed_step": "inventory_scenes",
+                    "scene_count": 24,
+                    "stage_statuses": [{"name": "inventory_scenes", "status": "failed", "summary": "API unavailable"}],
+                },
+            )
+            self.assertEqual(report["status"], "failed")
+            self.assertEqual(report["summary"]["total_scenes_requested"], 24)
+            self.assertIsNone(report["summary"]["matched_scenes"])
+            self.assertIsNone(report["summary"]["missing_scenes"])
+            self.assertEqual(report["stages"][0]["status"], "failed")
+            self.assertEqual(report["error"], "MLSystem API request failed")
+
 
 if __name__ == "__main__":
     unittest.main()
-
