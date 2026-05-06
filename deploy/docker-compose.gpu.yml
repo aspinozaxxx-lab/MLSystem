@@ -236,7 +236,7 @@ services:
     volumes:
       - ${MLSYSTEM_PLATFORM_ROOT:-/data/mlsystem/platform}/frontend-nginx.conf:/etc/nginx/conf.d/default.conf:ro
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost/health >/dev/null || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/health >/dev/null || exit 1"]
       interval: 20s
       timeout: 10s
       retries: 10
