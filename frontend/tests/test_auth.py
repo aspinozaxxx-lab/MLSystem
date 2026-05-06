@@ -42,7 +42,12 @@ class FrontendAuthTests(unittest.TestCase):
             response = client.post("/login", data={"username": "mluser", "password": "wrong"})
             self.assertEqual(response.status_code, 401)
 
+    def test_head_login_for_proxy_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            client = TestClient(create_app(test_config(Path(td))))
+            response = client.head("/login")
+            self.assertEqual(response.status_code, 200)
+
 
 if __name__ == "__main__":
     unittest.main()
-

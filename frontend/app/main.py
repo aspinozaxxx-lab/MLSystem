@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, File, Form, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
@@ -47,6 +47,14 @@ def create_app(config: FrontendConfig | None = None) -> FastAPI:
         if is_authenticated(request):
             return RedirectResponse("/", status_code=303)
         return templates.TemplateResponse(request, "login.html", {"error": None})
+
+    @app.head("/login")
+    def login_head() -> Response:
+        return Response(status_code=200)
+
+    @app.head("/")
+    def index_head() -> Response:
+        return Response(status_code=303, headers={"Location": "/login"})
 
     @app.post("/login")
     async def login(request: Request, username: str = Form(...), password: str = Form(...)) -> HTMLResponse:
