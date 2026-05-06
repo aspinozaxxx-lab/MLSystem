@@ -66,10 +66,13 @@
     group: root
     mode: "0644"
 
-- name: Check deployed MLSystem config directory
-  ansible.builtin.stat:
+- name: Ensure deployed MLSystem config directory exists
+  ansible.builtin.file:
     path: "{{ mlsystem_gpu_repo_root }}/mlsystem/configs"
-  register: gpu_mlsystem_config_dir
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
 
 - name: Install GPU pipeline config into deployed repo
   ansible.builtin.template:
@@ -78,7 +81,6 @@
     owner: root
     group: root
     mode: "0644"
-  when: gpu_mlsystem_config_dir.stat.isdir | default(false)
 
 - name: Install Triton identity Python model
   ansible.builtin.copy:
