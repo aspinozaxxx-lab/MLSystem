@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ..pipeline.airflow_tasks import LEGACY_FALLBACK_STAGES, MAIN_DAG_STAGES, STAGE_POOLS
+from ..pipeline.airflow_tasks import DISPATCHER_STAGE_NAMES, MAIN_DAG_STAGES, STAGE_POOLS
 from ..pipeline.stages.registry import known_stages
 from ..storage.local_io import read_json
 from .job_runner import JobRunner
@@ -16,19 +16,15 @@ def stages_payload() -> dict[str, Any]:
     return {
         "main_dag_stages": MAIN_DAG_STAGES,
         "registry_stages": registry_stages,
-        "legacy_fallback_stages": sorted(LEGACY_FALLBACK_STAGES),
+        "dispatcher_stages": sorted(DISPATCHER_STAGE_NAMES),
         "stage_pools": STAGE_POOLS,
-        "aliases": {
-            "predict_pseudolabel_scenes": "run_pseudolabel_inference",
-            "stitch_probability_maps": "validate_probability_maps",
-            "prepare_dataset_manifest": "prepare_dataset",
-        },
+        "aliases": {},
     }
 
 
 def validate_stage_name(stage_name: str) -> None:
     payload = stages_payload()
-    known = set(payload["main_dag_stages"]) | set(payload["registry_stages"]) | set(payload["legacy_fallback_stages"])
+    known = set(payload["main_dag_stages"]) | set(payload["registry_stages"]) | set(payload["dispatcher_stages"])
     if stage_name not in known:
         raise ValueError(f"Unknown stage: {stage_name}")
 

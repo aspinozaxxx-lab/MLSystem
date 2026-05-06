@@ -25,8 +25,6 @@
     mlsystem_gpu_airflow_admin_password_resolved: "{{ lookup('env', 'AIRFLOW_ADMIN_PASSWORD') | default('', true) or (gpu_existing_env | default({})).get('AIRFLOW_ADMIN_PASSWORD', lookup('password', '/dev/null length=24 chars=ascii_letters,digits')) }}"
     mlsystem_gpu_airflow_fernet_key_resolved: "{{ lookup('env', 'AIRFLOW_FERNET_KEY') | default('', true) or (gpu_existing_env | default({})).get('AIRFLOW_FERNET_KEY', lookup('password', '/dev/null length=44 chars=ascii_letters,digits')) }}"
     mlsystem_gpu_airflow_secret_key_resolved: "{{ lookup('env', 'AIRFLOW_SECRET_KEY') | default('', true) or (gpu_existing_env | default({})).get('AIRFLOW_SECRET_KEY', lookup('password', '/dev/null length=48 chars=ascii_letters,digits')) }}"
-    mlsystem_gpu_rabbitmq_user_resolved: "{{ lookup('env', 'RABBITMQ_DEFAULT_USER') | default('', true) or (gpu_existing_env | default({})).get('RABBITMQ_DEFAULT_USER', 'mlsystem') }}"
-    mlsystem_gpu_rabbitmq_password_resolved: "{{ lookup('env', 'RABBITMQ_DEFAULT_PASS') | default('', true) or (gpu_existing_env | default({})).get('RABBITMQ_DEFAULT_PASS', lookup('password', '/dev/null length=32 chars=ascii_letters,digits')) }}"
     mlsystem_gpu_api_token_resolved: "{{ lookup('env', 'MLSYSTEM_API_TOKEN') | default('', true) or (gpu_existing_env | default({})).get('MLSYSTEM_API_TOKEN', lookup('password', '/dev/null length=40 chars=ascii_letters,digits')) }}"
 
 - name: Ensure GPU platform directories exist
@@ -44,7 +42,6 @@
     - "{{ mlsystem_gpu_data_root }}/airflow/status"
     - "{{ mlsystem_gpu_data_root }}/api/jobs"
     - "{{ mlsystem_gpu_data_root }}/airflow/postgres"
-    - "{{ mlsystem_gpu_data_root }}/rabbitmq"
     - "{{ mlsystem_gpu_data_root }}/triton/model_repository/identity_python/1"
     - "{{ mlsystem_gpu_data_root }}/models"
     - "{{ mlsystem_gpu_data_root }}/cache"
@@ -136,7 +133,7 @@
 
 - name: Start GPU ML platform core services
   ansible.builtin.command:
-    cmd: docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}" up -d minio mlflow-postgres mlflow rabbitmq triton
+    cmd: docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}" up -d minio mlflow-postgres mlflow triton
   changed_when: true
 
 - name: Start MLSystem API service
@@ -194,15 +191,6 @@
   register: airflow_health
   until: airflow_health.status == 200
 
-- name: Verify RabbitMQ health
-  ansible.builtin.command:
-    cmd: docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}" exec -T rabbitmq rabbitmq-diagnostics -q ping
-  register: rabbitmq_health
-  changed_when: false
-  retries: 20
-  delay: 5
-  until: rabbitmq_health.rc == 0
-
 - name: Ensure Airflow resource pools
   ansible.builtin.command:
     cmd: >-
@@ -250,7 +238,6 @@
       airflow: "http://{{ mlsystem_gpu_public_host }}:{{ mlsystem_gpu_airflow_port }}"
       mlflow: "http://{{ mlsystem_gpu_public_host }}:{{ mlsystem_gpu_mlflow_port }}"
       minio_console: "http://{{ mlsystem_gpu_public_host }}:{{ mlsystem_gpu_minio_console_port }}"
-      rabbitmq_management: "ssh tunnel only: http://127.0.0.1:{{ mlsystem_gpu_rabbitmq_management_port }}"
       triton_ready: "http://{{ mlsystem_gpu_public_host }}:{{ mlsystem_gpu_triton_http_port }}/v2/health/ready"
       mlsystem_api: "ssh tunnel/local only: http://127.0.0.1:{{ mlsystem_gpu_api_port }}"
       torch_cuda: "{{ torch_cuda_check.stdout_lines }}"

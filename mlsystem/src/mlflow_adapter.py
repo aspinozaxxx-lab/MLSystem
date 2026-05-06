@@ -430,26 +430,6 @@ def set_run_tags(config: PipelineConfig, run_id: str, tags: dict[str, Any]) -> N
     with mlflow.start_run(run_id=run_id):
         mlflow.set_tags({key: "" if value is None else str(value) for key, value in tags.items()})
 
-def create_queued_job_run(
-    config: PipelineConfig,
-    experiment_name: str,
-    run_name: str,
-    params: dict[str, Any],
-    tags: dict[str, Any],
-    artifacts: list[Path] | None = None,
-    queue_position: int | None = None,
-) -> dict[str, Any]:
-    queued_tags = {
-        "job_status": "queued",
-        "queue_state": "pending",
-        **{key: "" if value is None else str(value) for key, value in tags.items()},
-    }
-    with start_job_run(config, experiment_name, run_name, params=params, tags=queued_tags) as run:
-        if queue_position is not None:
-            run.log_metrics({"queue/position": queue_position}, step=0)
-        run.log_artifacts(artifacts or [])
-        return run.result()
-
 def log_lightweight_run(
     config: PipelineConfig,
     experiment_name: str,

@@ -9,7 +9,7 @@
 - вызывает production helpers из `mlsystem/src/api`;
 - записывает список stages и dry-run job response.
 
-Тест не требует FastAPI, Docker, S3, MLflow, Triton или RabbitMQ.
+Тест не требует FastAPI, Docker, S3, MLflow или Triton.
 
 Основные файлы:
 

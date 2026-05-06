@@ -17,7 +17,7 @@ class ApiStageRoutesTests(unittest.TestCase):
         payload = stages_payload()
         self.assertIn("inventory_scenes", payload["main_dag_stages"])
         self.assertIn("run_pseudolabel_inference", payload["main_dag_stages"])
-        self.assertEqual(payload["aliases"]["stitch_probability_maps"], "validate_probability_maps")
+        self.assertEqual(payload["aliases"], {})
 
     def test_unknown_stage_fails_validation(self) -> None:
         with self.assertRaisesRegex(ValueError, "Unknown stage"):

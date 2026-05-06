@@ -7,7 +7,7 @@ def weighted_average(probability_arrays: list[np.ndarray], weight_arrays: list[n
     """Blend overlapping probability arrays with explicit weights.
 
     The current block_parallel MVP passes one scene-level probability map per
-    block. This helper keeps the contract ready for tile-level Rabbit workers.
+    block and keeps blending behavior centralized.
     """
     if not probability_arrays:
         raise ValueError("No probability arrays to blend")

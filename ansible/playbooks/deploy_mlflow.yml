@@ -1,6 +1,0 @@
----
-- name: Deploy MLflow platform services
-  hosts: all
-  gather_facts: false
-  roles:
-    - role: mlplatform

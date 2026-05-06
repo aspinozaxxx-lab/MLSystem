@@ -20,6 +20,14 @@ id_ed25519*
 *secret*
 
 # Local/server runtime state
+/mlsystem_runs/
+/airflow/status/
+/data/
+/api/jobs/
+/status/
+/outputs/
+/runs/
+/mlruns/
 mlsystem/storage/
 mlsystem/logs/
 storage/
@@ -31,6 +39,18 @@ artifacts/
 cache/
 models/
 checkpoints/
+job.json
+request.json
+report.json
+error.json
+stdout_tail.txt
+stderr_tail.txt
+*.report.md
+*.resources.json
+accepted.geojson
+probability_maps_index.json
+pseudolabel_summary.json
+coverage_report.json
 
 # Heavy geospatial/ML data
 *.tif
@@ -71,10 +91,12 @@ tests/handtests/**/output/
 tests/handtests/input/*.bak_*
 tests/handtests/input/*.missing_removed.txt
 
-# Keep lightweight result summaries
-!results/
-!results/summaries/
-!results/summaries/**/*.json
-!results/summaries/**/*.md
-!results/reports/
-!results/reports/**/*.md
+# Build/test caches and temporary files
+.coverage
+htmlcov/
+*.pyo
+*.log
+*.out
+*.err
+*.bak
+*.tmp

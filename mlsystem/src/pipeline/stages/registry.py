@@ -11,10 +11,8 @@ _ENTRYPOINTS: dict[str, StageEntrypoint] = {}
 _BUILTINS_REGISTERED = False
 
 
-def register_stage(name: str, entrypoint: StageEntrypoint, *, aliases: tuple[str, ...] = ()) -> None:
+def register_stage(name: str, entrypoint: StageEntrypoint) -> None:
     _ENTRYPOINTS[name] = entrypoint
-    for alias in aliases:
-        _ENTRYPOINTS[alias] = entrypoint
 
 
 def get_stage_entrypoint(name: str) -> StageEntrypoint:
@@ -42,15 +40,15 @@ def register_builtin_stages() -> None:
     from .postprocess_pseudolabel import run as postprocess_pseudolabel
     from .prepare_dataset import run as prepare_dataset
     from .prepare_inference_scenes import run as prepare_inference_scenes
-    from .probability_maps import run as stitch_probability_maps
+    from .probability_maps import run as validate_probability_maps
     from .pseudolabel_inference import run as run_pseudolabel_inference
     from .vectorize_pseudolabel import run as vectorize_pseudolabel
 
     register_stage("inventory_scenes", inventory_scenes)
-    register_stage("prepare_dataset", prepare_dataset, aliases=("prepare_dataset_manifest",))
+    register_stage("prepare_dataset", prepare_dataset)
     register_stage("prepare_inference_scenes", prepare_inference_scenes)
-    register_stage("run_pseudolabel_inference", run_pseudolabel_inference, aliases=("predict_pseudolabel_scenes",))
-    register_stage("validate_probability_maps", stitch_probability_maps, aliases=("stitch_probability_maps",))
+    register_stage("run_pseudolabel_inference", run_pseudolabel_inference)
+    register_stage("validate_probability_maps", validate_probability_maps)
     register_stage("vectorize_pseudolabel", vectorize_pseudolabel)
     register_stage("postprocess_pseudolabel", postprocess_pseudolabel)
     register_stage("export_pseudolabel_artifacts", export_pseudolabel)

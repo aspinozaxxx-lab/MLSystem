@@ -118,25 +118,6 @@ services:
       retries: 12
     networks: [mlsystem-gpu]
 
-  rabbitmq:
-    image: ${RABBITMQ_IMAGE:-rabbitmq:3.13-management}
-    container_name: mlsystem-gpu-rabbitmq
-    environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
-      RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_DEFAULT_VHOST:-mlsystem}
-    ports:
-      - "127.0.0.1:${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
-    volumes:
-      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/rabbitmq:/var/lib/rabbitmq
-    healthcheck:
-      test: ["CMD-SHELL", "rabbitmq-diagnostics -q ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 18
-      start_period: 30s
-    networks: [mlsystem-gpu]
-
   airflow-init:
     image: ${AIRFLOW_IMAGE:-apache/airflow:2.9.3-python3.11}
     container_name: mlsystem-gpu-airflow-init
@@ -157,6 +138,7 @@ services:
         airflow db migrate
         airflow users create --username "$${_AIRFLOW_WWW_USER_USERNAME}" --password "$${_AIRFLOW_WWW_USER_PASSWORD}" --firstname "$${_AIRFLOW_WWW_USER_FIRSTNAME}" --lastname "$${_AIRFLOW_WWW_USER_LASTNAME}" --role Admin --email "$${_AIRFLOW_WWW_USER_EMAIL}" || true
         airflow pools set gpu_training "$${MLSYSTEM_AIRFLOW_GPU_SLOTS:-1}" "GPU-bound MLSystem train/inference stages"
+        airflow pools set gpu_inference "$${MLSYSTEM_AIRFLOW_GPU_SLOTS:-1}" "GPU-bound MLSystem inference stages"
         airflow pools set cpu_heavy "$${MLSYSTEM_AIRFLOW_CPU_HEAVY_SLOTS:-6}" "CPU-heavy MLSystem vectorization/postprocess stages"
         airflow pools set cpu_light "$${MLSYSTEM_AIRFLOW_CPU_LIGHT_SLOTS:-12}" "Lightweight MLSystem orchestration stages"
         airflow pools set io_light "$${MLSYSTEM_AIRFLOW_IO_LIGHT_SLOTS:-8}" "Lightweight S3/MLflow IO stages"
@@ -179,8 +161,6 @@ services:
       mlflow:
         condition: service_healthy
       triton:
-        condition: service_healthy
-      rabbitmq:
         condition: service_healthy
     env_file: /etc/mlsystem/gpu-platform.env
     environment:
@@ -213,8 +193,6 @@ services:
     depends_on:
       airflow-postgres:
         condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
       mlsystem-api:
         condition: service_healthy
     env_file: /etc/mlsystem/gpu-platform.env
@@ -245,8 +223,6 @@ services:
     depends_on:
       airflow-postgres:
         condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
       mlsystem-api:
         condition: service_healthy
     env_file: /etc/mlsystem/gpu-platform.env
@@ -268,8 +244,6 @@ services:
     container_name: mlsystem-gpu-airflow-triggerer
     depends_on:
       airflow-postgres:
-        condition: service_healthy
-      rabbitmq:
         condition: service_healthy
       mlsystem-api:
         condition: service_healthy

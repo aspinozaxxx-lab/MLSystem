@@ -1,24 +1,12 @@
-# MLSystem server MVP
+# MLSystem Python package
 
-Lightweight server-side MVP for experiment orchestration on roskadastr-ml.
+This package contains production code used by `mlsystem-api` and Airflow stages.
 
-This project intentionally does not copy large TIFF files and does not run training by default. Large datasets, caches, and artifacts should live in MinIO/S3 or on a dedicated mounted data disk.
+The current server path does not use a filesystem job queue or local CLI executor. Airflow starts stages through the API, and the API persists job state outside the repository.
 
-Quick start:
+Useful local checks:
 
 ```bash
-cd /home/worker/mlsystem
-source /home/worker/ml-training/.venv/bin/activate
-python -m src.cli status
-python -m src.cli check-mlflow
-python -m src.cli check-s3
-python -m src.cli s3-layout
-python -m src.cli preprocess-once
-python -m src.cli enqueue configs/job.example.yaml
-python -m src.cli run-once
-python -m src.web_app
+python -m unittest discover -s tests
+python -m compileall -q mlsystem airflow tests
 ```
-
-Default web port: 8010.
-
-Deployment is split between the code, infrastructure, queue, and results GitHub Actions workflows.

@@ -109,7 +109,7 @@ metric_area_ratio_final_to_before_merge
 
 ## Ограничения MVP
 
-- Сейчас входом является `pseudolabel_scene_results_manifest.json`, где один probability map соответствует сцене. Контракты готовы для tile-level Rabbit jobs, но production Rabbit workers еще не включены.
+- Сейчас входом является `pseudolabel_scene_results_manifest.json`, где один probability map соответствует сцене.
 - Weighted blending helper есть, но текущий MVP обычно обрабатывает один scene-level probability map на block.
 - CRS должен быть projected/metric. EPSG:4326-like CRS для block_parallel сейчас fail-fast.
 

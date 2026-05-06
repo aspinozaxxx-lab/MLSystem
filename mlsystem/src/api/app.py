@@ -110,12 +110,3 @@ def debug_run_stage_sync_endpoint(request: StageStartRequest, run_id: str, stage
         return debug_run_stage_sync(run_id, stage_name, request, JobStore())
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-@app.post("/api/v1/debug/inference-rabbit-smoke", dependencies=[Depends(require_api_token)])
-def inference_rabbit_smoke() -> dict[str, Any]:
-    from ..workflow.inference.rabbitmq_backend import RabbitMQInferenceBackend
-    from ..workflow.inference.contracts import InferenceWorkflowConfig
-
-    config = InferenceWorkflowConfig(enabled=True, backend="rabbitmq_triton")
-    return RabbitMQInferenceBackend(config).smoke_check()

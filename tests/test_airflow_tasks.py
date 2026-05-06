@@ -11,7 +11,7 @@ from unittest.mock import patch
 import numpy as np
 
 from mlsystem.src.pipeline.airflow_tasks import (
-    LEGACY_FALLBACK_STAGES,
+    DISPATCHER_STAGE_NAMES,
     MAIN_DAG_STAGES,
     STAGE_POOLS,
     _extract_pixel_metrics,
@@ -51,7 +51,7 @@ class AirflowTasksTests(unittest.TestCase):
     def test_main_dag_stages_have_pool_and_entrypoint_or_fallback(self) -> None:
         for stage in MAIN_DAG_STAGES:
             self.assertIn(stage, STAGE_POOLS)
-            if stage in LEGACY_FALLBACK_STAGES:
+            if stage in DISPATCHER_STAGE_NAMES:
                 continue
             self.assertTrue(callable(get_stage_entrypoint(stage)))
 
@@ -65,28 +65,28 @@ class AirflowTasksTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Unknown Airflow MLSystem stage"):
                 run_stage("unknown_stage", SMOKE_CONF, "manual__unit", Path(tmp))
 
-    def test_validate_config_writes_summary(self) -> None:
+    def test_inventory_stage_skipped_for_synthetic_smoke(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            result = run_stage("validate_experiment_config", SMOKE_CONF, "manual__unit", Path(tmp))
-            self.assertEqual(result["status"], "skipped")
-            summary = Path(tmp) / "unit_airflow_smoke" / "summary.json"
-            self.assertTrue(summary.exists())
-
-    def test_s3_stage_skipped_for_smoke(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            result = run_stage("check_s3_layout", SMOKE_CONF, "manual__unit", Path(tmp))
+            result = run_stage("inventory_scenes", SMOKE_CONF, "manual__unit", Path(tmp))
             self.assertEqual(result["status"], "skipped")
             self.assertTrue(result["is_smoke_synthetic"])
             self.assertIn("skip_reason", result)
             self.assertNotIn("resources", result)
             self.assertNotIn("counters", result)
 
-    def test_run_airflow_stage_returns_compact_xcom_summary_in_local_mode(self) -> None:
+    def test_run_airflow_stage_uses_api_client(self) -> None:
+        expected = {
+            "stage": "inventory_scenes",
+            "status": "skipped",
+            "job_id": "job1",
+            "report_path": "/r.md",
+            "stage_json_path": "/s.json",
+        }
         with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict("os.environ", {"MLSYSTEM_AIRFLOW_EXECUTION_MODE": "local"}):
-                result = run_airflow_stage("check_s3_layout", SMOKE_CONF, "manual__unit", Path(tmp))
-            self.assertEqual(result["stage"], "check_s3_layout")
-            self.assertEqual(result["status"], "skipped")
+            with patch("mlsystem.src.orchestration.airflow_api_client.run_stage_via_api", return_value=expected) as called:
+                result = run_airflow_stage("inventory_scenes", SMOKE_CONF, "manual__unit", Path(tmp))
+            called.assert_called_once()
+            self.assertEqual(result, expected)
             self.assertIn("report_path", result)
             self.assertIn("stage_json_path", result)
             self.assertNotIn("resources", result)

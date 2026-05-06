@@ -40,7 +40,7 @@ def mask_text(text: str | None) -> str | None:
     return masked
 
 
-def masked_env_snapshot(prefixes: tuple[str, ...] = ("MLSYSTEM_", "MLFLOW_", "MINIO_", "AWS_", "S3_", "RABBITMQ_")) -> dict[str, str]:
+def masked_env_snapshot(prefixes: tuple[str, ...] = ("MLSYSTEM_", "MLFLOW_", "MINIO_", "AWS_", "S3_")) -> dict[str, str]:
     snapshot: dict[str, str] = {}
     for key, value in os.environ.items():
         if not key.startswith(prefixes):

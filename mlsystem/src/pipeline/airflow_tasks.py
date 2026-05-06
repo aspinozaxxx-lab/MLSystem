@@ -20,11 +20,7 @@ from pydantic import BaseModel, Field, field_validator
 from ..job_schema import JobSpec
 from ..mlflow_adapter import MLFLOW_EXCLUDED_ARTIFACT_NAMES, MLflowJobRun
 from ..pipeline_config import load_config
-from ..s3_adapter import build_s3_layout_status
 from ..storage.local_io import read_json, write_json
-from ..storage.s3 import find_layout_files, list_s3_objects, read_s3_text
-from ..data.dataset_split import split_manifest_scene_rows
-from ..data.scene_matching import build_scene_matching_report
 from .prediction_pipeline import PredictionPipeline
 from .training_pipeline import TrainingPipeline
 
@@ -165,39 +161,24 @@ STAGE_XCOM_DIRECT_COUNTERS = {
 
 CLI_STAGE_ALIASES = {
     "inventory": "inventory_scenes",
-    "validate-config": "validate_experiment_config",
-    "check-s3-layout": "check_s3_layout",
-    "match-scenes": "match_scenes",
     "prepare-dataset": "prepare_dataset",
-    "prepare-dataset-manifest": "prepare_dataset_manifest",
     "train": "train_model",
     "evaluate": "evaluate_pixel_metrics",
     "compute-f1": "compute_f1",
-    "compute-object-f1": "compute_object_f1",
     "prepare-inference": "prepare_inference_scenes",
     "pseudolabel": "run_pseudolabel_inference",
-    "predict-pseudolabel-scenes": "predict_pseudolabel_scenes",
     "run-pseudolabel-inference": "run_pseudolabel_inference",
-    "stitch-probability-maps": "stitch_probability_maps",
     "validate-probability-maps": "validate_probability_maps",
     "postprocess": "postprocess_pseudolabel",
     "finalize": "finalize_mlflow_run",
 }
 
-LEGACY_FALLBACK_STAGES = {
-    "validate_experiment_config",
-    "check_s3_layout",
-    "match_scenes",
-    "validate_scene_matching",
-    "inventory_images",
-    "prepare_train_tiles_or_windows",
-    "validate_dataset",
+DISPATCHER_STAGE_NAMES = {
     "create_mlflow_run",
     "train_model",
     "evaluate_pixel_metrics",
     "predict_validation_scenes",
     "vectorize_validation_predictions",
-    "compute_object_f1",
     "compute_f1",
     "generate_prediction_examples",
     "log_mlflow_artifacts",
@@ -632,7 +613,7 @@ def _run_training_pipeline(conf: AirflowExperimentConfig, store: AirflowRunStore
         "job_id": conf.experiment_id,
         "airflow_run_id": store.airflow_run_id,
         "orchestrator": "airflow",
-        "queue_state": "airflow",
+        "execution_path": "airflow_api",
         "task": conf.task,
         "class_name": conf.class_name or "",
         "mlsystem.class_name": conf.class_name or "",
@@ -704,7 +685,7 @@ def _run_pseudolabel_pipeline(conf: AirflowExperimentConfig, store: AirflowRunSt
         "job_id": conf.experiment_id,
         "airflow_run_id": store.airflow_run_id,
         "orchestrator": "airflow",
-        "queue_state": "airflow",
+        "execution_path": "airflow_api",
         "task": conf.task,
         "class_name": conf.class_name or "",
         "mlsystem.class_name": conf.class_name or "",
@@ -1065,7 +1046,7 @@ def _create_mlflow_run(conf: AirflowExperimentConfig, store: AirflowRunStore) ->
                     "airflow_run_id": store.airflow_run_id,
                     "orchestrator": "airflow",
                     "job_status": "running",
-                    "queue_state": "airflow",
+                    "execution_path": "airflow_api",
                     "task": conf.task,
                     "class_name": conf.class_name or "",
                     "mlsystem.class_name": conf.class_name or "",
@@ -1253,7 +1234,7 @@ def _run_airflow_synthetic_pseudolabel_smoke(store: AirflowRunStore) -> dict[str
     }
 
 
-def _run_legacy_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: str, state_dir: Path) -> dict[str, Any]:
+def _run_dispatcher_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: str, state_dir: Path) -> dict[str, Any]:
     started = time.time()
     resources_before = _resource_snapshot()
     conf = AirflowExperimentConfig.model_validate(conf_payload)
@@ -1275,88 +1256,7 @@ def _run_legacy_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: 
         monitor.stop()
         return store.write_stage(stage, smoke_result)
 
-    if stage == "validate_experiment_config":
-        result = _stage_result("success", summary=f"Config valid for {conf.experiment_id}")
-    elif stage == "check_s3_layout":
-        result = _stage_result("success", s3_layout=build_s3_layout_status(load_config()))
-    elif stage == "match_scenes":
-        pipeline_config = load_config()
-        images = list_s3_objects(pipeline_config, conf.images_uri, suffixes=(".tif", ".tiff"))
-        annotation_uri, scenes_uri = find_layout_files(pipeline_config, conf.layout_uri, conf.scenes_file, conf.annotation_file)
-        entries = [line.strip() for line in read_s3_text(pipeline_config, scenes_uri).splitlines() if line.strip() and not line.strip().startswith("#")]
-        preferred_prefixes = list(conf.preprocess.get("scene_matching_prefer_prefixes") or [])
-        report = {
-            **build_scene_matching_report(entries, images, preferred_key_prefixes=preferred_prefixes),
-            "images_uri": conf.images_uri,
-            "layout_uri": conf.layout_uri,
-            "annotation_uri": annotation_uri,
-            "scenes_uri": scenes_uri,
-        }
-        write_json(store.run_dir / "scene_matching_report.json", report)
-        store.update_summary(scene_matching=report)
-        result = _stage_result("success", matched_count=report.get("matched_count"), missing_count=report.get("missing_count"), ambiguous_count=report.get("ambiguous_count"))
-    elif stage == "validate_scene_matching":
-        report = store.read_summary().get("scene_matching") or {}
-        if report.get("matched_count", 0) <= 0:
-            result = _stage_result("failed", error="No scenes matched.")
-        else:
-            warnings = []
-            if report.get("missing_count", 0):
-                warnings.append(f"{report['missing_count']} scenes missing")
-            if report.get("ambiguous_count", 0):
-                warnings.append(f"{report['ambiguous_count']} scenes ambiguous")
-            result = _stage_result("success", warnings=warnings)
-    elif stage == "inventory_images":
-        result = _stage_result("success", summary="Inventory is represented by S3 scene matching inputs in this Airflow step.")
-    elif stage == "prepare_dataset_manifest":
-        matching = store.read_summary().get("scene_matching") or {}
-        matched = matching.get("matched") or []
-        max_scenes = conf.preprocess.get("max_scenes")
-        if max_scenes is not None:
-            matched = matched[: max(1, int(max_scenes))]
-        train_scenes, val_scenes = split_manifest_scene_rows(matched, train_fraction=0.75)
-        manifest = {
-            "experiment_id": conf.experiment_id,
-            "created_at": utc_now(),
-            "source": "airflow",
-            "scene_matching": matching,
-            "selected_scene_count": len(matched),
-            "train_scene_count": len(train_scenes),
-            "val_scene_count": len(val_scenes),
-            "train_scenes": train_scenes,
-            "val_scenes": val_scenes,
-            "limits": {
-                "max_scenes": max_scenes,
-                "max_train_tiles": conf.preprocess.get("max_train_tiles"),
-                "max_val_tiles": conf.preprocess.get("max_val_tiles"),
-            },
-        }
-        write_json(store.run_dir / "dataset_manifest.json", manifest)
-        result = _stage_result(
-            "success",
-            manifest_path=str(store.run_dir / "dataset_manifest.json"),
-            train_scene_count=len(train_scenes),
-            val_scene_count=len(val_scenes),
-        )
-    elif stage == "prepare_train_tiles_or_windows":
-        result = _stage_result(
-            "success",
-            summary="Tile/window preparation will be executed by real_train sampling and SceneInferenceRunner.",
-            tile_size=conf.preprocess.get("tile_size"),
-            stride=conf.preprocess.get("stride"),
-            context=conf.preprocess.get("context"),
-        )
-    elif stage == "validate_dataset":
-        manifest = read_json(store.run_dir / "dataset_manifest.json", default={}) or {}
-        if int(manifest.get("train_scene_count") or 0) <= 0 or int(manifest.get("val_scene_count") or 0) <= 0:
-            result = _stage_result("failed", error="Dataset manifest has no train or validation scenes.")
-        else:
-            result = _stage_result(
-                "success",
-                train_scene_count=manifest.get("train_scene_count"),
-                val_scene_count=manifest.get("val_scene_count"),
-            )
-    elif stage == "create_mlflow_run":
+    if stage == "create_mlflow_run":
         result = _create_mlflow_run(conf, store)
     elif stage == "train_model":
         if not conf.train.get("enabled", True):
@@ -1365,7 +1265,7 @@ def _run_legacy_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: 
             training_result = _run_training_pipeline(conf, store)
             result = _stage_result(
                 "success",
-                summary="TrainingPipeline completed real MLSystem train-only run; pseudolabel is handled by predict_pseudolabel_scenes.",
+                summary="TrainingPipeline completed real MLSystem train-only run; pseudolabel is handled by run_pseudolabel_inference.",
                 mode=training_result.get("mode"),
                 epochs_completed=training_result.get("epochs_completed"),
                 best_val_iou=training_result.get("best_val_iou"),
@@ -1519,7 +1419,7 @@ def _run_legacy_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: 
                 accepted_objects=objects_total,
                 threshold_used=metrics.get("threshold_used"),
             )
-    elif stage in {"compute_f1", "compute_object_f1"}:
+    elif stage == "compute_f1":
         training_result = _read_training_result(store)
         pixel_metrics, pixel_counters, aliases, pixel_warnings = _extract_pixel_metrics(training_result)
         object_metrics, object_counters, object_warnings = _object_metric_summary(training_result)
@@ -1566,84 +1466,6 @@ def _run_legacy_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: 
             },
             details=summary_payload,
         )
-    elif stage == "predict_pseudolabel_scenes":
-        if conf.smoke:
-            smoke = _run_airflow_synthetic_pseudolabel_smoke(store)
-            store.update_summary(pseudolabel_smoke=smoke)
-            result = _stage_result("success", **smoke)
-        elif not conf.pseudolabel.get("enabled", False):
-            result = _stage_result("skipped", summary="pseudolabel.enabled=false")
-        else:
-            prediction_result = _run_pseudolabel_pipeline(conf, store, stage_mode="inference")
-            coverage = read_json(store.run_dir / "coverage_report.json", default={}) or {}
-            pseudolabel = prediction_result.get("pseudolabel") or {}
-            result = _stage_result(
-                "success",
-                summary="PredictionPipeline completed real GPU pseudolabel inference and wrote per-scene probability maps.",
-                scenes_processed=coverage.get("scenes_processed"),
-                total_predicted_windows=coverage.get("total_predicted_windows"),
-                mean_coverage_fraction=coverage.get("mean_coverage_fraction"),
-                accepted_objects=pseudolabel.get("accepted_objects"),
-                accepted_geojson_mb=pseudolabel.get("accepted_geojson_mb"),
-                scene_results_manifest=str(store.run_dir / "pseudolabel_scene_results_manifest.json"),
-            )
-    elif stage == "stitch_probability_maps":
-        coverage = read_json(store.run_dir / "coverage_report.json", default={}) or {}
-        if not coverage:
-            result = _stage_result("failed", error="coverage_report.json is missing.")
-        else:
-            result = _stage_result(
-                "success",
-                mean_coverage_fraction=coverage.get("mean_coverage_fraction"),
-                min_coverage_fraction=coverage.get("min_coverage_fraction"),
-                total_expected_windows=coverage.get("total_expected_windows"),
-                total_predicted_windows=coverage.get("total_predicted_windows"),
-            )
-    elif stage == "vectorize_pseudolabel":
-        accepted = store.run_dir / f"{conf.experiment_id}.accepted.geojson"
-        if not accepted.exists():
-            if not conf.pseudolabel.get("enabled", False):
-                result = _stage_result("skipped", summary="pseudolabel.enabled=false")
-            else:
-                prediction_result = _run_pseudolabel_pipeline(conf, store, stage_mode="postprocess")
-                coverage = read_json(store.run_dir / "coverage_report.json", default={}) or {}
-                pseudolabel = prediction_result.get("pseudolabel") or {}
-                result = _stage_result(
-                    "success",
-                    summary="CPU vectorization/postprocess completed from saved probability maps.",
-                    scenes_processed=coverage.get("scenes_processed"),
-                    accepted_objects=pseudolabel.get("accepted_objects"),
-                    accepted_geojson_mb=pseudolabel.get("accepted_geojson_mb"),
-                    accepted_geojson=str(accepted),
-                )
-        else:
-            result = _stage_result("success", accepted_geojson=str(accepted), size_bytes=accepted.stat().st_size)
-    elif stage == "postprocess_pseudolabel":
-        training_result = _read_training_result(store)
-        metrics = training_result.get("postprocess_metrics") or {}
-        if not metrics:
-            result = _stage_result("failed", error="No postprocess metrics found.")
-        else:
-            result = _stage_result(
-                "success",
-                accepted_objects=metrics.get("accepted_objects"),
-                max_objects=conf.postprocess.get("max_objects"),
-                threshold_used=metrics.get("threshold_used"),
-                min_object_area_m2_used=metrics.get("min_object_area_m2_used"),
-                simplify_tolerance_m_used=metrics.get("simplify_tolerance_m_used"),
-            )
-    elif stage == "export_pseudolabel_artifacts":
-        artifacts = _existing_artifacts(store)
-        required = ["pseudolabel_scenes.txt", f"{conf.experiment_id}.accepted.geojson", "coverage_report.json", "pseudolabel_summary.json"]
-        missing_required = [name for name in required if name not in artifacts]
-        if missing_required:
-            result = _stage_result("failed", error=f"Missing pseudolabel artifacts: {missing_required}")
-        else:
-            result = _stage_result(
-                "success",
-                artifacts={name: artifacts[name] for name in required},
-                excluded_local_artifacts_not_logged=_forbidden_logged_artifacts(store),
-            )
     elif stage == "generate_prediction_examples":
         examples = store.run_dir / "prediction_examples.html"
         if not examples.exists():
@@ -1730,10 +1552,10 @@ def run_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: str, sta
     try:
         entrypoint = get_stage_entrypoint(stage)
     except KeyError:
-        if stage not in LEGACY_FALLBACK_STAGES:
-            known = ", ".join(MAIN_DAG_STAGES + sorted(LEGACY_FALLBACK_STAGES))
+        if stage not in DISPATCHER_STAGE_NAMES:
+            known = ", ".join(MAIN_DAG_STAGES + sorted(DISPATCHER_STAGE_NAMES))
             raise ValueError(f"Unknown Airflow MLSystem stage: {stage}. Known stages: {known}")
-        return _run_legacy_stage(stage, conf_payload, airflow_run_id, state_dir)
+        return _run_dispatcher_stage(stage, conf_payload, airflow_run_id, state_dir)
 
     started = time.time()
     resources_before = _resource_snapshot()
@@ -1804,33 +1626,9 @@ def run_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: str, sta
 
 
 def run_airflow_stage(stage: str, dag_run_conf: dict[str, Any], airflow_run_id: str, state_dir: Path | str) -> dict[str, Any]:
-    mode = str(os.getenv("MLSYSTEM_AIRFLOW_EXECUTION_MODE") or "local").lower()
-    if mode == "api":
-        from ..orchestration.airflow_api_client import run_stage_via_api
+    from ..orchestration.airflow_api_client import run_stage_via_api
 
-        return run_stage_via_api(stage, dag_run_conf, airflow_run_id, Path(state_dir))
-    from .stage_report_formatter import compact_xcom_summary, format_stage_report
-
-    result = run_stage(stage, dag_run_conf, airflow_run_id, Path(state_dir))
-    print(
-        format_stage_report(
-            result,
-            stage=stage,
-            run_id=airflow_run_id,
-            duration_sec=result.get("duration_sec"),
-            stage_json_path=result.get("stage_json_path"),
-            report_path=result.get("report_path"),
-        ),
-        flush=True,
-    )
-    return compact_xcom_summary(
-        result,
-        stage=stage,
-        run_id=airflow_run_id,
-        duration_sec=result.get("duration_sec"),
-        stage_json_path=result.get("stage_json_path"),
-        report_path=result.get("report_path"),
-    )
+    return run_stage_via_api(stage, dag_run_conf, airflow_run_id, Path(state_dir))
 
 
 def push_stage_xcom(summary: dict[str, Any], task_instance: Any) -> None:
@@ -1841,7 +1639,7 @@ def push_stage_xcom(summary: dict[str, Any], task_instance: Any) -> None:
     stage = _canonical_xcom_stage(str(enriched.get("stage") or ""))
     if stage:
         enriched.setdefault("pool", (STAGE_POOLS.get(str(stage)) or ("default_pool", 1))[0])
-    enriched.setdefault("execution_mode", str(os.getenv("MLSYSTEM_AIRFLOW_EXECUTION_MODE") or "local").lower())
+    enriched.setdefault("execution_mode", str(os.getenv("MLSYSTEM_AIRFLOW_EXECUTION_MODE") or "api").lower())
     for key in (
         "stage",
         "status",
@@ -1983,12 +1781,6 @@ def _is_allowed_xcom_key(key: str) -> bool:
 
 
 def _canonical_xcom_stage(stage: str) -> str:
-    if stage == "compute_object_f1":
-        return "compute_f1"
-    if stage == "predict_pseudolabel_scenes":
-        return "run_pseudolabel_inference"
-    if stage == "stitch_probability_maps":
-        return "validate_probability_maps"
     return stage
 
 
