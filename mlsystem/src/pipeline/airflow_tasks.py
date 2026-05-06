@@ -1873,6 +1873,21 @@ def push_stage_xcom(summary: dict[str, Any], task_instance: Any) -> None:
     if enriched.get("is_smoke_synthetic"):
         return
 
+    metrics = enriched.get("key_metrics") or {}
+    object_metrics_available: bool | None = None
+    if stage == "compute_f1":
+        object_metric_keys = {"object_precision", "object_recall", "object_f1"}
+        pixel_metric_keys = {"pixel_precision", "pixel_recall", "pixel_f1", "pixel_iou", "pixel_accuracy"}
+        object_available = any(_is_numeric_xcom_value(metrics.get(name)) for name in object_metric_keys)
+        object_metrics_available = object_available
+        pixel_available = any(_is_numeric_xcom_value(metrics.get(name)) for name in pixel_metric_keys)
+        safe_xcom_push(task_instance, "object_metrics_available", object_available)
+        if not object_available:
+            safe_xcom_push(task_instance, "object_metrics_reason", "validation vectorization is not implemented as a distinct stage yet")
+        safe_xcom_push(task_instance, "pixel_metrics_available", pixel_available)
+        if not pixel_available:
+            safe_xcom_push(task_instance, "pixel_metrics_reason", "pixel metrics are not available in current training_result.json")
+
     for name in sorted(STAGE_XCOM_DIRECT_COUNTERS.get(stage, set())):
         if name in counters:
             safe_xcom_push(task_instance, _xcom_key(name), counters.get(name))
@@ -1881,10 +1896,11 @@ def push_stage_xcom(summary: dict[str, Any], task_instance: Any) -> None:
             if name in counters:
                 safe_xcom_push(task_instance, name, counters.get(name))
     for name in sorted(STAGE_XCOM_COUNTERS.get(stage, set())):
+        if stage == "compute_f1" and object_metrics_available is False:
+            continue
         if name in counters:
             safe_xcom_push(task_instance, f"counter_{_xcom_key(name)}", counters.get(name))
     for name in sorted(STAGE_XCOM_METRICS.get(stage, set())):
-        metrics = enriched.get("key_metrics") or {}
         if name in metrics:
             safe_xcom_push(task_instance, f"metric_{_xcom_key(name)}", metrics.get(name))
 
@@ -1929,18 +1945,31 @@ _XCOM_DIRECT_KEYS = {
     "threshold",
     "limit_source",
     "limit_reason",
+    "object_metrics_available",
+    "object_metrics_reason",
+    "pixel_metrics_available",
+    "pixel_metrics_reason",
 }
 
 
 def safe_xcom_push(task_instance: Any, key: str, value: Any) -> None:
     """Push one XCom key after scalar-only normalization."""
     normalized_key = _xcom_key(key)
+    logger = logging.getLogger("mlsystem.airflow.xcom")
     if not _is_allowed_xcom_key(normalized_key):
-        logging.getLogger("mlsystem.airflow.xcom").warning("Skipping unsupported XCom key %s", normalized_key)
+        logger.warning("Skipping unsupported XCom key %s", normalized_key)
         return
-    safe_value, converted = _coerce_xcom_value(value)
+    safe_value, converted, skip_reason = _coerce_xcom_value(value, key=normalized_key)
+    if skip_reason:
+        logger.info(
+            "Skipping unsafe/unavailable XCom key=%s value_type=%s reason=%s",
+            normalized_key,
+            type(value).__name__,
+            skip_reason,
+        )
+        return
     if converted:
-        logging.getLogger("mlsystem.airflow.xcom").warning("Converted non-scalar XCom value for key %s", normalized_key)
+        logger.warning("Converted XCom value for key %s to safe scalar", normalized_key)
     task_instance.xcom_push(key=normalized_key, value=safe_value)
 
 
@@ -1963,8 +1992,11 @@ def _canonical_xcom_stage(stage: str) -> str:
     return stage
 
 
-def _coerce_xcom_value(value: Any) -> tuple[str | int | float | bool | None, bool]:
+def _coerce_xcom_value(value: Any, *, key: str | None = None) -> tuple[str | int | float | bool | None, bool, str | None]:
     original_type = type(value)
+    normalized_key = _xcom_key(key or "")
+    is_metric = normalized_key.startswith("metric_")
+    is_counter = normalized_key.startswith("counter_")
     try:
         import numpy as np  # type: ignore
 
@@ -1974,27 +2006,49 @@ def _coerce_xcom_value(value: Any) -> tuple[str | int | float | bool | None, boo
         pass
 
     if value is None:
-        return None, original_type is not type(None)
+        return None, False, "unavailable None value"
     if isinstance(value, bool):
-        return value, original_type is not bool
+        if is_metric or is_counter:
+            return None, False, "boolean is not a numeric metric/counter"
+        return value, original_type is not bool, None
     if isinstance(value, int) and not isinstance(value, bool):
-        return int(value), original_type is not int
+        return int(value), original_type is not int, None
     if isinstance(value, float):
-        return (float(value) if math.isfinite(float(value)) else None), original_type is not float or not math.isfinite(float(value))
+        if not math.isfinite(float(value)):
+            return None, False, "non-finite float"
+        return float(value), original_type is not float, None
     if isinstance(value, Decimal):
-        return (float(value) if value.is_finite() else None), True
+        if not value.is_finite():
+            return None, False, "non-finite Decimal"
+        return float(value), True, None
     if isinstance(value, datetime):
-        return value.isoformat(), True
+        if is_metric or is_counter:
+            return None, False, "datetime is not a numeric metric/counter"
+        return value.isoformat(), True, None
     if isinstance(value, date):
-        return value.isoformat(), True
+        if is_metric or is_counter:
+            return None, False, "date is not a numeric metric/counter"
+        return value.isoformat(), True, None
     if isinstance(value, Path):
-        return _truncate_xcom_text(str(value)), True
+        if is_metric or is_counter:
+            return None, False, "Path is not a numeric metric/counter"
+        return _truncate_xcom_text(str(value)), True, None
     if isinstance(value, str):
-        return _truncate_xcom_text(value), False
+        if is_metric or is_counter:
+            if value.strip().lower() in {"", "none", "null", "nan", "inf", "+inf", "-inf", "not_available", "not_computed", "unknown"}:
+                return None, False, "unavailable string value"
+            return None, False, "string is not a numeric metric/counter"
+        return _truncate_xcom_text(value), False, None
+    if isinstance(value, bytes):
+        return None, False, "bytes are not allowed in XCom"
     if isinstance(value, (dict, list, tuple, set)):
-        text = json.dumps(value, ensure_ascii=False, default=str, sort_keys=True)
-        return _truncate_xcom_text(text), True
-    return _truncate_xcom_text(str(value)), True
+        return None, False, "container values are not allowed in scalar XCom"
+    return None, False, "custom object is not allowed in scalar XCom"
+
+
+def _is_numeric_xcom_value(value: Any) -> bool:
+    safe_value, _converted, skip_reason = _coerce_xcom_value(value, key="metric_value")
+    return skip_reason is None and isinstance(safe_value, (int, float)) and not isinstance(safe_value, bool)
 
 
 def _truncate_xcom_text(value: str, max_chars: int = XCOM_MAX_VALUE_CHARS) -> str:

@@ -3,6 +3,8 @@ from __future__ import annotations
 import tempfile
 import unittest
 from datetime import datetime
+from decimal import Decimal
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -270,13 +272,23 @@ class AirflowTasksTests(unittest.TestCase):
 
     def test_xcom_safe_value_normalizes_unsafe_types(self) -> None:
         self.assertEqual(xcom_safe_value(np.int64(5)), 5)
+        self.assertEqual(type(xcom_safe_value(np.int64(5))), int)
         self.assertAlmostEqual(xcom_safe_value(np.float32(1.25)), 1.25, places=5)
+        self.assertIsInstance(xcom_safe_value(np.float64(0.25)), float)
+        self.assertEqual(xcom_safe_value(Decimal("0.25")), 0.25)
+        self.assertEqual(xcom_safe_value(0), 0)
+        self.assertEqual(xcom_safe_value(0.0), 0.0)
         self.assertIsNone(xcom_safe_value(float("nan")))
         self.assertIsNone(xcom_safe_value(float("inf")))
+        self.assertIsNone(xcom_safe_value(float("-inf")))
         self.assertEqual(xcom_safe_value(Path("/tmp/report.txt")), str(Path("/tmp/report.txt")))
         self.assertEqual(xcom_safe_value(datetime(2026, 5, 5, 12, 0)), "2026-05-05T12:00:00")
-        self.assertIsInstance(xcom_safe_value({"a": 1}), str)
-        self.assertIsInstance(xcom_safe_value(["a", "b"]), str)
+        self.assertIsNone(xcom_safe_value({"a": 1}))
+        self.assertIsNone(xcom_safe_value(["a", "b"]))
+        self.assertIsNone(xcom_safe_value({"a", "b"}))
+        self.assertIsNone(xcom_safe_value(("a", "b")))
+        self.assertIsNone(xcom_safe_value(b"bytes"))
+        self.assertIsNone(xcom_safe_value(object()))
 
     def test_safe_xcom_push_keeps_values_scalar(self) -> None:
         class FakeTaskInstance:
@@ -288,11 +300,94 @@ class AirflowTasksTests(unittest.TestCase):
 
         ti = FakeTaskInstance()
         safe_xcom_push(ti, "counter_accepted_objects", np.int64(9))
+        safe_xcom_push(ti, "metric_pixel_f1", np.float64(0.25))
+        safe_xcom_push(ti, "metric_pixel_iou", Decimal("0.125"))
+        safe_xcom_push(ti, "counter_zero", 0)
+        safe_xcom_push(ti, "metric_zero", 0.0)
+        safe_xcom_push(ti, "metric_none", None)
+        safe_xcom_push(ti, "counter_none", None)
+        safe_xcom_push(ti, "metric_nan", float("nan"))
+        safe_xcom_push(ti, "metric_inf", float("inf"))
+        safe_xcom_push(ti, "counter_unknown", "unknown")
+        safe_xcom_push(ti, "metric_not_available", "not_available")
+        safe_xcom_push(ti, "counter_bool", True)
+        safe_xcom_push(ti, "counter_path", Path("/tmp/report.txt"))
+        safe_xcom_push(ti, "summary_path", Path("/tmp/report.txt"))
         safe_xcom_push(ti, "summary", {"too": "nested"})
         safe_xcom_push(ti, "unsupported_blob", {"skip": True})
         self.assertEqual(ti.values["counter_accepted_objects"], 9)
-        self.assertIsInstance(ti.values["summary"], str)
+        self.assertEqual(ti.values["metric_pixel_f1"], 0.25)
+        self.assertEqual(ti.values["metric_pixel_iou"], 0.125)
+        self.assertEqual(ti.values["counter_zero"], 0)
+        self.assertEqual(ti.values["metric_zero"], 0.0)
+        self.assertEqual(ti.values["summary_path"], str(Path("/tmp/report.txt")))
+        self.assertNotIn("summary", ti.values)
         self.assertNotIn("unsupported_blob", ti.values)
+        self.assertNotIn("metric_none", ti.values)
+        self.assertNotIn("counter_none", ti.values)
+        self.assertNotIn("metric_nan", ti.values)
+        self.assertNotIn("metric_inf", ti.values)
+        self.assertNotIn("counter_unknown", ti.values)
+        self.assertNotIn("metric_not_available", ti.values)
+        self.assertNotIn("counter_bool", ti.values)
+        self.assertNotIn("counter_path", ti.values)
+        for value in ti.values.values():
+            self.assertIsInstance(value, (str, int, float, bool))
+            json.dumps(value, allow_nan=False)
+
+    def test_compute_f1_xcom_skips_unavailable_object_metrics(self) -> None:
+        class FakeTaskInstance:
+            def __init__(self) -> None:
+                self.values: dict[str, object] = {}
+
+            def xcom_push(self, *, key: str, value: object) -> None:
+                self.values[key] = value
+
+        summary = {
+            "stage": "compute_f1",
+            "status": "success_with_warning",
+            "summary": "Pixel metrics summarized; object metrics are not available because validation vectorization is not implemented as a distinct stage yet.",
+            "key_counters": {
+                "reference_objects": None,
+                "predicted_objects": None,
+                "tp_objects": None,
+                "fp_objects": None,
+                "fn_objects": None,
+                "reference_scenes": None,
+                "prediction_scenes": None,
+            },
+            "key_metrics": {
+                "object_f1": None,
+                "object_precision": "not_available",
+                "object_recall": None,
+                "pixel_precision": np.float64(0.1),
+                "pixel_recall": np.float64(0.2),
+                "pixel_f1": np.float64(0.13333333333333333),
+                "pixel_iou": np.float64(0.07142857142857142),
+                "pixel_accuracy": float("nan"),
+            },
+        }
+        ti = FakeTaskInstance()
+        push_stage_xcom(summary, ti)
+        self.assertEqual(ti.values["status"], "success_with_warning")
+        self.assertFalse(ti.values["object_metrics_available"])
+        self.assertEqual(ti.values["object_metrics_reason"], "validation vectorization is not implemented as a distinct stage yet")
+        self.assertTrue(ti.values["pixel_metrics_available"])
+        self.assertNotIn("metric_object_f1", ti.values)
+        self.assertNotIn("metric_object_precision", ti.values)
+        self.assertNotIn("metric_object_recall", ti.values)
+        self.assertNotIn("counter_reference_objects", ti.values)
+        self.assertNotIn("counter_predicted_objects", ti.values)
+        self.assertNotIn("counter_tp_objects", ti.values)
+        self.assertNotIn("counter_reference_scenes", ti.values)
+        self.assertEqual(ti.values["metric_pixel_precision"], 0.1)
+        self.assertEqual(ti.values["metric_pixel_recall"], 0.2)
+        self.assertAlmostEqual(ti.values["metric_pixel_f1"], 0.13333333333333333)
+        self.assertEqual(ti.values["metric_pixel_iou"], 0.07142857142857142)
+        self.assertNotIn("metric_pixel_accuracy", ti.values)
+        for value in ti.values.values():
+            self.assertIsInstance(value, (str, int, float, bool))
+            json.dumps(value, allow_nan=False)
 
     def test_stage_failure_writes_stage_report_before_raising(self) -> None:
         conf = {
