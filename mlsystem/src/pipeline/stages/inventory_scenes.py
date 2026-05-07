@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ...data.scene_matching import build_scene_matching_report
+from ...data.scene_matching import build_scene_matching_report, parse_scene_list_text
 from ...pipeline_config import load_config
 from ...s3_adapter import build_s3_layout_status
 from ...storage.local_io import write_json
@@ -47,11 +47,7 @@ def run(ctx: StageContext) -> StageReport:
         raise StageFailure("required layout file is missing", report) from exc
 
     try:
-        entries = [
-            line.strip().split()[0]
-            for line in read_s3_text(pipeline_config, scenes_uri).splitlines()
-            if line.strip() and not line.strip().startswith("#")
-        ]
+        entries = parse_scene_list_text(read_s3_text(pipeline_config, scenes_uri))
         checks.append(StageCheck("scenes_file", "ok", f"{len(entries)} scene rows read"))
     except Exception as exc:  # noqa: BLE001
         report = StageReport(ctx.stage_id, "failed", checks, errors=[f"scenes_file cannot be read: {exc}"])
@@ -87,7 +83,13 @@ def run(ctx: StageContext) -> StageReport:
         "layout_uri": ctx.config.layout_uri,
         "annotation_uri": annotation_uri,
         "scenes_uri": scenes_uri,
-        "scene_count": len(entries),
+        "scene_count": int(matching.get("expanded_scene_count") or len(matched)),
+        "requested_entries_count": int(matching.get("requested_entries_count") or len(entries)),
+        "requested_files_count": int(matching.get("requested_files_count") or 0),
+        "requested_folders_count": int(matching.get("requested_folders_count") or 0),
+        "expanded_scene_count": int(matching.get("expanded_scene_count") or len(matched)),
+        "folder_expansions": matching.get("folder_expansions") or {},
+        "unresolved_entries": matching.get("unresolved_entries") or missing,
         "matched_count": len(matched),
         "missing_count": len(missing),
         "ambiguous_count": len(ambiguous),
@@ -127,7 +129,11 @@ def run(ctx: StageContext) -> StageReport:
         )
     )
     counters = {
-        "scene_rows": len(entries),
+        "scene_rows": int(matching.get("expanded_scene_count") or len(matched)),
+        "requested_entries_count": int(matching.get("requested_entries_count") or len(entries)),
+        "requested_files_count": int(matching.get("requested_files_count") or 0),
+        "requested_folders_count": int(matching.get("requested_folders_count") or 0),
+        "expanded_scene_count": int(matching.get("expanded_scene_count") or len(matched)),
         "matched_scenes": len(matched),
         "missing_scenes": len(missing),
         "ambiguous_scenes": len(ambiguous),
@@ -151,9 +157,19 @@ def _inventory_report_text(inventory: dict[str, Any], warnings: list[str], error
         f"scenes_uri={inventory.get('scenes_uri')}",
         f"annotation_uri={inventory.get('annotation_uri')}",
         f"scene_count={inventory.get('scene_count')}",
+        f"requested_entries_count={inventory.get('requested_entries_count')}",
+        f"requested_files_count={inventory.get('requested_files_count')}",
+        f"requested_folders_count={inventory.get('requested_folders_count')}",
+        f"expanded_scene_count={inventory.get('expanded_scene_count')}",
         f"matched_count={inventory.get('matched_count')}",
         f"missing_count={inventory.get('missing_count')}",
         f"ambiguous_count={inventory.get('ambiguous_count')}",
+        "",
+        "[folder_expansions]",
+        *[
+            f"{raw} -> {payload.get('matched_folder')} ({payload.get('scene_count')} scenes)"
+            for raw, payload in sorted((inventory.get("folder_expansions") or {}).items())
+        ],
         "",
         "[missing]",
         *(inventory.get("missing") or []),

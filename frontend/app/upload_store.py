@@ -103,7 +103,7 @@ def parse_scene_names(content: bytes | str) -> list[str]:
         line = raw_line.lstrip("\ufeff").strip()
         if not line or line.startswith("#"):
             continue
-        names.append(line)
+        names.append(line.split()[0].replace("\\", "/"))
     return names
 
 

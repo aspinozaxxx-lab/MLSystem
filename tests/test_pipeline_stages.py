@@ -40,6 +40,24 @@ class PipelineStagesTests(unittest.TestCase):
                     run_inventory_scenes(ctx)
             self.assertIn("missing_scene.tif", "\n".join(raised.exception.report.errors + (ctx.store.run_dir / "missing_scenes.txt").read_text(encoding="utf-8").splitlines()))
 
+    def test_inventory_scenes_expands_folder_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ctx = self._context(tmp)
+            images = [
+                {"bucket": "b", "key": "images/Hilokskij/a.tif", "name": "a.tif", "size": 1},
+                {"bucket": "b", "key": "images/Hilokskij/b.TIF", "name": "b.TIF", "size": 1},
+                {"bucket": "b", "key": "images/Toguchinskij/c.tif", "name": "c.tif", "size": 1},
+            ]
+            with self._inventory_patches(images, "hilokskij\nToguchinskij/c.tif\n"):
+                report = run_inventory_scenes(ctx)
+            self.assertEqual(report.status, "success")
+            self.assertEqual(report.counters["requested_entries_count"], 2)
+            self.assertEqual(report.counters["requested_folders_count"], 1)
+            self.assertEqual(report.counters["expanded_scene_count"], 3)
+            inventory = json.loads((ctx.store.run_dir / "inventory_scenes.json").read_text(encoding="utf-8"))
+            self.assertEqual(inventory["scene_count"], 3)
+            self.assertEqual([item["entry"] for item in inventory["matched"]], ["images/Hilokskij/a.tif", "images/Hilokskij/b.TIF", "Toguchinskij/c.tif"])
+
     def test_prepare_dataset_object_balanced_split_keeps_zero_scenes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             ctx = self._context(tmp, preprocess={"split_strategy": "object_balanced", "count_mode": "property", "target_val_fraction": 0.34, "split_seed": 3})

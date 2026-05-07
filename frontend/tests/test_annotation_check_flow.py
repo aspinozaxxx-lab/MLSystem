@@ -107,7 +107,7 @@ class AnnotationCheckFlowTests(unittest.TestCase):
     def test_upload_validation_helpers(self) -> None:
         self.assertEqual(sanitize_filename("../bad name.geojson", "x.geojson"), "bad_name.geojson")
         self.assertIsInstance(UploadValidationError("bad"), ValueError)
-        self.assertEqual(parse_scene_names("\ufeff a.tif\r\n\n# comment\r\nb.TIFF\r\n"), ["a.tif", "b.TIFF"])
+        self.assertEqual(parse_scene_names("\ufeff a.tif\r\n\n# comment\r\nb.TIFF\r\nfolder\\scene.tif extra\r\n"), ["a.tif", "b.TIFF", "folder/scene.tif"])
 
     def test_api_start_error_is_visible_and_not_zeroed(self) -> None:
         class FailingApiClient(FakeApiClient):

@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any
 
+RASTER_SUFFIXES = (".tif", ".tiff")
+
 
 @dataclass
 class SceneMatch:
@@ -13,6 +15,17 @@ class SceneMatch:
     key: str
     name: str
     score: float
+
+
+def parse_scene_list_text(text: str | bytes) -> list[str]:
+    payload = text.decode("utf-8-sig", errors="replace") if isinstance(text, bytes) else text
+    entries: list[str] = []
+    for raw_line in payload.splitlines():
+        line = raw_line.lstrip("\ufeff").strip()
+        if not line or line.startswith("#"):
+            continue
+        entries.append(line.split()[0].replace("\\", "/"))
+    return entries
 
 
 def norm_scene_name(value: str) -> str:
@@ -54,10 +67,15 @@ def build_scene_matching_report(
     preferred_key_prefixes: list[str] | None = None,
 ) -> dict[str, Any]:
     normalized_images = [(item, norm_scene_name(item["name"])) for item in images]
+    folder_index = _build_folder_index(images)
     matched: list[SceneMatch] = []
     ambiguous: list[dict[str, Any]] = []
     missing: list[str] = []
     rows: list[dict[str, Any]] = []
+    matched_identities: set[str] = set()
+    requested_files: list[str] = []
+    requested_folders: list[str] = []
+    folder_expansions: dict[str, dict[str, Any]] = {}
 
     for entry in entries:
         needle = norm_scene_name(entry)
@@ -78,12 +96,14 @@ def build_scene_matching_report(
         exact_candidates = [item for item in scored if item["score"] == 1.0 and item["reason"] == "normalized_exact"]
         decision = "missing"
         reason = "no_reliable_candidate"
+        row_extra: dict[str, Any] = {}
         if best and best["score"] >= accept_threshold:
             if len(exact_candidates) == 1:
                 decision = "matched"
                 reason = exact_candidates[0]["reason"]
                 image = exact_candidates[0]["image"]
-                matched.append(SceneMatch(entry=entry, key=image["key"], name=image["name"], score=1.0))
+                _append_match_once(matched, matched_identities, SceneMatch(entry=entry, key=image["key"], name=image["name"], score=1.0))
+                requested_files.append(entry)
             elif len(exact_candidates) > 1 and preferred_key_prefixes:
                 preferred = []
                 for prefix in preferred_key_prefixes:
@@ -98,7 +118,8 @@ def build_scene_matching_report(
                     decision = "matched"
                     reason = "preferred_exact_duplicate"
                     image = preferred[0]["image"]
-                    matched.append(SceneMatch(entry=entry, key=image["key"], name=image["name"], score=1.0))
+                    _append_match_once(matched, matched_identities, SceneMatch(entry=entry, key=image["key"], name=image["name"], score=1.0))
+                    requested_files.append(entry)
                 else:
                     decision = "ambiguous"
                     reason = "multiple_close_candidates"
@@ -141,12 +162,58 @@ def build_scene_matching_report(
                 decision = "matched"
                 reason = best["reason"]
                 image = best["image"]
-                matched.append(SceneMatch(entry=entry, key=image["key"], name=image["name"], score=round(float(best["score"]), 4)))
+                _append_match_once(matched, matched_identities, SceneMatch(entry=entry, key=image["key"], name=image["name"], score=round(float(best["score"]), 4)))
+                requested_files.append(entry)
         else:
-            if best and best["score"] >= 0.85:
-                decision = "likely_missing_file"
-                reason = "best_candidate_below_accept_threshold"
-            missing.append(entry)
+            folder_result = _match_folder_entry(entry, folder_index)
+            if folder_result["status"] == "matched":
+                requested_folders.append(entry)
+                folder_images = folder_result["images"]
+                added = 0
+                for image in folder_images:
+                    added += int(
+                        _append_match_once(
+                            matched,
+                            matched_identities,
+                            SceneMatch(
+                                entry=_canonical_scene_entry(image),
+                                key=str(image["key"]),
+                                name=str(image["name"]),
+                                score=1.0,
+                            ),
+                        )
+                    )
+                decision = "folder_expanded"
+                reason = "matched_folder"
+                row_extra = {
+                    "matched_folder": folder_result["matched_folder"],
+                    "expanded_scene_count": len(folder_images),
+                    "deduplicated_scene_count": added,
+                }
+                folder_expansions[entry] = {
+                    "matched_folder": folder_result["matched_folder"],
+                    "scene_count": len(folder_images),
+                    "deduplicated_scene_count": added,
+                    "preview": [_canonical_scene_entry(item) for item in folder_images[:5]],
+                }
+            elif folder_result["status"] == "ambiguous":
+                decision = "ambiguous_folder"
+                reason = "folder_basename_ambiguous"
+                candidates = list(folder_result["candidates"])
+                row_extra = {"folder_candidates": candidates}
+                ambiguous.append(
+                    {
+                        "entry": entry,
+                        "normalized_scene_line": needle,
+                        "reason": "folder_basename_ambiguous",
+                        "candidates": [{"folder": item} for item in candidates],
+                    }
+                )
+            else:
+                if best and best["score"] >= 0.85:
+                    decision = "likely_missing_file"
+                    reason = "best_candidate_below_accept_threshold"
+                missing.append(entry)
 
         rows.append(
             {
@@ -165,12 +232,21 @@ def build_scene_matching_report(
                 "best_candidate_2_reason": second["reason"] if second else None,
                 "decision": decision,
                 "reason": reason,
+                **row_extra,
             }
         )
 
     return {
         "schema_version": 1,
         "total_scenes_in_scenes_txt": len(entries),
+        "requested_entries_count": len(entries),
+        "requested_files_count": len(requested_files),
+        "requested_folders_count": len(requested_folders),
+        "expanded_scene_count": len(matched),
+        "requested_files": requested_files,
+        "requested_folders": requested_folders,
+        "folder_expansions": folder_expansions,
+        "unresolved_entries": missing,
         "total_images_available": len(images),
         "total_tif_images_available": len([item for item in images if item["name"].lower().endswith((".tif", ".tiff"))]),
         "matched": [item.__dict__ for item in matched],
@@ -191,3 +267,86 @@ def build_scene_matching_report(
 def match_scenes(entries: list[str], images: list[dict[str, Any]]) -> tuple[list[SceneMatch], list[dict[str, Any]], list[str]]:
     report = build_scene_matching_report(entries, images)
     return [SceneMatch(**item) for item in report["matched"]], report["ambiguous"], report["missing"]
+
+
+def _append_match_once(matched: list[SceneMatch], seen: set[str], match: SceneMatch) -> bool:
+    identity = _normalized_identity(match.key or match.entry or match.name)
+    if identity in seen:
+        return False
+    seen.add(identity)
+    matched.append(match)
+    return True
+
+
+def _normalized_identity(value: str) -> str:
+    return _normalize_path(value).casefold()
+
+
+def _normalize_path(value: str) -> str:
+    return str(value or "").replace("\\", "/").strip().strip("/")
+
+
+def _canonical_image_path(image: dict[str, Any]) -> str:
+    key = _normalize_path(str(image.get("key") or ""))
+    name = _normalize_path(str(image.get("name") or ""))
+    return key or name
+
+
+def _canonical_scene_entry(image: dict[str, Any]) -> str:
+    return _canonical_image_path(image)
+
+
+def _is_raster_image(image: dict[str, Any]) -> bool:
+    path = _canonical_image_path(image)
+    name = _normalize_path(str(image.get("name") or ""))
+    return path.casefold().endswith(RASTER_SUFFIXES) or name.casefold().endswith(RASTER_SUFFIXES)
+
+
+def _build_folder_index(images: list[dict[str, Any]]) -> dict[str, Any]:
+    by_path: dict[str, dict[str, Any]] = {}
+    by_basename: dict[str, set[str]] = {}
+    for image in images:
+        if not _is_raster_image(image):
+            continue
+        path = _canonical_image_path(image)
+        if "/" not in path:
+            continue
+        parts = [part for part in path.split("/")[:-1] if part]
+        for idx in range(1, len(parts) + 1):
+            folder = "/".join(parts[:idx])
+            norm = folder.casefold()
+            bucket = by_path.setdefault(norm, {"folder": folder, "images": []})
+            bucket["images"].append(image)
+            basename = parts[idx - 1].casefold()
+            by_basename.setdefault(basename, set()).add(norm)
+    for bucket in by_path.values():
+        bucket["images"].sort(key=lambda item: _canonical_image_path(item).casefold())
+    return {"by_path": by_path, "by_basename": by_basename}
+
+
+def _match_folder_entry(entry: str, folder_index: dict[str, Any]) -> dict[str, Any]:
+    normalized = _normalize_path(entry)
+    if not normalized:
+        return {"status": "missing"}
+    normalized_key = normalized.casefold()
+    by_path: dict[str, dict[str, Any]] = folder_index.get("by_path") or {}
+    by_basename: dict[str, set[str]] = folder_index.get("by_basename") or {}
+
+    candidates: list[str]
+    if "/" in normalized_key:
+        candidates = sorted(
+            norm_path
+            for norm_path in by_path
+            if norm_path == normalized_key or norm_path.endswith("/" + normalized_key)
+        )
+    else:
+        candidates = sorted(by_basename.get(normalized_key) or [])
+    if not candidates:
+        return {"status": "missing"}
+    if len(candidates) > 1:
+        return {"status": "ambiguous", "candidates": [by_path[item]["folder"] for item in candidates]}
+    folder = by_path[candidates[0]]
+    images = list(folder.get("images") or [])
+    if not images:
+        return {"status": "missing"}
+    return {"status": "matched", "matched_folder": folder["folder"], "images": images}

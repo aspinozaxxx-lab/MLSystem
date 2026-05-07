@@ -78,10 +78,11 @@ def build_annotation_report(
     uploaded = frontend_status.get("uploaded_files") or {}
     summary = {
         "total_scenes_requested": (
-            inventory.get("scene_count")
+            inventory.get("expanded_scene_count") or inventory.get("scene_count")
             if has_inventory_artifact
             else frontend_status.get("scene_count") or uploaded.get("scene_count")
         ),
+        "requested_entries_count": inventory.get("requested_entries_count") if has_inventory_artifact else frontend_status.get("scene_count") or uploaded.get("scene_count"),
         "matched_scenes": inventory.get("matched_count") if has_inventory_artifact else None,
         "missing_scenes": inventory.get("missing_count") if has_inventory_artifact else None,
         "total_objects": (prep_stage.get("counters") or {}).get("total_objects") or split_summary.get("total_objects"),
