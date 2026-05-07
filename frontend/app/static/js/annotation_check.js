@@ -5,7 +5,6 @@ const runIdEl = document.getElementById("run-id");
 const resultSummary = document.getElementById("result-summary");
 const stageResults = document.getElementById("stage-results");
 const sceneTable = document.getElementById("scene-table");
-const artifactList = document.getElementById("artifact-list");
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -13,7 +12,6 @@ form.addEventListener("submit", async (event) => {
   resultPanel.hidden = true;
   setStep("upload", "active");
   const data = new FormData(form);
-  if (!data.has("allow_inferred_annotation_crs")) data.set("allow_inferred_annotation_crs", "false");
   const response = await fetch("/api/annotation-check", { method: "POST", body: data });
   const payload = await response.json();
   if (!response.ok) {
@@ -52,13 +50,18 @@ function render(payload) {
     ["Train сцен", s.train_scenes],
     ["Val сцен", s.val_scenes],
     ["Split", s.split_strategy],
-  ].map(([k, v]) => `<div class="summary-item"><span>${escapeHtml(k)}</span><b>${escapeHtml(v ?? "—")}</b></div>`).join("");
+  ].map(([k, v]) => {
+    const value = v ?? "—";
+    const compact = String(value).length > 12 ? " compact" : "";
+    return `<div class="summary-item"><span>${escapeHtml(k)}</span><b class="${compact}">${escapeHtml(value)}</b></div>`;
+  }).join("");
   stageResults.innerHTML = (payload.stages || []).map(stage => `
     <div class="stage-box ${escapeHtml(stage.status)}">
       <h3>${escapeHtml(stage.name)}: ${escapeHtml(stage.status)}</h3>
       <p>${escapeHtml(stage.summary || "")}</p>
-      ${listBlock("Warnings", stage.warnings, "warn")}
-      ${listBlock("Errors", stage.errors, "error")}
+      ${listBlock("Сообщения", stage.info, "info")}
+      ${listBlock("Предупреждения", stage.warnings, "warn")}
+      ${listBlock("Ошибки", stage.errors, "error")}
     </div>
   `).join("");
   sceneTable.innerHTML = (payload.scene_rows || []).map(row => `
@@ -69,7 +72,6 @@ function render(payload) {
       <td>${escapeHtml(row.split)}</td>
     </tr>
   `).join("");
-  artifactList.innerHTML = (payload.artifacts || []).map(item => `<li><code>${escapeHtml(item)}</code></li>`).join("");
 }
 
 function stageClass(payload, stageName) {

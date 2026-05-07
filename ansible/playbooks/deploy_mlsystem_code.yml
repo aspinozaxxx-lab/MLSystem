@@ -42,6 +42,22 @@
         cmd: find "{{ mlsystem_gpu_repo_root }}" -type d -name __pycache__ -prune -exec rm -rf {} +
       changed_when: false
 
+    - name: Ensure deployed MLSystem config directory exists
+      ansible.builtin.file:
+        path: "{{ mlsystem_gpu_repo_root }}/mlsystem/configs"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Install GPU pipeline config into deployed repo
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../roles/gpu_platform/templates/pipeline.server.yaml.j2"
+        dest: "{{ mlsystem_gpu_repo_root }}/mlsystem/configs/pipeline.server.yaml"
+        owner: root
+        group: root
+        mode: "0644"
+
     - name: Check GPU platform compose file
       ansible.builtin.stat:
         path: "{{ mlsystem_gpu_compose_path }}"

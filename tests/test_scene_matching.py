@@ -152,6 +152,23 @@ class SceneMatchingTests(unittest.TestCase):
         self.assertEqual(report["matched_count"], 1)
         self.assertEqual(report["matched"][0]["entry"], "Hilokskij/a.tif")
 
+    def test_user_folder_scenario_expands_against_string_inventory_keys(self) -> None:
+        entries = parse_scene_list_text("Hilokskij\nToguchinskij\nirkutsk\n")
+        inventory = [
+            "Hilokskij/a.tif",
+            "Hilokskij/b.TIF",
+            "Toguchinskij/c.tif",
+            "Irkutsk/d.tiff",
+            "Other/e.tif",
+        ]
+        report = build_scene_matching_report(entries, inventory)  # type: ignore[arg-type]
+        self.assertEqual(report["matched_count"], 4)
+        self.assertEqual(report["missing"], [])
+        self.assertEqual(report["expanded_scene_count"], 4)
+        self.assertEqual(report["requested_folders_count"], 3)
+        self.assertEqual(set(report["folder_expansions"]), {"Hilokskij", "Toguchinskij", "irkutsk"})
+        self.assertEqual([item["entry"] for item in report["matched"]], ["Hilokskij/a.tif", "Hilokskij/b.TIF", "Toguchinskij/c.tif", "Irkutsk/d.tiff"])
+
 
 if __name__ == "__main__":
     unittest.main()

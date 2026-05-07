@@ -39,7 +39,7 @@ Frontend - отдельный FastAPI BFF-сервис для веб-интер�
 
 ## Проверка разметок
 
-Пользователь загружает GeoJSON/JSON файл разметки и TXT файл со списком сцен.
+Пользователь загружает только GeoJSON/JSON файл разметки и TXT файл со списком сцен или папок.
 
 Frontend сохраняет файлы вне git:
 
@@ -87,11 +87,16 @@ Frontend не пересчитывает GeoJSON, не ищет сцены в S3
 
 ## Deploy
 
-GitHub Actions workflow:
+GitHub Actions workflows:
 
 ```text
-.github/workflows/frontend.yml
+.github/workflows/frontend-site.yml
+.github/workflows/frontend-ansible.yml
 ```
+
+`frontend-site` is the fast code rollout: it runs frontend tests, syncs `frontend/` and `docs/frontend.md`, then rebuilds/restarts only `mlsystem-frontend` and `mlsystem-frontend-proxy`.
+
+`frontend-ansible` is the settings rollout: it runs the frontend Ansible playbook when `ansible/**` changes.
 
 Ansible playbook:
 

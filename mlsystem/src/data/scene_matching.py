@@ -66,7 +66,7 @@ def build_scene_matching_report(
     ambiguous_margin: float = 0.015,
     preferred_key_prefixes: list[str] | None = None,
 ) -> dict[str, Any]:
-    normalized_images = [(item, norm_scene_name(item["name"])) for item in images]
+    normalized_images = [(item, norm_scene_name(_image_name(item))) for item in images]
     folder_index = _build_folder_index(images)
     matched: list[SceneMatch] = []
     ambiguous: list[dict[str, Any]] = []
@@ -102,7 +102,7 @@ def build_scene_matching_report(
                 decision = "matched"
                 reason = exact_candidates[0]["reason"]
                 image = exact_candidates[0]["image"]
-                _append_match_once(matched, matched_identities, SceneMatch(entry=entry, key=image["key"], name=image["name"], score=1.0))
+                _append_match_once(matched, matched_identities, SceneMatch(entry=entry, key=_image_key(image), name=_image_name(image), score=1.0))
                 requested_files.append(entry)
             elif len(exact_candidates) > 1 and preferred_key_prefixes:
                 preferred = []
@@ -110,7 +110,7 @@ def build_scene_matching_report(
                     preferred = [
                         item
                         for item in exact_candidates
-                        if str(item["image"].get("key") or "").startswith(prefix)
+                    if _image_key(item["image"]).startswith(prefix)
                     ]
                     if preferred:
                         break
@@ -118,7 +118,7 @@ def build_scene_matching_report(
                     decision = "matched"
                     reason = "preferred_exact_duplicate"
                     image = preferred[0]["image"]
-                    _append_match_once(matched, matched_identities, SceneMatch(entry=entry, key=image["key"], name=image["name"], score=1.0))
+                    _append_match_once(matched, matched_identities, SceneMatch(entry=entry, key=_image_key(image), name=_image_name(image), score=1.0))
                     requested_files.append(entry)
                 else:
                     decision = "ambiguous"
@@ -129,8 +129,8 @@ def build_scene_matching_report(
                             "normalized_scene_line": needle,
                             "candidates": [
                                 {
-                                    "name": item["image"]["name"],
-                                    "key": item["image"]["key"],
+                                    "name": _image_name(item["image"]),
+                                    "key": _image_key(item["image"]),
                                     "score": item["score"],
                                     "reason": item["reason"],
                                 }
@@ -148,8 +148,8 @@ def build_scene_matching_report(
                         "normalized_scene_line": needle,
                         "candidates": [
                             {
-                                "name": item["image"]["name"],
-                                "key": item["image"]["key"],
+                            "name": _image_name(item["image"]),
+                            "key": _image_key(item["image"]),
                                 "score": item["score"],
                                 "reason": item["reason"],
                             }
@@ -162,7 +162,7 @@ def build_scene_matching_report(
                 decision = "matched"
                 reason = best["reason"]
                 image = best["image"]
-                _append_match_once(matched, matched_identities, SceneMatch(entry=entry, key=image["key"], name=image["name"], score=round(float(best["score"]), 4)))
+                _append_match_once(matched, matched_identities, SceneMatch(entry=entry, key=_image_key(image), name=_image_name(image), score=round(float(best["score"]), 4)))
                 requested_files.append(entry)
         else:
             folder_result = _match_folder_entry(entry, folder_index)
@@ -177,8 +177,8 @@ def build_scene_matching_report(
                             matched_identities,
                             SceneMatch(
                                 entry=_canonical_scene_entry(image),
-                                key=str(image["key"]),
-                                name=str(image["name"]),
+                                key=_image_key(image),
+                                name=_image_name(image),
                                 score=1.0,
                             ),
                         )
@@ -221,13 +221,13 @@ def build_scene_matching_report(
                 "normalized_scene_line": needle,
                 "scene_signature": scene_signature(needle),
                 "exact_match": bool(best and best["score"] == 1.0),
-                "best_candidate_1": best["image"]["name"] if best else None,
-                "best_candidate_1_key": best["image"]["key"] if best else None,
+                "best_candidate_1": _image_name(best["image"]) if best else None,
+                "best_candidate_1_key": _image_key(best["image"]) if best else None,
                 "best_candidate_1_normalized": best["normalized_image"] if best else None,
                 "best_candidate_1_score": best["score"] if best else None,
                 "best_candidate_1_reason": best["reason"] if best else None,
-                "best_candidate_2": second["image"]["name"] if second else None,
-                "best_candidate_2_key": second["image"]["key"] if second else None,
+                "best_candidate_2": _image_name(second["image"]) if second else None,
+                "best_candidate_2_key": _image_key(second["image"]) if second else None,
                 "best_candidate_2_score": second["score"] if second else None,
                 "best_candidate_2_reason": second["reason"] if second else None,
                 "decision": decision,
@@ -248,7 +248,8 @@ def build_scene_matching_report(
         "folder_expansions": folder_expansions,
         "unresolved_entries": missing,
         "total_images_available": len(images),
-        "total_tif_images_available": len([item for item in images if item["name"].lower().endswith((".tif", ".tiff"))]),
+        "total_tif_images_available": len([item for item in images if _is_raster_image(item)]),
+        "available_tiff_samples": [_canonical_image_path(item) for item in images if _is_raster_image(item)][:20],
         "matched": [item.__dict__ for item in matched],
         "missing": missing,
         "ambiguous": ambiguous,
@@ -287,9 +288,24 @@ def _normalize_path(value: str) -> str:
 
 
 def _canonical_image_path(image: dict[str, Any]) -> str:
+    if not isinstance(image, dict):
+        return _normalize_path(str(image))
     key = _normalize_path(str(image.get("key") or ""))
     name = _normalize_path(str(image.get("name") or ""))
     return key or name
+
+
+def _image_key(image: dict[str, Any]) -> str:
+    if not isinstance(image, dict):
+        return _normalize_path(str(image))
+    return _normalize_path(str(image.get("key") or image.get("name") or ""))
+
+
+def _image_name(image: dict[str, Any]) -> str:
+    if not isinstance(image, dict):
+        return PurePosixPath(_normalize_path(str(image))).name
+    name = _normalize_path(str(image.get("name") or ""))
+    return name or PurePosixPath(_image_key(image)).name
 
 
 def _canonical_scene_entry(image: dict[str, Any]) -> str:
@@ -298,7 +314,7 @@ def _canonical_scene_entry(image: dict[str, Any]) -> str:
 
 def _is_raster_image(image: dict[str, Any]) -> bool:
     path = _canonical_image_path(image)
-    name = _normalize_path(str(image.get("name") or ""))
+    name = _image_name(image)
     return path.casefold().endswith(RASTER_SUFFIXES) or name.casefold().endswith(RASTER_SUFFIXES)
 
 

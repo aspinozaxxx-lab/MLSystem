@@ -1,33 +1,25 @@
-name: frontend
+name: frontend-site
 
 on:
   workflow_dispatch:
   pull_request:
     paths:
       - "frontend/**"
-      - "ansible/roles/frontend/**"
-      - "ansible/playbooks/deploy_frontend.yml"
-      - "deploy/docker-compose.gpu.yml"
-      - ".github/workflows/frontend.yml"
       - "docs/frontend.md"
-      - "README.md"
+      - ".github/workflows/frontend-site.yml"
   push:
     branches: [main, master]
     paths:
       - "frontend/**"
-      - "ansible/roles/frontend/**"
-      - "ansible/playbooks/deploy_frontend.yml"
-      - "deploy/docker-compose.gpu.yml"
-      - ".github/workflows/frontend.yml"
       - "docs/frontend.md"
-      - "README.md"
+      - ".github/workflows/frontend-site.yml"
 
 permissions:
   contents: read
 
 concurrency:
-  group: mlsystem-frontend-${{ github.ref }}
-  cancel-in-progress: false
+  group: frontend-site-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
@@ -53,25 +45,13 @@ jobs:
       - name: Check whitespace
         run: git diff --check
 
-  build:
+  deploy-site:
     runs-on: ubuntu-latest
     needs: test
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build frontend Docker image
-        run: docker build -f frontend/Dockerfile -t mlsystem-frontend:${GITHUB_SHA} .
-
-  deploy-frontend:
-    runs-on: ubuntu-latest
-    needs: build
     if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')) }}
     env:
       GPU_SERVER_HOST: ${{ secrets.GPU_SERVER_HOST }}
       GPU_SERVER_USER: ${{ secrets.GPU_SERVER_USER }}
-      MLSYSTEM_FRONTEND_USER: ${{ secrets.MLSYSTEM_FRONTEND_USER }}
-      MLSYSTEM_FRONTEND_PASSWORD: ${{ secrets.MLSYSTEM_FRONTEND_PASSWORD }}
-      MLSYSTEM_FRONTEND_SESSION_SECRET: ${{ secrets.MLSYSTEM_FRONTEND_SESSION_SECRET }}
     steps:
       - uses: actions/checkout@v4
 
@@ -90,12 +70,7 @@ jobs:
           fi
           exit "$missing"
 
-      - name: Install Ansible
-        run: |
-          python3 -m pip install --user ansible-core PyYAML
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      - name: Configure SSH inventory
+      - name: Configure SSH
         run: |
           mkdir -p ~/.ssh
           umask 077
@@ -104,21 +79,25 @@ jobs:
           KEY
           sed -i 's/^          //' ~/.ssh/gpu_server_key
           ssh-keyscan -H "$GPU_SERVER_HOST" >> ~/.ssh/known_hosts
-          cat > ansible/inventory/gpu-ci.ini <<EOF
-          [gpu_mlserver]
-          gpu-mlserver ansible_host=${GPU_SERVER_HOST} ansible_user=${GPU_SERVER_USER} ansible_ssh_private_key_file=$HOME/.ssh/gpu_server_key ansible_python_interpreter=/usr/bin/python3
-          EOF
 
-      - name: Check frontend playbook syntax
-        run: ansible-playbook -i ansible/inventory/gpu-ci.ini ansible/playbooks/deploy_frontend.yml --syntax-check
+      - name: Sync frontend source
+        run: |
+          SSH="ssh -i ~/.ssh/gpu_server_key -o StrictHostKeyChecking=yes"
+          TARGET="${GPU_SERVER_USER}@${GPU_SERVER_HOST}"
+          $SSH "$TARGET" "mkdir -p /opt/mlsystem/repo/frontend /opt/mlsystem/repo/docs"
+          rsync -az --delete -e "$SSH" frontend/ "$TARGET:/opt/mlsystem/repo/frontend/"
+          rsync -az -e "$SSH" docs/frontend.md "$TARGET:/opt/mlsystem/repo/docs/frontend.md"
 
-      - name: Deploy frontend
-        run: ansible-playbook -i ansible/inventory/gpu-ci.ini ansible/playbooks/deploy_frontend.yml
+      - name: Rebuild and restart frontend service
+        run: |
+          SSH="ssh -i ~/.ssh/gpu_server_key -o StrictHostKeyChecking=yes ${GPU_SERVER_USER}@${GPU_SERVER_HOST}"
+          COMPOSE="docker compose --env-file /etc/mlsystem/gpu-platform.env -f /data/mlsystem/platform/docker-compose.yml"
+          $SSH "$COMPOSE up -d --build --force-recreate --no-deps mlsystem-frontend mlsystem-frontend-proxy"
 
-  validate-frontend:
+  validate-site:
     runs-on: ubuntu-latest
-    needs: deploy-frontend
-    if: ${{ needs.deploy-frontend.result == 'success' }}
+    needs: deploy-site
+    if: ${{ needs.deploy-site.result == 'success' }}
     env:
       GPU_SERVER_HOST: ${{ secrets.GPU_SERVER_HOST }}
       GPU_SERVER_USER: ${{ secrets.GPU_SERVER_USER }}
@@ -133,16 +112,18 @@ jobs:
           sed -i 's/^          //' ~/.ssh/gpu_server_key
           ssh-keyscan -H "$GPU_SERVER_HOST" >> ~/.ssh/known_hosts
 
-      - name: Validate frontend deployment
+      - name: Validate frontend site
         run: |
           SSH="ssh -i ~/.ssh/gpu_server_key -o StrictHostKeyChecking=yes ${GPU_SERVER_USER}@${GPU_SERVER_HOST}"
           $SSH "docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | grep mlsystem-gpu-frontend"
-          $SSH "docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | grep mlsystem-gpu-frontend-proxy"
-          $SSH "sudo ss -ltnp | egrep ':(80|8090|8088)\s' || true"
           $SSH "curl -fsS http://127.0.0.1:8090/health | python3 -m json.tool"
-          $SSH "curl -fsS -I http://127.0.0.1:8090/login"
           $SSH "curl -fsS http://127.0.0.1/health | python3 -m json.tool"
           $SSH "curl -fsS -I http://127.0.0.1/login"
-          $SSH "curl -fsS http://127.0.0.1:8088/ready >/dev/null"
-          $SSH "docker exec mlsystem-gpu-frontend python -c \"import os, urllib.request; base=os.environ.get('MLSYSTEM_API_BASE_URL','http://mlsystem-api:8088'); print(urllib.request.urlopen(base + '/ready', timeout=5).status)\""
-          python -c "import urllib.request; urls=['http://31.192.104.147/health','http://31.192.104.147/login','http://31.192.104.147/']; [print('checking', u) or (lambda r: (print(r.status, r.geturl()), (_ for _ in ()).throw(AssertionError(r.status)) if not (200 <= r.status < 400) else None))(urllib.request.urlopen(u, timeout=15)) for u in urls]"
+          python - <<'PY'
+          import urllib.request
+          for url in ("http://31.192.104.147/health", "http://31.192.104.147/login", "http://31.192.104.147/"):
+              print("checking", url)
+              with urllib.request.urlopen(url, timeout=15) as response:
+                  print(response.status, response.geturl())
+                  assert 200 <= response.status < 400
+          PY

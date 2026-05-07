@@ -128,6 +128,7 @@ services:
     user: "0:0"
     environment:
       PYTHONPATH: /opt/mlsystem
+      MLSYSTEM_PIPELINE_CONFIG: ${MLSYSTEM_PIPELINE_CONFIG:-/opt/mlsystem/configs/pipeline.server.yaml}
     entrypoint: /bin/bash
     command:
       - -lc
@@ -167,6 +168,7 @@ services:
       PYTHONPATH: /opt/mlsystem
       MLSYSTEM_API_JOB_ROOT: ${MLSYSTEM_API_JOB_ROOT:-/data/mlsystem/api/jobs}
       MLSYSTEM_AIRFLOW_STATE_DIR: ${MLSYSTEM_AIRFLOW_STATE_DIR:-/data/mlsystem/airflow/status}
+      MLSYSTEM_PIPELINE_CONFIG: ${MLSYSTEM_PIPELINE_CONFIG:-/opt/mlsystem/configs/pipeline.server.yaml}
     command:
       - bash
       - -lc
@@ -255,6 +257,7 @@ services:
     env_file: /etc/mlsystem/gpu-platform.env
     environment:
       PYTHONPATH: /opt/mlsystem
+      MLSYSTEM_PIPELINE_CONFIG: ${MLSYSTEM_PIPELINE_CONFIG:-/opt/mlsystem/configs/pipeline.server.yaml}
     command: webserver
     ports:
       - "${AIRFLOW_PORT:-8081}:8080"
@@ -285,6 +288,7 @@ services:
     env_file: /etc/mlsystem/gpu-platform.env
     environment:
       PYTHONPATH: /opt/mlsystem
+      MLSYSTEM_PIPELINE_CONFIG: ${MLSYSTEM_PIPELINE_CONFIG:-/opt/mlsystem/configs/pipeline.server.yaml}
     command: scheduler
     gpus: all
     volumes: *airflow-volumes
@@ -307,6 +311,7 @@ services:
     env_file: /etc/mlsystem/gpu-platform.env
     environment:
       PYTHONPATH: /opt/mlsystem
+      MLSYSTEM_PIPELINE_CONFIG: ${MLSYSTEM_PIPELINE_CONFIG:-/opt/mlsystem/configs/pipeline.server.yaml}
     command: triggerer
     volumes: *airflow-volumes
     networks: [mlsystem-gpu]

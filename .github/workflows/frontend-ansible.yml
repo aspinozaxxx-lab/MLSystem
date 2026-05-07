@@ -1,0 +1,130 @@
+name: frontend-ansible
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "ansible/**"
+      - ".github/workflows/frontend-ansible.yml"
+  push:
+    branches: [main, master]
+    paths:
+      - "ansible/**"
+      - ".github/workflows/frontend-ansible.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: frontend-ansible-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Ansible
+        run: |
+          python3 -m pip install --user ansible-core PyYAML
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Parse frontend Ansible YAML
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import yaml
+          paths = [
+              Path("ansible/playbooks/deploy_frontend.yml"),
+              *Path("ansible/roles/frontend").rglob("*.yml"),
+              *Path("ansible/roles/frontend").rglob("*.yaml"),
+          ]
+          for path in paths:
+              yaml.safe_load(path.read_text(encoding="utf-8"))
+              print(f"ok yaml {path}")
+          PY
+
+      - name: Frontend playbook syntax check
+        run: |
+          cat > ansible/inventory/gpu-ci.ini <<'EOF'
+          [gpu_mlserver]
+          gpu-mlserver ansible_host=127.0.0.1 ansible_user=root ansible_python_interpreter=/usr/bin/python3
+          EOF
+          ansible-playbook -i ansible/inventory/gpu-ci.ini ansible/playbooks/deploy_frontend.yml --syntax-check
+
+  apply-frontend-settings:
+    runs-on: ubuntu-latest
+    needs: syntax
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')) }}
+    env:
+      GPU_SERVER_HOST: ${{ secrets.GPU_SERVER_HOST }}
+      GPU_SERVER_USER: ${{ secrets.GPU_SERVER_USER }}
+      MLSYSTEM_FRONTEND_USER: ${{ secrets.MLSYSTEM_FRONTEND_USER }}
+      MLSYSTEM_FRONTEND_PASSWORD: ${{ secrets.MLSYSTEM_FRONTEND_PASSWORD }}
+      MLSYSTEM_FRONTEND_SESSION_SECRET: ${{ secrets.MLSYSTEM_FRONTEND_SESSION_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check required deployment secrets
+        run: |
+          missing=0
+          for name in GPU_SERVER_HOST GPU_SERVER_USER; do
+            if [ -z "${!name:-}" ]; then
+              echo "Missing GitHub secret: ${name}" >&2
+              missing=1
+            fi
+          done
+          if [ -z "${{ secrets.GPU_SERVER_SSH_KEY }}" ]; then
+            echo "Missing GitHub secret: GPU_SERVER_SSH_KEY" >&2
+            missing=1
+          fi
+          exit "$missing"
+
+      - name: Install Ansible
+        run: |
+          python3 -m pip install --user ansible-core PyYAML
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Configure SSH inventory
+        run: |
+          mkdir -p ~/.ssh
+          umask 077
+          cat > ~/.ssh/gpu_server_key <<'KEY'
+          ${{ secrets.GPU_SERVER_SSH_KEY }}
+          KEY
+          sed -i 's/^          //' ~/.ssh/gpu_server_key
+          ssh-keyscan -H "$GPU_SERVER_HOST" >> ~/.ssh/known_hosts
+          cat > ansible/inventory/gpu-ci.ini <<EOF
+          [gpu_mlserver]
+          gpu-mlserver ansible_host=${GPU_SERVER_HOST} ansible_user=${GPU_SERVER_USER} ansible_ssh_private_key_file=$HOME/.ssh/gpu_server_key ansible_python_interpreter=/usr/bin/python3
+          EOF
+
+      - name: Deploy frontend Ansible settings
+        run: ansible-playbook -i ansible/inventory/gpu-ci.ini ansible/playbooks/deploy_frontend.yml
+
+  validate-frontend-settings:
+    runs-on: ubuntu-latest
+    needs: apply-frontend-settings
+    if: ${{ needs.apply-frontend-settings.result == 'success' }}
+    env:
+      GPU_SERVER_HOST: ${{ secrets.GPU_SERVER_HOST }}
+      GPU_SERVER_USER: ${{ secrets.GPU_SERVER_USER }}
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          umask 077
+          cat > ~/.ssh/gpu_server_key <<'KEY'
+          ${{ secrets.GPU_SERVER_SSH_KEY }}
+          KEY
+          sed -i 's/^          //' ~/.ssh/gpu_server_key
+          ssh-keyscan -H "$GPU_SERVER_HOST" >> ~/.ssh/known_hosts
+
+      - name: Validate frontend settings
+        run: |
+          SSH="ssh -i ~/.ssh/gpu_server_key -o StrictHostKeyChecking=yes ${GPU_SERVER_USER}@${GPU_SERVER_HOST}"
+          $SSH "docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | grep mlsystem-gpu-frontend"
+          $SSH "docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | grep mlsystem-gpu-frontend-proxy"
+          $SSH "curl -fsS http://127.0.0.1:8090/health | python3 -m json.tool"
+          $SSH "curl -fsS http://127.0.0.1/health | python3 -m json.tool"

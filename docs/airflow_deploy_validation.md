@@ -4,15 +4,16 @@
 
 ## GitHub Actions
 
-В репозитории используются три актуальных workflow:
+В репозитории используются актуальные workflow:
 
 | Workflow | Файл | Назначение |
 | --- | --- | --- |
 | `mlservice` | `.github/workflows/mlservice.yml` | Тесты, compile checks, service source bundle, деплой кода `mlsystem-api`, Airflow DAG и runtime modules. |
 | `ansible` | `.github/workflows/ansible.yml` | Ansible syntax/check/apply для compose, env, platform, pools и инфраструктуры. |
-| `frontend` | `.github/workflows/frontend.yml` | Тесты, сборка и деплой веб-интерфейса `mlsystem-gpu-frontend`. |
+| `frontend-site` | `.github/workflows/frontend-site.yml` | Быстрые frontend tests, sync кода сайта и restart только `mlsystem-gpu-frontend`/proxy. |
+| `frontend-ansible` | `.github/workflows/frontend-ansible.yml` | Ansible deploy frontend-настроек при изменениях в `ansible/**`. |
 
-Кодовый rollout, frontend rollout и infrastructure rollout не должны объединяться в один workflow.
+Кодовый rollout, frontend code rollout, frontend settings rollout и infrastructure rollout не должны объединяться в один workflow.
 
 ## Containers
 

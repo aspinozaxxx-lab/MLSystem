@@ -92,7 +92,12 @@ def _expand_env(value: Any) -> Any:
     return value
 
 def load_config(path: str | Path | None = None) -> PipelineConfig:
-    config_path = Path(path) if path else DEFAULT_CONFIG_PATH
+    config_path = Path(path or os.getenv("MLSYSTEM_PIPELINE_CONFIG") or DEFAULT_CONFIG_PATH)
+    if not config_path.exists():
+        raise FileNotFoundError(
+            f"MLSystem pipeline config not found: {config_path}. "
+            "Set MLSYSTEM_PIPELINE_CONFIG or deploy mlsystem/configs/pipeline.server.yaml."
+        )
     with config_path.open("r", encoding="utf-8") as fp:
         payload = yaml.safe_load(fp) or {}
     payload = _expand_env(payload)

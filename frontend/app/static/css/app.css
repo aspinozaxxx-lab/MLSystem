@@ -79,11 +79,13 @@ input, select {
 .progress li.failed { border-color: var(--error); color: var(--error); background: #fff1f0; }
 .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin-bottom: 16px; }
 .summary-item { padding: 12px; border-radius: 6px; background: var(--blue-2); }
-.summary-item b { display: block; font-size: 22px; }
+.summary-item b { display: block; font-size: 22px; line-height: 1.15; overflow-wrap: anywhere; }
+.summary-item b.compact { font-size: 14px; }
 .stage-box { border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin: 10px 0; }
 .stage-box.failed { border-color: var(--error); }
 .stage-box.success, .stage-box.succeeded { border-color: var(--ok); }
 .warn { color: var(--warning); }
+.info { color: var(--muted); }
 .table-wrap { overflow: auto; max-height: 460px; border: 1px solid var(--border); border-radius: 8px; }
 table { width: 100%; border-collapse: collapse; background: #fff; }
 th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--border); font-size: 14px; }

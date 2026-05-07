@@ -1,5 +1,12 @@
 ﻿# Changelog
 
+## 2026-05-07
+
+- Ispravlen deploy `pipeline.server.yaml`: service deploy teper vosstanavlivaet `mlsystem/configs/pipeline.server.yaml` posle rsync s `--delete`, a compose yavno peredaet `MLSYSTEM_PIPELINE_CONFIG`.
+- Dodelana proverka razmetok dlya TXT so strokami-papkami: raskrytie ostaetsya v backend/data layer, a frontend tolko pokazyvaet gotovyy pipeline report.
+- Uproshchena stranitsa `annotation-check`: v forme ostalis tolko GeoJSON/JSON i TXT, technical warnings perevedeny v ponyatnye soobshcheniya, zero-object scenes pokazany kak info, stseny sortiruyutsya po object_count.
+- Razdelen frontend deploy na bystryy `frontend-site` i otdelnyy `frontend-ansible` dlya nastroyek.
+
 ## 2026-05-01
 
 - Vosstanovleny baseline-dannye dlya `IRKUTSK-pseudolabel-unet-r50-t512-v4` i `GPU-deforest-segformer-b0-t1024-gpu-v13`.

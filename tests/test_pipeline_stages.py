@@ -58,6 +58,25 @@ class PipelineStagesTests(unittest.TestCase):
             self.assertEqual(inventory["scene_count"], 3)
             self.assertEqual([item["entry"] for item in inventory["matched"]], ["images/Hilokskij/a.tif", "images/Hilokskij/b.TIF", "Toguchinskij/c.tif"])
 
+    def test_inventory_scenes_expands_user_folder_scenario(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ctx = self._context(tmp)
+            images = [
+                {"bucket": "b", "key": "images/Hilokskij/a.tif", "name": "a.tif", "size": 1},
+                {"bucket": "b", "key": "images/Toguchinskij/b.tif", "name": "b.tif", "size": 1},
+                {"bucket": "b", "key": "images/Irkutsk/c.TIFF", "name": "c.TIFF", "size": 1},
+                {"bucket": "b", "key": "images/Other/d.tif", "name": "d.tif", "size": 1},
+            ]
+            with self._inventory_patches(images, "Hilokskij\nToguchinskij\nirkutsk\n"):
+                report = run_inventory_scenes(ctx)
+            self.assertEqual(report.status, "success")
+            self.assertEqual(report.counters["requested_entries_count"], 3)
+            self.assertEqual(report.counters["requested_folders_count"], 3)
+            self.assertEqual(report.counters["expanded_scene_count"], 3)
+            inventory = json.loads((ctx.store.run_dir / "inventory_scenes.json").read_text(encoding="utf-8"))
+            self.assertEqual(inventory["missing"], [])
+            self.assertEqual(set(inventory["folder_expansions"]), {"Hilokskij", "Toguchinskij", "irkutsk"})
+
     def test_prepare_dataset_object_balanced_split_keeps_zero_scenes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             ctx = self._context(tmp, preprocess={"split_strategy": "object_balanced", "count_mode": "property", "target_val_fraction": 0.34, "split_seed": 3})
