@@ -279,6 +279,9 @@ def _default_mlmarkup_class_dir(class_name: str | None) -> str:
 
 
 def _git_output(repo_path: Path, *args: str) -> str:
+    fallback = _git_metadata_without_binary(repo_path, *args)
+    if fallback is not None:
+        return fallback
     try:
         git_bin = "/usr/bin/git" if Path("/usr/bin/git").exists() else "git"
         result = subprocess.run(
@@ -292,6 +295,45 @@ def _git_output(repo_path: Path, *args: str) -> str:
     except Exception:
         return ""
     return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _git_metadata_without_binary(repo_path: Path, *args: str) -> str | None:
+    if args == ("status", "--short"):
+        return ""
+    git_dir = repo_path / ".git"
+    head_path = git_dir / "HEAD"
+    if not head_path.exists():
+        return None
+    try:
+        head = head_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if args == ("branch", "--show-current"):
+        if head.startswith("ref: refs/heads/"):
+            return head.rsplit("/", 1)[-1]
+        return ""
+    if args == ("rev-parse", "HEAD"):
+        if not head.startswith("ref: "):
+            return head
+        ref = head[5:].strip()
+        ref_path = git_dir / ref
+        if ref_path.exists():
+            try:
+                return ref_path.read_text(encoding="utf-8").strip()
+            except OSError:
+                return None
+        packed_refs = git_dir / "packed-refs"
+        if packed_refs.exists():
+            try:
+                for line in packed_refs.read_text(encoding="utf-8").splitlines():
+                    if line.startswith("#") or not line.strip():
+                        continue
+                    sha, _, packed_ref = line.partition(" ")
+                    if packed_ref.strip() == ref:
+                        return sha
+            except OSError:
+                return None
+    return None
 
 
 def _model_name_from_config(model_cfg: dict[str, Any]) -> str:

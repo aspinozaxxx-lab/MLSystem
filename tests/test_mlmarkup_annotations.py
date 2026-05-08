@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from mlsystem.src.mlflow_adapter import _is_excluded_metric_key
-from mlsystem.src.pipeline.airflow_tasks import AirflowExperimentConfig, _build_airflow_job
+from mlsystem.src.pipeline.airflow_tasks import AirflowExperimentConfig, _build_airflow_job, _git_output
 from mlsystem.src.pipeline_config import PipelineConfig
 from mlsystem.src.storage.s3 import find_layout_files, read_s3_text
 
@@ -54,6 +54,19 @@ class MLMarkupAnnotationTests(unittest.TestCase):
         for key in ("recource/cpu", "recource_cpu", "resource/final_ram", "resources.disk", "resourse/foo"):
             self.assertTrue(_is_excluded_metric_key(key))
         self.assertFalse(_is_excluded_metric_key("val/pixel_f1"))
+
+    def test_mlmarkup_git_metadata_can_be_read_without_git_binary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "MLMarkup"
+            ref_dir = repo / ".git" / "refs" / "heads"
+            ref_dir.mkdir(parents=True)
+            sha = "d68e23153078f32fa6479a55d2c0cb7e5d16c12d"
+            (repo / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+            (ref_dir / "main").write_text(f"{sha}\n", encoding="utf-8")
+
+            self.assertEqual(_git_output(repo, "rev-parse", "HEAD"), sha)
+            self.assertEqual(_git_output(repo, "branch", "--show-current"), "main")
+            self.assertEqual(_git_output(repo, "status", "--short"), "")
 
 
 if __name__ == "__main__":
