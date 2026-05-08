@@ -9,6 +9,8 @@ from .report import StageCheck, StageReport
 def run(ctx: StageContext) -> StageReport:
     from ..airflow_tasks import _run_pseudolabel_pipeline
 
+    if "enabled" in ctx.config.pseudolabel and not bool(ctx.config.pseudolabel.get("enabled")) and not ctx.config.smoke:
+        return StageReport(ctx.stage_id, "skipped", [StageCheck("pseudolabel.enabled", "skipped", "pseudolabel.enabled=false")])
     accepted = ctx.store.run_dir / f"{ctx.config.experiment_id}.accepted.geojson"
     vector_cfg = dict((ctx.config.pseudolabel or {}).get("vectorization") or {})
     mode = str(vector_cfg.get("mode") or "legacy").lower()
@@ -151,8 +153,6 @@ def run(ctx: StageContext) -> StageReport:
             summary="CPU block_parallel vectorization completed from saved probability maps.",
         )
     if not accepted.exists():
-        if not ctx.config.pseudolabel.get("enabled", False):
-            return StageReport(ctx.stage_id, "skipped", [StageCheck("pseudolabel.enabled", "skipped", "pseudolabel.enabled=false")])
         prediction_result = _run_pseudolabel_pipeline(ctx.config, ctx.store, stage_mode="postprocess")
         coverage = read_json(ctx.store.run_dir / "coverage_report.json", default={}) or {}
         pseudolabel = prediction_result.get("pseudolabel") or {}

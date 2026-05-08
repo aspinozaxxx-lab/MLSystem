@@ -9,6 +9,13 @@ from .report import StageCheck, StageFailure, StageReport
 
 def run(ctx: StageContext) -> StageReport:
     pseudolabel_cfg = ctx.config.pseudolabel or {}
+    if "enabled" in pseudolabel_cfg and not bool(pseudolabel_cfg.get("enabled")) and not ctx.config.smoke:
+        return StageReport(
+            ctx.stage_id,
+            "skipped",
+            [StageCheck("pseudolabel.enabled", "skipped", "pseudolabel.enabled=false")],
+            summary="Pseudolabel scene preparation skipped because pseudolabel.enabled=false.",
+        )
     run_on = str(pseudolabel_cfg.get("run_on") or "dataset_scenes")
     bad_scene_policy = str(pseudolabel_cfg.get("bad_scene_policy") or "skip")
     inventory = read_json(ctx.store.run_dir / "inventory_scenes.json", default={}) or {}

@@ -8,6 +8,15 @@ from .report import StageCheck, StageFailure, StageReport
 def run(ctx: StageContext) -> StageReport:
     from ..airflow_tasks import _read_training_result
 
+    pseudolabel_cfg = ctx.config.pseudolabel or {}
+    if "enabled" in pseudolabel_cfg and not bool(pseudolabel_cfg.get("enabled")) and not ctx.config.smoke:
+        return StageReport(
+            ctx.stage_id,
+            "skipped",
+            [StageCheck("pseudolabel.enabled", "skipped", "pseudolabel.enabled=false")],
+            summary="Postprocess skipped because pseudolabel.enabled=false.",
+        )
+
     if ctx.config.smoke:
         summary = read_json(ctx.store.run_dir / "pseudolabel_summary.json", default={}) or {}
         metrics = summary.get("metrics") or {

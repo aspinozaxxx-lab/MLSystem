@@ -7,6 +7,15 @@ from .report import StageCheck, StageFailure, StageReport
 def run(ctx: StageContext) -> StageReport:
     from ..airflow_tasks import _existing_artifacts, _forbidden_logged_artifacts
 
+    pseudolabel_cfg = ctx.config.pseudolabel or {}
+    if "enabled" in pseudolabel_cfg and not bool(pseudolabel_cfg.get("enabled")) and not ctx.config.smoke:
+        return StageReport(
+            ctx.stage_id,
+            "skipped",
+            [StageCheck("pseudolabel.enabled", "skipped", "pseudolabel.enabled=false")],
+            summary="Pseudolabel export skipped because pseudolabel.enabled=false.",
+        )
+
     artifacts = _existing_artifacts(ctx.store)
     required = ["pseudolabel_scenes.txt", f"{ctx.config.experiment_id}.accepted.geojson", "coverage_report.json", "pseudolabel_summary.json"]
     missing_required = [name for name in required if name not in artifacts]

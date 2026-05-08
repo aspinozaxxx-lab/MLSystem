@@ -6,6 +6,14 @@ from .report import StageCheck, StageFailure, StageReport
 
 
 def run(ctx: StageContext) -> StageReport:
+    pseudolabel_cfg = ctx.config.pseudolabel or {}
+    if "enabled" in pseudolabel_cfg and not bool(pseudolabel_cfg.get("enabled")) and not ctx.config.smoke:
+        return StageReport(
+            ctx.stage_id,
+            "skipped",
+            [StageCheck("pseudolabel.enabled", "skipped", "pseudolabel.enabled=false")],
+            summary="Probability map validation skipped because pseudolabel.enabled=false.",
+        )
     coverage = read_json(ctx.store.run_dir / "coverage_report.json", default={}) or {}
     manifest = read_json(ctx.store.run_dir / "pseudolabel_scene_results_manifest.json", default={}) or {}
     if not coverage:
