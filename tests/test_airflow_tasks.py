@@ -14,6 +14,8 @@ from mlsystem.src.pipeline.airflow_tasks import (
     DISPATCHER_STAGE_NAMES,
     MAIN_DAG_STAGES,
     STAGE_POOLS,
+    AirflowExperimentConfig,
+    _build_airflow_job,
     _extract_pixel_metrics,
     push_stage_xcom,
     run_airflow_stage,
@@ -22,6 +24,7 @@ from mlsystem.src.pipeline.airflow_tasks import (
     stage_return_message,
     xcom_safe_value,
 )
+from mlsystem.src.real_train import _resolve_wallclock_limit
 from mlsystem.src.pipeline.stages.registry import get_stage_entrypoint
 
 
@@ -59,6 +62,33 @@ class AirflowTasksTests(unittest.TestCase):
         self.assertEqual(STAGE_POOLS["train_model"][0], "gpu_training")
         self.assertEqual(STAGE_POOLS["predict_validation_scenes"][0], "gpu_inference")
         self.assertEqual(STAGE_POOLS["run_pseudolabel_inference"][0], "gpu_inference")
+
+    def test_airflow_conf_passes_metrics_debug_to_training_job(self) -> None:
+        conf = AirflowExperimentConfig.model_validate(
+            {
+                "experiment_id": "metrics_debug_unit",
+                "class_name": "deforest",
+                "params": {
+                    "metrics_debug": {
+                        "enabled": True,
+                        "class_name": "вырубки",
+                        "report_enabled": True,
+                    }
+                },
+                "train": {"max_wallclock_seconds": 600},
+            }
+        )
+        job = _build_airflow_job(conf)
+        self.assertTrue(job.params["metrics_debug"]["enabled"])
+        self.assertEqual(job.params["metrics_debug"]["class_name"], "вырубки")
+        self.assertEqual(job.train["max_wallclock_seconds"], 600)
+
+    def test_wallclock_limit_is_disabled_by_default(self) -> None:
+        conf = AirflowExperimentConfig.model_validate({"experiment_id": "wallclock_default"})
+        job = _build_airflow_job(conf)
+        job.train.pop("time_limit_sec", None)
+        job.train.pop("max_wallclock_seconds", None)
+        self.assertIsNone(_resolve_wallclock_limit(job))
 
     def test_unknown_stage_error_is_clear(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

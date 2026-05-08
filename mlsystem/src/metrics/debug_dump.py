@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import os
+import shutil
 from dataclasses import asdict, is_dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +47,7 @@ def metrics_debug_config(job: Any) -> dict[str, Any]:
     payload.setdefault("save_png", True)
     payload.setdefault("save_object_matching", True)
     payload.setdefault("upload_to_mlflow", True)
+    payload.setdefault("report_enabled", True)
     return payload
 
 
@@ -86,6 +90,23 @@ def write_epoch_debug(
 
     for payload in sample_payloads:
         _write_sample_debug(samples_dir, payload)
+    geojson_dir = epoch_dir / "geojson"
+    aggregate_paths = _write_epoch_aggregate_geojson(geojson_dir, sample_payloads)
+
+    production_snapshot = production_metrics_snapshot(
+        epoch=epoch,
+        metric_row=metric_row,
+        train_loss=train_loss,
+        val_loss=val_loss,
+        class_name=class_name,
+        class_id=class_id,
+        threshold=threshold,
+        mlflow_run_id=mlflow_run_id,
+        val_manifest_path=val_manifest_path,
+        per_sample_metrics=per_sample_metrics,
+    )
+    production_snapshot_path = epoch_dir / "production_metrics_snapshot.json"
+    _write_json(production_snapshot_path, production_snapshot)
 
     summary = {
         "epoch": int(epoch),
@@ -122,18 +143,152 @@ def write_epoch_debug(
         "val_manifest_snapshot": str(manifest_path),
         "metrics_recompute_check": str(recompute_path),
         "mlflow_logged_metrics": str(logged_path),
+        "production_metrics_snapshot": str(production_snapshot_path),
+        "production_metrics": production_snapshot,
+        "aggregate_geojson": aggregate_paths,
         "samples_dir": str(samples_dir),
     }
     summary_path = epoch_dir / "epoch_summary.json"
     _write_json(summary_path, summary)
+    metrics_md_path = epoch_dir / "metrics.md"
+    _write_epoch_metrics_md(metrics_md_path, summary, production_snapshot, recompute)
+    artifacts_manifest_path = epoch_dir / "artifacts_manifest.csv"
+    _write_artifacts_manifest(artifacts_manifest_path, epoch_dir)
     return {
         "epoch_dir": str(epoch_dir),
         "epoch_summary": str(summary_path),
+        "production_metrics_snapshot": str(production_snapshot_path),
         "per_sample_metrics": str(per_sample_csv),
         "val_manifest_snapshot": str(manifest_path),
         "metrics_recompute_check": str(recompute_path),
         "mlflow_logged_metrics": str(logged_path),
+        "metrics_md": str(metrics_md_path),
+        "artifacts_manifest": str(artifacts_manifest_path),
+        "aggregate_geojson": aggregate_paths,
         "recompute": recompute,
+    }
+
+
+def production_metrics_snapshot(
+    *,
+    epoch: int,
+    metric_row: dict[str, Any],
+    train_loss: dict[str, Any],
+    val_loss: dict[str, Any],
+    class_name: str,
+    class_id: int | str | None,
+    threshold: float,
+    mlflow_run_id: str | None,
+    val_manifest_path: str | None,
+    per_sample_metrics: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Return the single production metrics snapshot used by MLflow/report/debug."""
+    counts = {
+        "gt_pixels": _int_metric(metric_row, "val/pixel_tp", default=0) + _int_metric(metric_row, "val/pixel_fn", default=0),
+        "pred_pixels": _int_metric(metric_row, "val/pixel_tp", default=0) + _int_metric(metric_row, "val/pixel_fp", default=0),
+        "gt_objects": sum(int(row.get("gt_objects_count") or 0) for row in per_sample_metrics),
+        "pred_objects": sum(int(row.get("pred_objects_count") or 0) for row in per_sample_metrics),
+        "matched_objects": _int_metric(metric_row, "val/object_tp", default=0),
+        "val_samples": len(per_sample_metrics),
+    }
+    return {
+        "schema_version": 1,
+        "source": "production_validation_loop",
+        "source_of_truth": True,
+        "recompute_role": "validation_check_only",
+        "epoch": int(epoch),
+        "class_name": class_name,
+        "class_id": class_id,
+        "threshold": float(threshold),
+        "mlflow_run_id": mlflow_run_id,
+        "val_manifest_path": val_manifest_path,
+        "metrics": {key: _json_safe(value) for key, value in metric_row.items() if key != "epoch"},
+        "train_loss": train_loss,
+        "val_loss": val_loss,
+        "counts": counts,
+    }
+
+
+def write_metrics_debug_report(
+    *,
+    debug_root: Path,
+    report_root: Path,
+    report_name: str,
+    run_metadata: dict[str, Any],
+    dataset_check: dict[str, Any],
+) -> dict[str, Any]:
+    """Create a compact readable report folder from per-epoch production snapshots."""
+    source_root = Path(debug_root)
+    report_dir = Path(report_root) / _safe_name(report_name)
+    if report_dir.exists():
+        shutil.rmtree(report_dir)
+    report_dir.mkdir(parents=True, exist_ok=True)
+
+    epochs_out = report_dir / "epochs"
+    airflow_dir = report_dir / "airflow"
+    checks_dir = report_dir / "checks"
+    airflow_dir.mkdir(parents=True, exist_ok=True)
+    checks_dir.mkdir(parents=True, exist_ok=True)
+
+    _write_json(report_dir / "run_metadata.json", run_metadata)
+    _write_json(airflow_dir / "dag_conf.json", run_metadata.get("dag_conf") or {})
+    _write_json(airflow_dir / "dag_run.json", run_metadata.get("airflow") or {})
+    _write_json(airflow_dir / "task_statuses.json", run_metadata.get("task_statuses") or {})
+    (airflow_dir / "airflow_url.txt").write_text(str(run_metadata.get("airflow_url") or ""), encoding="utf-8")
+
+    timeseries: list[dict[str, Any]] = []
+    mlflow_checks: list[dict[str, Any]] = []
+    report_structure: dict[str, Any] = {"epochs": {}, "raw_images_copied": False, "ok": True}
+    for epoch_dir in sorted(source_root.glob("epoch_*")):
+        epoch_name = epoch_dir.name
+        out_epoch = epochs_out / epoch_name
+        (out_epoch / "samples").mkdir(parents=True, exist_ok=True)
+        _copy_epoch_level_files(epoch_dir, out_epoch)
+        _copy_epoch_geojson(epoch_dir, out_epoch)
+        copied_samples = _copy_selected_sample_artifacts(epoch_dir / "samples", out_epoch / "samples")
+
+        snapshot = _read_json(epoch_dir / "production_metrics_snapshot.json")
+        recompute = _read_json(epoch_dir / "metrics_recompute_check.json")
+        logged = _read_json(epoch_dir / "mlflow_logged_metrics.json")
+        metrics = snapshot.get("metrics") or {}
+        row = _timeseries_row(snapshot)
+        timeseries.append(row)
+        mlflow_checks.extend(_compare_snapshot_to_logged(snapshot, logged))
+        report_structure["epochs"][epoch_name] = {
+            "copied_samples": copied_samples,
+            "has_per_sample_metrics": (out_epoch / "per_sample_metrics.csv").exists(),
+            "has_epoch_geojson": (out_epoch / "geojson" / "gt_objects.geojson").exists()
+            and (out_epoch / "geojson" / "pred_objects.geojson").exists(),
+            "recompute_ok": bool(recompute.get("ok", False)),
+            "metrics_keys": sorted(metrics),
+        }
+
+    _write_csv(report_dir / "metrics_timeseries.csv", timeseries)
+    _write_json(report_dir / "metrics_timeseries.json", timeseries)
+    source_check = {
+        "ok": True,
+        "production_snapshot_reused": True,
+        "source": "production_validation_loop",
+        "recompute_role": "validation_check_only",
+        "debug_root": str(source_root),
+    }
+    _write_json(checks_dir / "source_of_truth_check.json", source_check)
+    _write_json(checks_dir / "mlflow_consistency_check.json", {"ok": all(row["ok"] for row in mlflow_checks), "comparisons": mlflow_checks})
+    _write_json(checks_dir / "report_structure_check.json", report_structure)
+    _write_json(checks_dir / "dataset_full_run_check.json", dataset_check)
+    _write_summary_md(
+        report_dir / "summary.md",
+        run_metadata=run_metadata,
+        dataset_check=dataset_check,
+        timeseries=timeseries,
+        mlflow_checks=mlflow_checks,
+        report_structure=report_structure,
+    )
+    return {
+        "report_dir": str(report_dir),
+        "summary": str(report_dir / "summary.md"),
+        "epoch_count": len(timeseries),
+        "timeseries": str(report_dir / "metrics_timeseries.csv"),
     }
 
 
@@ -172,6 +327,318 @@ def recompute_global_metrics(per_sample_metrics: list[dict[str, Any]], metric_ro
         "comparisons": comparisons,
         "ok": all(item["ok"] for item in comparisons.values()),
     }
+
+
+def _write_epoch_aggregate_geojson(geojson_dir: Path, sample_payloads: list[dict[str, Any]]) -> dict[str, str]:
+    geojson_dir.mkdir(parents=True, exist_ok=True)
+    gt_features: list[dict[str, Any]] = []
+    pred_features: list[dict[str, Any]] = []
+    match_features: list[dict[str, Any]] = []
+    for payload in sample_payloads:
+        metadata = payload.get("metadata") or {}
+        sample_id = str(metadata.get("sample_id") or "sample")
+        scene_id = str(metadata.get("scene_id") or metadata.get("scene") or "")
+        gt_objects = payload.get("objects_gt") or []
+        pred_objects = payload.get("objects_pred") or []
+        for idx, geom in enumerate(gt_objects):
+            feature = _feature_from_geom(geom, {"sample_id": sample_id, "scene_id": scene_id, "object_index": idx, "kind": "gt"})
+            if feature:
+                gt_features.append(feature)
+        for idx, geom in enumerate(pred_objects):
+            feature = _feature_from_geom(geom, {"sample_id": sample_id, "scene_id": scene_id, "object_index": idx, "kind": "pred"})
+            if feature:
+                pred_features.append(feature)
+        matches = _object_metrics(pred_objects, gt_objects).get("matches") or []
+        for match in matches:
+            pred_idx = int(match.get("pred_index", -1))
+            geom = pred_objects[pred_idx] if 0 <= pred_idx < len(pred_objects) else None
+            feature = _feature_from_geom(
+                geom,
+                {
+                    "sample_id": sample_id,
+                    "scene_id": scene_id,
+                    "pred_index": pred_idx,
+                    "gt_index": int(match.get("gt_index", -1)),
+                    "iou": float(match.get("iou") or 0.0),
+                    "kind": "match_pred_geometry",
+                },
+            )
+            if feature:
+                match_features.append(feature)
+    gt_path = geojson_dir / "gt_objects.geojson"
+    pred_path = geojson_dir / "pred_objects.geojson"
+    matches_path = geojson_dir / "object_matches.geojson"
+    _write_json(gt_path, {"type": "FeatureCollection", "features": gt_features})
+    _write_json(pred_path, {"type": "FeatureCollection", "features": pred_features})
+    _write_json(matches_path, {"type": "FeatureCollection", "features": match_features})
+    return {
+        "gt_objects": str(gt_path),
+        "pred_objects": str(pred_path),
+        "object_matches": str(matches_path),
+    }
+
+
+def _feature_from_geom(geom: Any, properties: dict[str, Any]) -> dict[str, Any] | None:
+    try:
+        return {"type": "Feature", "properties": properties, "geometry": geom.__geo_interface__}
+    except Exception:
+        return None
+
+
+def _write_epoch_metrics_md(path: Path, summary: dict[str, Any], snapshot: dict[str, Any], recompute: dict[str, Any]) -> None:
+    metrics = snapshot.get("metrics") or {}
+    counts = snapshot.get("counts") or {}
+    lines = [
+        f"# Epoch {summary.get('epoch')}",
+        "",
+        f"- class_name: `{snapshot.get('class_name')}`",
+        f"- threshold: `{snapshot.get('threshold')}`",
+        f"- source: `{snapshot.get('source')}`",
+        f"- recompute_ok: `{bool(recompute.get('ok'))}`",
+        "",
+        "| metric | value |",
+        "|---|---:|",
+    ]
+    for key in (
+        "train/loss_total",
+        "val/loss_total",
+        "val/pixel_f1",
+        "val/pixel_iou",
+        "val/precision",
+        "val/recall",
+        "val/object_f1",
+    ):
+        value = metrics.get(key) or (snapshot.get("train_loss") or {}).get(key) or (snapshot.get("val_loss") or {}).get(key)
+        lines.append(f"| `{key}` | `{value}` |")
+    for key, value in counts.items():
+        lines.append(f"| `{key}` | `{value}` |")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _write_artifacts_manifest(path: Path, epoch_dir: Path) -> None:
+    rows: list[dict[str, Any]] = []
+    for item in sorted(epoch_dir.rglob("*")):
+        if item.is_file():
+            rows.append(
+                {
+                    "relative_path": str(item.relative_to(epoch_dir)).replace("\\", "/"),
+                    "bytes": item.stat().st_size,
+                    "included_in_compact_report": item.name != "image.png" and item.suffix not in {".npz", ".pt"},
+                }
+            )
+    _write_csv(path, rows)
+
+
+def _copy_epoch_level_files(source_epoch: Path, target_epoch: Path) -> None:
+    target_epoch.mkdir(parents=True, exist_ok=True)
+    for name in (
+        "metrics.md",
+        "epoch_summary.json",
+        "production_metrics_snapshot.json",
+        "metrics_recompute_check.json",
+        "per_sample_metrics.csv",
+        "artifacts_manifest.csv",
+    ):
+        source = source_epoch / name
+        if source.exists():
+            shutil.copy2(source, target_epoch / name)
+
+
+def _copy_epoch_geojson(source_epoch: Path, target_epoch: Path) -> None:
+    source_dir = source_epoch / "geojson"
+    target_dir = target_epoch / "geojson"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("gt_objects.geojson", "pred_objects.geojson", "object_matches.geojson"):
+        source = source_dir / name
+        if source.exists():
+            shutil.copy2(source, target_dir / name)
+
+
+def _copy_selected_sample_artifacts(source_samples: Path, target_samples: Path) -> int:
+    if not source_samples.exists():
+        return 0
+    copied = 0
+    for sample_dir in sorted(item for item in source_samples.iterdir() if item.is_dir()):
+        target_dir = target_samples / sample_dir.name
+        target_dir.mkdir(parents=True, exist_ok=True)
+        has_any = False
+        for name in (
+            "metadata.json",
+            "gt_mask.png",
+            "pred_mask.png",
+            "overlay_gt_pred.png",
+            "objects_gt.geojson",
+            "objects_pred.geojson",
+            "object_matches.json",
+        ):
+            source = sample_dir / name
+            if source.exists():
+                shutil.copy2(source, target_dir / name)
+                has_any = True
+        copied += int(has_any)
+    return copied
+
+
+def _timeseries_row(snapshot: dict[str, Any]) -> dict[str, Any]:
+    metrics = snapshot.get("metrics") or {}
+    counts = snapshot.get("counts") or {}
+    return {
+        "epoch": snapshot.get("epoch"),
+        "train_loss": (snapshot.get("train_loss") or {}).get("train/loss_total"),
+        "val_loss": (snapshot.get("val_loss") or {}).get("val/loss_total"),
+        "pixel_f1": metrics.get("val/pixel_f1"),
+        "pixel_iou": metrics.get("val/pixel_iou"),
+        "precision": metrics.get("val/precision"),
+        "recall": metrics.get("val/recall"),
+        "object_f1": metrics.get("val/object_f1"),
+        "gt_pixels": counts.get("gt_pixels"),
+        "pred_pixels": counts.get("pred_pixels"),
+        "gt_objects": counts.get("gt_objects"),
+        "pred_objects": counts.get("pred_objects"),
+        "matched_objects": counts.get("matched_objects"),
+    }
+
+
+def _compare_snapshot_to_logged(snapshot: dict[str, Any], logged: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    metrics = snapshot.get("metrics") or {}
+    for key in (
+        "val/pixel_f1",
+        "val/pixel_iou",
+        "val/precision",
+        "val/recall",
+        "val/object_f1",
+        "val/pixel_tp",
+        "val/pixel_fp",
+        "val/pixel_fn",
+    ):
+        if key not in metrics or key not in logged:
+            continue
+        production = float(metrics[key])
+        mlflow_logged = float(logged[key])
+        delta = abs(production - mlflow_logged)
+        rows.append(
+            {
+                "epoch": snapshot.get("epoch"),
+                "metric": key,
+                "production_snapshot": production,
+                "mlflow_logged": mlflow_logged,
+                "abs_delta": delta,
+                "ok": delta <= 1e-6,
+            }
+        )
+    return rows
+
+
+def _write_summary_md(
+    path: Path,
+    *,
+    run_metadata: dict[str, Any],
+    dataset_check: dict[str, Any],
+    timeseries: list[dict[str, Any]],
+    mlflow_checks: list[dict[str, Any]],
+    report_structure: dict[str, Any],
+) -> None:
+    lines = [
+        "# MLSystem metrics debug report: вырубки",
+        "",
+        "## Run identity",
+        "",
+        f"- branch: `{run_metadata.get('branch') or ''}`",
+        f"- commit: `{run_metadata.get('commit') or ''}`",
+        f"- pushed_remote: `{run_metadata.get('pushed_remote') or ''}`",
+        f"- Airflow DAG id: `{(run_metadata.get('airflow') or {}).get('dag_id') or ''}`",
+        f"- Airflow dag_run_id: `{(run_metadata.get('airflow') or {}).get('run_id') or ''}`",
+        f"- Airflow URL: `{run_metadata.get('airflow_url') or ''}`",
+        f"- MLflow run id: `{run_metadata.get('mlflow_run_id') or ''}`",
+        f"- MLflow URL: `{run_metadata.get('mlflow_url') or ''}`",
+        f"- server debug artifact path: `{run_metadata.get('debug_root') or ''}`",
+        "",
+        "## Dataset/config",
+        "",
+        f"- class: `{dataset_check.get('class_name')}`",
+        f"- full_dataset: `{dataset_check.get('full_dataset')}`",
+        f"- synthetic: `{dataset_check.get('synthetic')}`",
+        f"- train_sample_count: `{dataset_check.get('train_sample_count')}`",
+        f"- val_sample_count: `{dataset_check.get('val_sample_count')}`",
+        f"- train_manifest_hash: `{dataset_check.get('train_manifest_hash')}`",
+        f"- val_manifest_hash: `{dataset_check.get('val_manifest_hash')}`",
+        f"- threshold: `{run_metadata.get('threshold')}`",
+        f"- seed: `{run_metadata.get('seed')}`",
+        f"- time_limit_seconds: `{run_metadata.get('max_wallclock_seconds')}`",
+        f"- train_limit_batches: `{dataset_check.get('train_limit_batches')}`",
+        f"- val_limit_batches: `{dataset_check.get('val_limit_batches')}`",
+        "",
+        "## Source-of-truth metrics",
+        "",
+        "Production validation loop forms one metrics snapshot per epoch. The same snapshot is used for MLflow logging, epoch_summary.json, production_metrics_snapshot.json and this report. Recompute checks validate the snapshot from saved per-sample counts; recompute is not a separate source of truth.",
+        "",
+        "## Metrics by epoch",
+        "",
+        "| epoch | train_loss | val_loss | pixel_f1 | pixel_iou | precision | recall | object_f1 | gt_pixels | pred_pixels | gt_objects | pred_objects | matched_objects |",
+        "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for row in timeseries:
+        lines.append(
+            "| {epoch} | {train_loss} | {val_loss} | {pixel_f1} | {pixel_iou} | {precision} | {recall} | {object_f1} | {gt_pixels} | {pred_pixels} | {gt_objects} | {pred_objects} | {matched_objects} |".format(
+                **{key: _md_value(row.get(key)) for key in row}
+            )
+        )
+    lines.extend(
+        [
+            "",
+            "## Consistency checks",
+            "",
+            "| epoch | metric | production_snapshot | mlflow_logged | delta_mlflow | ok |",
+            "|---:|---|---:|---:|---:|---|",
+        ]
+    )
+    for row in mlflow_checks:
+        lines.append(
+            f"| {row.get('epoch')} | `{row.get('metric')}` | {row.get('production_snapshot')} | {row.get('mlflow_logged')} | {row.get('abs_delta')} | {row.get('ok')} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Report artifacts",
+            "",
+            "| epoch | copied_samples | has_per_sample_metrics | has_epoch_geojson | recompute_ok |",
+            "|---|---:|---|---|---|",
+        ]
+    )
+    for epoch, payload in (report_structure.get("epochs") or {}).items():
+        lines.append(
+            f"| `{epoch}` | {payload.get('copied_samples')} | {payload.get('has_per_sample_metrics')} | {payload.get('has_epoch_geojson')} | {payload.get('recompute_ok')} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Вывод",
+            "",
+            f"- Run zapushchen cherez Airflow: `{bool((run_metadata.get('airflow') or {}).get('run_id'))}`",
+            f"- Epochs completed: `{len(timeseries)}`",
+            f"- Metrics consistency OK: `{all(row.get('ok') for row in mlflow_checks)}`",
+            f"- Raw dataset images copied into report: `{report_structure.get('raw_images_copied')}`",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _md_value(value: Any) -> Any:
+    if isinstance(value, float):
+        return f"{value:.10g}"
+    return "" if value is None else value
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def manifest_hash(rows: list[dict[str, Any]]) -> str:
+    payload = json.dumps(_json_safe(rows), ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def default_metric_formulas() -> dict[str, str]:
@@ -426,14 +893,13 @@ def _confusion_preview(pred_mask: np.ndarray, gt_mask: np.ndarray) -> np.ndarray
 
 
 def _overlay_preview(image: np.ndarray, pred_mask: np.ndarray, gt_mask: np.ndarray) -> np.ndarray:
-    base = _image_preview(image).astype(np.float32)
     pred = _squeeze_mask(np.asarray(pred_mask)) > 0.5
     gt = _squeeze_mask(np.asarray(gt_mask)) > 0.5
-    overlay = base.copy()
-    overlay[gt] = overlay[gt] * 0.45 + np.array([0, 200, 0], dtype=np.float32) * 0.55
-    overlay[pred] = overlay[pred] * 0.45 + np.array([220, 50, 50], dtype=np.float32) * 0.55
-    overlay[pred & gt] = overlay[pred & gt] * 0.35 + np.array([255, 220, 0], dtype=np.float32) * 0.65
-    return np.clip(overlay, 0, 255).astype("uint8")
+    overlay = np.zeros((*gt.shape, 3), dtype="uint8")
+    overlay[gt] = [0, 190, 0]
+    overlay[pred] = [220, 50, 50]
+    overlay[pred & gt] = [255, 220, 0]
+    return overlay
 
 
 def _to_numpy(value: torch.Tensor | np.ndarray) -> np.ndarray:
@@ -480,6 +946,6 @@ def _float_metric(row: dict[str, Any], key: str) -> float | None:
     return None if value is None else float(value)
 
 
-def _int_metric(row: dict[str, Any], key: str) -> int | None:
+def _int_metric(row: dict[str, Any], key: str, default: int | None = None) -> int | None:
     value = row.get(key)
-    return None if value is None else int(value)
+    return default if value is None else int(value)

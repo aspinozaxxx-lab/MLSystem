@@ -604,6 +604,14 @@ def _run_training_pipeline(conf: AirflowExperimentConfig, store: AirflowRunStore
     train_pseudolabel["enabled"] = False
     train_only_conf = conf.model_copy(update={"pseudolabel": train_pseudolabel})
     job = _build_airflow_job(train_only_conf)
+    job.params.setdefault(
+        "airflow",
+        {
+            "dag_id": "mlsystem_experiment_pipeline",
+            "run_id": store.airflow_run_id,
+            "dag_conf": store.conf,
+        },
+    )
     prepared_manifest = store.run_dir / "dataset_manifest.json"
     if prepared_manifest.exists():
         job.preprocess.setdefault("prepared_dataset_manifest", str(prepared_manifest))

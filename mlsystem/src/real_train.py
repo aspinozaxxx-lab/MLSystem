@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import math
+import os
 import random
 import re
 import time
@@ -22,7 +23,14 @@ from .io_utils import write_json
 from .data import scene_matching as scene_matching_mod
 from .job_schema import JobSpec
 from .mlflow_adapter import MLflowJobRun, trace_stage
-from .metrics.debug_dump import build_sample_payload, metrics_debug_config, metrics_debug_enabled, write_epoch_debug
+from .metrics.debug_dump import (
+    build_sample_payload,
+    manifest_hash,
+    metrics_debug_config,
+    metrics_debug_enabled,
+    write_epoch_debug,
+    write_metrics_debug_report,
+)
 from .metrics.segmentation import PixelMetricAccumulator, WeightedLossAccumulator, binary_segmentation_metrics_from_logits, probabilities_from_logits
 from .models.factory import build_model as build_model_mod
 from .models.factory import set_batchnorm_eval as set_batchnorm_eval_mod
@@ -724,6 +732,35 @@ def _default_tile_limits(job: JobSpec) -> tuple[int, int, int]:
     return max_train_tiles, max_val_tiles, max_tiles_per_scene
 
 
+def _explicit_tile_total_limit(job: JobSpec, key: str) -> Any:
+    if key in job.train:
+        return job.train.get(key)
+    if key in job.preprocess:
+        return job.preprocess.get(key)
+    return None
+
+
+def _full_dataset_tiles_requested(job: JobSpec) -> bool:
+    return bool(
+        job.preprocess.get("use_full_dataset_tiles")
+        or job.preprocess.get("full_dataset")
+        or job.train.get("use_full_dataset_tiles")
+    )
+
+
+def _resolve_wallclock_limit(job: JobSpec) -> int | None:
+    for source in (job.train, job.params.get("debug_run") if isinstance(job.params.get("debug_run"), dict) else {}):
+        if not isinstance(source, dict):
+            continue
+        for key in ("max_wallclock_seconds", "max_training_seconds"):
+            value = source.get(key)
+            if value is not None:
+                return max(0, int(value))
+    if "time_limit_sec" in job.train:
+        return max(0, int(job.train["time_limit_sec"]))
+    return None
+
+
 def _auto_batch_size(model_name: str, patch_size: int, device: torch.device) -> int:
     if device.type != "cuda":
         return 1
@@ -1382,6 +1419,8 @@ def run_real_train(
     input_bands = [int(band) for band in input_bands]
     patch_size = int(job.train.get("patch_size") or job.train.get("train_patch_size") or 256)
     max_train_tiles, max_val_tiles, max_tiles_per_scene = _default_tile_limits(job)
+    explicit_max_train_tiles = _explicit_tile_total_limit(job, "max_train_tiles")
+    explicit_max_val_tiles = _explicit_tile_total_limit(job, "max_val_tiles")
     empty_share = float(job.preprocess.get("max_empty_tile_share") or 0.5)
     with trace_stage("prepare_dataset", {"job_id": job.job_id, "scene_count": len(matches), "tile_size": patch_size}):
         shapes = _load_shapes(config, annotation_uri)
@@ -1404,6 +1443,11 @@ def run_real_train(
             stratify_positive=bool(job.preprocess.get("stratify_positive_validation", True)),
         )
         prepared_split_metadata = None
+    if _full_dataset_tiles_requested(job):
+        if explicit_max_train_tiles is None:
+            max_train_tiles = max(1, len(train_matches) * max_tiles_per_scene)
+        if explicit_max_val_tiles is None:
+            max_val_tiles = max(1, len(val_matches) * max_tiles_per_scene)
     train_samples, train_report, train_sample_records = _read_samples(
         config,
         train_matches,
@@ -1530,7 +1574,8 @@ def run_real_train(
     augmentations_cfg = job.train.get("augmentations") or {}
     mlflow_run.log_params({"train.augmentations_profile": _augmentation_profile(augmentations_cfg)})
     epochs = int(job.train.get("epochs") or 20)
-    time_limit_sec = int(job.train.get("time_limit_sec") or 600)
+    wallclock_limit_sec = _resolve_wallclock_limit(job)
+    time_limit_sec = int(wallclock_limit_sec or 0)
     early_cfg = job.train.get("early_stopping") or {}
     early_enabled = bool(early_cfg.get("enabled", job.train.get("early_stopping_enabled", False)))
     early_patience = int(early_cfg.get("patience") or job.train.get("early_stopping_patience") or 10)
@@ -1558,6 +1603,7 @@ def run_real_train(
             "metrics.val_augmentations": "none",
             "metrics.debug_enabled": debug_enabled,
             "metrics.debug_class_name": metrics_debug_cfg.get("class_name"),
+            "train.max_wallclock_seconds": wallclock_limit_sec,
         }
     )
 
@@ -1593,6 +1639,9 @@ def run_real_train(
     train_trace.__enter__()
     try:
         for epoch in range(1, epochs + 1):
+            if history and wallclock_limit_sec is not None and time.time() - started > wallclock_limit_sec:
+                log_fn(job_log, f"real_train wallclock_stop before_epoch={epoch} limit_sec={wallclock_limit_sec}")
+                break
             epoch_started = time.time()
             model.train()
             if freeze_batchnorm:
@@ -1614,8 +1663,6 @@ def run_real_train(
                     optimizer.step()
                     train_loss_acc.update({name: float(value.detach().item()) for name, value in components.items()}, weight=int(y.shape[0]))
                     train_metric_acc.update_from_logits(logits.detach(), y)
-                    if time.time() - started > time_limit_sec:
-                        break
             else:
                 for batch_indices in make_index_batches(len(train_samples), shuffle=True):
                     x = torch.from_numpy(np.stack([train_samples[item][0] for item in batch_indices])).to(device)
@@ -1629,8 +1676,6 @@ def run_real_train(
                     optimizer.step()
                     train_loss_acc.update({name: float(value.detach().item()) for name, value in components.items()}, weight=int(y.shape[0]))
                     train_metric_acc.update_from_logits(logits.detach(), y)
-                    if time.time() - started > time_limit_sec:
-                        break
 
             model.eval()
             val_loss_acc = WeightedLossAccumulator()
@@ -1781,7 +1826,16 @@ def run_real_train(
                 )
                 if not debug_result.get("recompute", {}).get("ok", False):
                     log_fn(job_log, f"real_train metrics_debug recompute mismatch epoch={epoch} path={debug_result.get('metrics_recompute_check')}")
-                for artifact_key in ("epoch_summary", "per_sample_metrics", "val_manifest_snapshot", "metrics_recompute_check", "mlflow_logged_metrics"):
+                for artifact_key in (
+                    "epoch_summary",
+                    "production_metrics_snapshot",
+                    "per_sample_metrics",
+                    "val_manifest_snapshot",
+                    "metrics_recompute_check",
+                    "mlflow_logged_metrics",
+                    "metrics_md",
+                    "artifacts_manifest",
+                ):
                     artifact_path = debug_result.get(artifact_key)
                     if artifact_path:
                         metrics_debug_artifacts.append(Path(str(artifact_path)))
@@ -1795,7 +1849,8 @@ def run_real_train(
             if early_enabled and epochs_without_improvement >= early_patience:
                 log_fn(job_log, f"real_train early_stopping epoch={epoch} patience={early_patience}")
                 break
-            if time.time() - started > time_limit_sec:
+            if wallclock_limit_sec is not None and time.time() - started > wallclock_limit_sec:
+                log_fn(job_log, f"real_train wallclock_stop after_epoch={epoch} limit_sec={wallclock_limit_sec}")
                 break
     finally:
         train_trace.__exit__(None, None, None)
@@ -1805,6 +1860,68 @@ def run_real_train(
     checkpoint_path = experiment_dir / "tiny_unet_4ch.pt"
     checkpoint_path = experiment_dir / f"{model_name}.pt"
     torch.save({"model_state_dict": model.state_dict(), "job_id": job.job_id, "model_name": model_name, "best_epoch": best_epoch}, checkpoint_path)
+    metrics_debug_report: dict[str, Any] | None = None
+    if debug_enabled and bool(metrics_debug_cfg.get("report_enabled", True)):
+        airflow_metadata = job.params.get("airflow") if isinstance(job.params.get("airflow"), dict) else {}
+        report_root = Path(str(metrics_debug_cfg.get("report_root") or (experiment_dir / "metrics_debug_reports")))
+        report_timestamp = time.strftime("%Y%m%d_%H%M%S")
+        report_name = str(
+            metrics_debug_cfg.get("report_name")
+            or f"metrics_debug_cuttings_airflow_{airflow_metadata.get('run_id') or job.job_id}_{report_timestamp}"
+        )
+        dataset_check = {
+            "class_name": metrics_debug_cfg.get("class_name") or metric_class_name,
+            "full_dataset": not any(
+                value is not None
+                for value in (
+                    job.preprocess.get("max_scenes"),
+                    job.preprocess.get("max_dataset_scenes"),
+                    job.preprocess.get("dataset_limit"),
+                    job.preprocess.get("scene_limit"),
+                    job.preprocess.get("sample_size"),
+                    job.train.get("max_train_batches"),
+                    job.train.get("max_val_batches"),
+                )
+            )
+            and len(train_matches) + len(val_matches) == len(matches),
+            "synthetic": False,
+            "train_limit_batches": job.train.get("max_train_batches"),
+            "val_limit_batches": job.train.get("max_val_batches"),
+            "train_sample_count": len(train_sample_records),
+            "val_sample_count": len(val_sample_records),
+            "train_manifest_hash": manifest_hash(train_sample_records),
+            "val_manifest_hash": manifest_hash(val_sample_records),
+            "matched_scenes_count": len(matches),
+            "train_scene_count": len(train_matches),
+            "val_scene_count": len(val_matches),
+            "explicit_max_train_tiles": explicit_max_train_tiles,
+            "explicit_max_val_tiles": explicit_max_val_tiles,
+            "max_tiles_per_scene": max_tiles_per_scene,
+        }
+        run_metadata = {
+            "branch": os.getenv("MLSYSTEM_GIT_BRANCH") or job.params.get("git_branch") or "",
+            "commit": os.getenv("MLSYSTEM_COMMIT") or os.getenv("MLSYSTEM_GIT_COMMIT") or job.params.get("git_commit") or "",
+            "pushed_remote": job.params.get("pushed_remote") or "",
+            "airflow": airflow_metadata,
+            "airflow_url": airflow_metadata.get("url") or "",
+            "dag_conf": airflow_metadata.get("dag_conf") or {},
+            "task_statuses": airflow_metadata.get("task_statuses") or {},
+            "mlflow_run_id": mlflow_run.run_id,
+            "mlflow_url": (mlflow_run.result() or {}).get("run_url_external"),
+            "debug_root": str(metrics_debug_root / job.job_id),
+            "threshold": metric_threshold,
+            "seed": seed,
+            "max_wallclock_seconds": wallclock_limit_sec,
+            "augmentations": _augmentation_profile(augmentations_cfg),
+        }
+        metrics_debug_report = write_metrics_debug_report(
+            debug_root=metrics_debug_root / job.job_id,
+            report_root=report_root,
+            report_name=report_name,
+            run_metadata=run_metadata,
+            dataset_check=dataset_check,
+        )
+        artifacts.append(Path(str(metrics_debug_report["summary"])))
     artifacts.extend([dataset_report_path, train_scenes_path, val_scenes_path, checkpoint_path, *metrics_debug_artifacts])
     train_tensor_pair = None
     val_tensor_pair = None
@@ -1910,12 +2027,14 @@ def run_real_train(
         },
         "epochs_completed": len(history),
         "time_limit_sec": time_limit_sec,
+        "max_wallclock_seconds": wallclock_limit_sec,
         "best_epoch": best_epoch,
         "best_val_iou": best_val_iou,
         "metrics_source_of_truth": "micro_global_pixel_counts",
         "metrics_threshold": metric_threshold,
         "metrics_debug_enabled": debug_enabled,
         "metrics_debug_root": str(metrics_debug_root / job.job_id) if debug_enabled else None,
+        "metrics_debug_report": metrics_debug_report,
         "checkpoint_path": str(checkpoint_path),
         "last_epoch_metrics": last,
         "postprocess_metrics": postprocess_metrics,

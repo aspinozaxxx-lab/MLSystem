@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from mlsystem.src.metrics.debug_dump import recompute_global_metrics, write_epoch_debug
+from mlsystem.src.metrics.debug_dump import recompute_global_metrics, write_epoch_debug, write_metrics_debug_report
 from mlsystem.src.metrics.segmentation import (
     PixelCounts,
     WeightedLossAccumulator,
@@ -138,8 +139,70 @@ class SegmentationMetricsTests(unittest.TestCase):
                 logged_metrics={"val/pixel_f1": 1.0},
             )
             self.assertTrue(Path(result["epoch_summary"]).exists())
+            self.assertTrue(Path(result["production_metrics_snapshot"]).exists())
             self.assertTrue(Path(result["per_sample_metrics"]).exists())
             self.assertTrue(result["recompute"]["ok"])
+
+    def test_debug_report_folder_structure_excludes_raw_images(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "debug"
+            report_root = Path(tmp) / "reports"
+            metric_row = {
+                "val/pixel_tp": 1,
+                "val/pixel_fp": 0,
+                "val/pixel_fn": 0,
+                "val/pixel_tn": 3,
+                "val/precision": 1.0,
+                "val/recall": 1.0,
+                "val/pixel_f1": 1.0,
+                "val/pixel_iou": 1.0,
+                "val/object_tp": 1,
+                "val/object_fp": 0,
+                "val/object_fn": 0,
+                "val/object_f1": 1.0,
+            }
+            payload = {
+                "metadata": {"sample_id": "s1", "scene_id": "scene.tif"},
+                "image": np.ones((3, 4, 4), dtype=np.float32),
+                "gt_mask": np.ones((4, 4), dtype=np.uint8),
+                "pred_prob": np.ones((4, 4), dtype=np.float32),
+                "pred_mask": np.ones((4, 4), dtype=np.uint8),
+                "objects_gt": [],
+                "objects_pred": [],
+            }
+            write_epoch_debug(
+                root_dir=root,
+                run_id="r1",
+                epoch=1,
+                mlflow_run_id="m1",
+                model_checkpoint_path=None,
+                val_manifest_path="manifest.json",
+                val_manifest=[{"sample_id": "s1"}],
+                class_name="вырубки",
+                class_id=1,
+                threshold=0.5,
+                metric_row=metric_row,
+                train_loss={"train/loss_total": 0.2},
+                val_loss={"val/loss_total": 0.1},
+                per_sample_metrics=[{"sample_id": "s1", "tp": 1, "fp": 0, "fn": 0, "tn": 3}],
+                sample_payloads=[payload],
+                logged_metrics=metric_row,
+            )
+            result = write_metrics_debug_report(
+                debug_root=root / "r1",
+                report_root=report_root,
+                report_name="report",
+                run_metadata={"airflow": {"dag_id": "mlsystem_experiment_pipeline", "run_id": "airflow_run"}},
+                dataset_check={"class_name": "вырубки", "full_dataset": True, "synthetic": False},
+            )
+            report_dir = Path(result["report_dir"])
+            self.assertTrue((report_dir / "summary.md").exists())
+            self.assertTrue((report_dir / "epochs" / "epoch_0001" / "production_metrics_snapshot.json").exists())
+            self.assertFalse((report_dir / "epochs" / "epoch_0001" / "samples" / "s1" / "image.png").exists())
+            self.assertFalse((report_dir / "epochs" / "epoch_0001" / "samples" / "s1" / "pred_prob.npz").exists())
+            self.assertTrue((report_dir / "epochs" / "epoch_0001" / "samples" / "s1" / "gt_mask.png").exists())
+            source_check = json.loads((report_dir / "checks" / "source_of_truth_check.json").read_text(encoding="utf-8"))
+            self.assertTrue(source_check["production_snapshot_reused"])
 
 
 if __name__ == "__main__":

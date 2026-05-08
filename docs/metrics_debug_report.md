@@ -2,193 +2,154 @@
 
 Дата: 2026-05-08.
 
-Базовый класс проверки: `deforest` / `cuttings` / «вырубки».
+Базовый класс: `deforest` / `cuttings` / `вырубки`.
 
-## Краткий вывод
+## Source of truth
 
-Найден и исправлен явный источник недостоверных pixel F1/IoU: training loop публиковал validation metrics как невзвешенное среднее batch-level F1/IoU. Теперь source of truth для pixel metrics - единая confusion matrix по всем validation pixels на эпоху.
+Production validation loop формирует один `production_metrics_snapshot` на каждую эпоху. Этот snapshot используется для:
 
-Исправлено:
+- MLflow logging;
+- `epoch_summary.json`;
+- `production_metrics_snapshot.json`;
+- compact debug report folder;
+- последующих stage artifacts/XCom через `training_result.json`.
 
-- `val/pixel_f1`, `val/pixel_iou`, `val/precision`, `val/recall`, `val/pixel_accuracy` считаются из глобальных TP/FP/FN/TN.
+`metrics_recompute_check.json` не является альтернативным источником истины. Он только проверяет, что значения из production snapshot пересчитываются из per-sample TP/FP/FN/TN с допуском `1e-6`.
+
+## Что исправлено
+
+- `val/pixel_f1`, `val/pixel_iou`, `val/precision`, `val/recall`, `val/pixel_accuracy` считаются из глобальных TP/FP/FN/TN по всей validation выборке.
 - `val/pixel_tp`, `val/pixel_fp`, `val/pixel_fn`, `val/pixel_tn` и `val/threshold` пишутся в MLflow/history/training_result.
-- `evaluate_pixel_metrics` и `compute_f1` берут counts/threshold из `training_result.json`, если они доступны.
 - `train/loss_total`, `train/loss_bce`, `train/loss_dice`, `val/loss_total`, `val/loss_bce`, `val/loss_dice` логируются отдельно и усредняются по количеству samples, а не как last batch.
-- Object matching tie-break стал deterministic: `(-iou, pred_index, gt_index)`.
-- Добавлен metrics debug dump на каждую эпоху.
+- Object matching имеет deterministic tie-break: `(-iou, pred_index, gt_index)`.
+- Metrics debug dump пишет artifacts по каждой завершенной эпохе.
+- Compact report folder не копирует исходные raster/image датасета; в нем остаются lightweight masks, overlays and GeoJSON.
+- Добавлен production-safe wall-clock limit: `train.max_wallclock_seconds`. Если параметр не задан, новый limiter отключен. Если задан, training останавливается только после безопасной точки между завершенными эпохами.
 
-Оставшиеся риски:
+## Как включить Airflow debug report
 
-- Object F1 по validation все еще зависит от наличия validation vectorization artifacts. Если distinct validation vectorization stage не запущен, `compute_f1` честно публикует object metrics как unavailable.
-- Полный server debug run по «вырубкам» должен быть выполнен после деплоя этого кода через текущий CI/CD контур. Локально проверены unit/smoke guarantees, но не полноценная GPU-тренировка.
+Пример `dag_run.conf` для `mlsystem_experiment_pipeline`:
 
-## Как включить debug mode
-
-Через config:
-
-```yaml
-metrics_debug:
-  enabled: true
-  class_name: "вырубки"
-  class_id: 1
-  save_every_epoch: true
-  save_all_val_samples: true
-  save_arrays: true
-  save_png: true
-  save_object_matching: true
-  upload_to_mlflow: true
+```json
+{
+  "experiment_id": "metrics_debug_cuttings_airflow_YYYYMMDD_HHMMSS",
+  "class_name": "deforest",
+  "task": "train_predict_pseudolabel",
+  "images_uri": "s3://mlsystems/images/",
+  "layout_uri": "s3://mlsystems/layouts/deforest/",
+  "scenes_file": "scenes.txt",
+  "annotation_file": "auto",
+  "preprocess": {
+    "use_all_matched_scenes": true,
+    "use_full_dataset_tiles": true,
+    "train_fraction": 0.75,
+    "stratify_positive_validation": true,
+    "max_empty_tile_share": 0.25
+  },
+  "train": {
+    "enabled": true,
+    "max_epochs": 100,
+    "max_wallclock_seconds": 600,
+    "seed": 20260508,
+    "metric_threshold": 0.5,
+    "require_gpu": true,
+    "cache_samples_on_gpu": true
+  },
+  "params": {
+    "class_name": "cuttings",
+    "metrics_debug": {
+      "enabled": true,
+      "class_name": "вырубки",
+      "class_id": 1,
+      "save_every_epoch": true,
+      "save_all_val_samples": true,
+      "save_arrays": true,
+      "save_png": true,
+      "save_object_matching": true,
+      "report_enabled": true,
+      "upload_to_mlflow": false
+    }
+  }
+}
 ```
 
-Через env fallback:
+Не задавать `max_train_batches`, `max_val_batches`, `max_train_tiles`, `max_val_tiles`, `max_scenes`, `dataset_limit`, `sample_size` для финального full-dataset debug run.
 
-```bash
-MLSYSTEM_METRICS_DEBUG=1
-MLSYSTEM_METRICS_DEBUG_CLASS=вырубки
-```
+## Raw debug artifacts
 
-Artifacts пишутся в:
+Raw artifacts пишутся в:
 
 ```text
 <experiment_dir>/metrics_debug/<run_id>/epoch_0001/
 <experiment_dir>/metrics_debug/<run_id>/epoch_0002/
 ```
 
-На каждую эпоху пишутся:
+На каждую эпоху:
 
 - `epoch_summary.json`
+- `production_metrics_snapshot.json`
+- `metrics.md`
 - `per_sample_metrics.csv`
 - `val_manifest_snapshot.json`
 - `metrics_recompute_check.json`
 - `mlflow_logged_metrics.json`
+- `artifacts_manifest.csv`
+- `geojson/gt_objects.geojson`
+- `geojson/pred_objects.geojson`
+- `geojson/object_matches.geojson`
 - `samples/<sample_id>/metadata.json`
-- `samples/<sample_id>/image.png`
 - `samples/<sample_id>/gt_mask.png`
-- `samples/<sample_id>/pred_prob.npz`
-- `samples/<sample_id>/pred_prob.png`
 - `samples/<sample_id>/pred_mask.png`
 - `samples/<sample_id>/overlay_gt_pred.png`
 - `samples/<sample_id>/confusion_map.png`
-- `samples/<sample_id>/tp_mask.png`
-- `samples/<sample_id>/fp_mask.png`
-- `samples/<sample_id>/fn_mask.png`
 - `samples/<sample_id>/objects_gt.geojson`
 - `samples/<sample_id>/objects_pred.geojson`
 - `samples/<sample_id>/object_matches.json`
 - `samples/<sample_id>/object_iou_matrix.csv`
 
-`metrics_recompute_check.json` пересчитывает global metrics из `per_sample_metrics.csv` и сверяет с тем, что ушло в MLflow. Допуск: `1e-6`.
+Raw debug dir может содержать `image.png` и `pred_prob.npz` для глубокой диагностики, но compact report folder их не копирует.
 
-## Проверка гипотез скачков
+## Compact report folder
 
-| Гипотеза | Статус | Вывод |
-|---|---|---|
-| Нефиксированная val выборка | не подтверждено кодом | Split использует seed или prepared manifest. Debug сохраняет `val_manifest_snapshot.json` для проверки между эпохами. |
-| Shuffle на val | не подтверждено | Val batches идут через `make_index_batches(..., shuffle=False)`. |
-| Augmentations на val | не подтверждено | `_apply_train_augmentations` вызывается только в train loop. |
-| `model.eval()` на val отсутствует | не подтверждено | Val loop вызывает `model.eval()`. |
-| `torch.no_grad()` отсутствует | не подтверждено | Val loop внутри `torch.no_grad()`. |
-| Accumulator не reset | исправлено/закрыто | Accumulators создаются на каждую эпоху. |
-| Per-batch F1 mean без весов | подтверждено | Исправлено на micro TP/FP/FN/TN. |
-| Train/val loss как last batch | частично | Был `np.mean(batch_loss)`; теперь sample-weighted average. |
-| Loss components не логируются | подтверждено | Теперь логируются BCE и Dice components. |
-| Threshold меняется между эпохами | не подтверждено | Threshold фиксируется `metrics.threshold`, default `0.5`, логируется как `val/threshold`. |
-| Metrics на logits вместо probabilities | закрыто | `probabilities_from_logits`: sigmoid для binary, softmax channel для multi-class. |
-| GT resize bilinear | не выявлено в исправленном участке | Metrics module не делает silent resize и падает при shape mismatch. |
-| Две функции логируют один key | риск остается | `train_model`, `evaluate_pixel_metrics`, `compute_f1` могут логировать сходные normalized keys, но теперь читают один `training_result`. |
-| Object F1 нестабилен из-за matching order | исправлено частично | Tie-break deterministic, но object F1 все еще зависит от vectorization/postprocess. |
-| Псевдоразметка подмешивается в GT eval | не подтверждено | Pixel train validation берет GT masks из annotation rasterize; object metrics postprocess зависит от selected `gt_shapes`. |
-
-## Таблица метрик по эпохам
-
-После server debug run заполнить из `metrics_debug/<run_id>/epoch_*/epoch_summary.json`.
-
-| epoch | train_loss | val_loss | pixel_f1_cuttings | pixel_iou_cuttings | object_f1_cuttings | gt_pixels | pred_pixels | gt_objects | pred_objects |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| pending_server_run | - | - | - | - | - | - | - | - | - |
-
-## Топ-10 плохих samples
-
-После server debug run заполнить из `per_sample_metrics.csv`, сортировка `pixel_f1 asc`, затем `object_f1 asc`.
-
-| sample_id | scene_id | pixel_f1 | object_f1 | gt_pixels | pred_pixels | FP | FN | debug path |
-|---|---|---:|---:|---:|---:|---:|---:|---|
-| pending_server_run | - | - | - | - | - | - | - | - |
-
-## Топ-10 скачков между эпохами
-
-После server debug run сравнить `per_sample_metrics.csv` между соседними эпохами.
-
-| sample_id | scene_id | epoch_a | epoch_b | f1_delta | iou_delta | likely reason | debug path |
-|---|---|---:|---:|---:|---:|---|---|
-| pending_server_run | - | - | - | - | - | - | - |
-
-## Проверка консистентности
-
-Локальные тесты подтверждают:
-
-- perfect/empty/half-overlap pixel formulas;
-- ignore_index не входит в TP/FP/FN/TN;
-- threshold `0.5` работает ожидаемо;
-- shape mismatch не ресайзится молча;
-- loss average sample-weighted;
-- debug recompute из per-sample rows совпадает с logged row;
-- object matching one-to-one и deterministic tie order.
-
-Локальный debug smoke для класса «вырубки» записал sample artifacts вне repo во временный каталог:
+Training создает compact report under:
 
 ```text
-<system-temp>/mlsystem_metrics_debug_smoke_cuttings/metrics_debug_cuttings_local_smoke/epoch_0001
+<experiment_dir>/metrics_debug_reports/<report_name>/
 ```
 
-`metrics_recompute_check.json` для smoke: `ok=true`, `pixel_f1=0.5625`, `pixel_iou=0.391304347826087`.
+Структура:
 
-Команды локальной проверки:
+```text
+summary.md
+run_metadata.json
+metrics_timeseries.csv
+metrics_timeseries.json
+airflow/dag_run.json
+airflow/task_statuses.json
+airflow/airflow_url.txt
+airflow/dag_conf.json
+checks/source_of_truth_check.json
+checks/mlflow_consistency_check.json
+checks/report_structure_check.json
+checks/dataset_full_run_check.json
+epochs/epoch_0001/...
+```
+
+Эту папку можно копировать в `E:\Projects\reports\metrics_debug_cuttings_airflow_<airflow_run_id>_<timestamp>` после Airflow run.
+
+## Required consistency checks
+
+- `production_metrics_snapshot.json` equals values used by `epoch_summary.json`.
+- MLflow metrics for the epoch match production snapshot values with `delta <= 1e-6`.
+- Recompute from `per_sample_metrics.csv` matches production pixel metrics with `delta <= 1e-6`.
+- `val_manifest_snapshot.json` is stable unless config intentionally changes validation data.
+- `checks/report_structure_check.json` confirms raw source images were not copied into the compact report.
+
+## Local verification
 
 ```text
 python -m unittest discover -s tests
 python -m unittest discover -s frontend/tests
 python -m compileall -q mlsystem airflow frontend tests
+git diff --check
 ```
-
-## Рекомендуемая server команда
-
-Запуск должен идти через текущий Airflow/API контур после деплоя кода. Для controlled run:
-
-```bash
-MLSYSTEM_METRICS_DEBUG=1 \
-MLSYSTEM_METRICS_DEBUG_CLASS=вырубки \
-airflow dags trigger mlsystem_experiment_pipeline \
-  -r metrics_debug_cuttings_YYYYMMDD_HHMMSS \
-  -c '<deforest/cuttings config with fixed seed, fixed val manifest, short epoch count>'
-```
-
-В отчете server run нужно сохранить:
-
-- git commit hash;
-- `run_id`;
-- MLflow run id;
-- путь `metrics_debug_root`;
-- `metrics_recompute_check.json` по каждой эпохе;
-- сравнение `training_result.last_epoch_metrics`, `pixel_metrics.json`, MLflow metrics.
-
-## Source of truth
-
-Для pixel quality использовать:
-
-- `val/cuttings_pixel_f1`
-- `val/cuttings_pixel_iou`
-- `val/cuttings_pixel_precision`
-- `val/cuttings_pixel_recall`
-- `val/cuttings_gt_pixels`
-- `val/cuttings_pred_pixels`
-
-Для общих/legacy графиков сохраняются алиасы:
-
-- `val/pixel_f1`
-- `val/pixel_iou`
-- `val/precision`
-- `val/recall`
-- `val/dice`
-- `val/iou`
-
-Эти значения теперь берутся из одной global confusion matrix.
