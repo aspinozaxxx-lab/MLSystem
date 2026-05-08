@@ -8,7 +8,15 @@ from types import SimpleNamespace
 import torch
 
 from mlsystem.src.io_utils import write_json
-from mlsystem.src.real_train import SceneMatch, TinyUNet, _load_initial_checkpoint, _load_prepared_dataset_split
+from mlsystem.src.real_train import (
+    SceneMatch,
+    TinyUNet,
+    _build_optimizer,
+    _build_scheduler,
+    _configure_dropout,
+    _load_initial_checkpoint,
+    _load_prepared_dataset_split,
+)
 
 
 class RealTrainPreparedSplitTests(unittest.TestCase):
@@ -74,6 +82,20 @@ class RealTrainPreparedSplitTests(unittest.TestCase):
             self.assertEqual(info["unexpected_keys"], [])
             for param in target.parameters():
                 self.assertTrue(torch.allclose(param, torch.full_like(param, 0.25)))
+
+    def test_training_knobs_build_optimizer_scheduler_and_dropout(self) -> None:
+        model = torch.nn.Sequential(torch.nn.Conv2d(1, 1, 1), torch.nn.Dropout2d(p=0.5))
+        updated = _configure_dropout(model, 0.15)
+        self.assertEqual(updated, 1)
+        self.assertAlmostEqual(model[1].p, 0.15)
+
+        optimizer = _build_optimizer(model, {"optimizer": "adam", "learning_rate": 1e-4, "weight_decay": 0.01})
+        self.assertIsInstance(optimizer, torch.optim.Adam)
+        self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 1e-4)
+        self.assertAlmostEqual(optimizer.param_groups[0]["weight_decay"], 0.01)
+
+        scheduler = _build_scheduler(optimizer, {"scheduler": {"name": "cosine", "t_max": 3, "eta_min": 1e-6}}, epochs=5)
+        self.assertIsInstance(scheduler, torch.optim.lr_scheduler.CosineAnnealingLR)
 
 
 if __name__ == "__main__":

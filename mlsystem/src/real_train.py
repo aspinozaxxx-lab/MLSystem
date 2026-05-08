@@ -422,6 +422,62 @@ def _set_batchnorm_eval(model: torch.nn.Module) -> None:
     set_batchnorm_eval_mod(model)
 
 
+def _configure_dropout(model: torch.nn.Module, dropout_p: Any) -> int:
+    if dropout_p is None:
+        return 0
+    probability = float(dropout_p)
+    if probability < 0.0 or probability >= 1.0:
+        raise ValueError(f"dropout_p must be in [0, 1), got {probability}")
+    updated = 0
+    for module in model.modules():
+        if isinstance(module, (torch.nn.Dropout, torch.nn.Dropout2d, torch.nn.Dropout3d)):
+            module.p = probability
+            updated += 1
+    return updated
+
+
+def _build_optimizer(model: torch.nn.Module, train_cfg: dict[str, Any]) -> torch.optim.Optimizer:
+    name = str(train_cfg.get("optimizer") or train_cfg.get("optimizer_name") or "adamw").strip().lower()
+    lr = float(train_cfg.get("learning_rate") or 5e-4)
+    weight_decay = float(train_cfg.get("weight_decay") or 0.0)
+    if name in {"adamw", "adam_w"}:
+        return torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+    if name == "adam":
+        return torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+    if name in {"sgd", "momentum_sgd"}:
+        momentum = float(train_cfg.get("momentum") or 0.9)
+        nesterov = bool(train_cfg.get("nesterov", False))
+        return torch.optim.SGD(model.parameters(), lr=lr, weight_decay=weight_decay, momentum=momentum, nesterov=nesterov)
+    raise ValueError(f"Unsupported optimizer={name}; supported: adamw, adam, sgd")
+
+
+def _build_scheduler(optimizer: torch.optim.Optimizer, train_cfg: dict[str, Any], epochs: int) -> torch.optim.lr_scheduler.LRScheduler | None:
+    cfg = train_cfg.get("scheduler")
+    if cfg is None:
+        name = str(train_cfg.get("scheduler_name") or "none").strip().lower()
+        cfg = {"name": name}
+    elif isinstance(cfg, str):
+        cfg = {"name": cfg}
+    elif not isinstance(cfg, dict):
+        cfg = {"name": "none"}
+    name = str(cfg.get("name") or cfg.get("type") or "none").strip().lower()
+    if name in {"", "none", "off", "disabled"}:
+        return None
+    if name in {"cosine", "cosine_annealing"}:
+        t_max = int(cfg.get("t_max") or train_cfg.get("scheduler_t_max") or epochs)
+        eta_min = float(cfg.get("eta_min") or train_cfg.get("scheduler_eta_min") or 0.0)
+        return torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(1, t_max), eta_min=eta_min)
+    if name in {"step", "step_lr"}:
+        step_size = int(cfg.get("step_size") or train_cfg.get("scheduler_step_size") or max(1, epochs // 3))
+        gamma = float(cfg.get("gamma") or train_cfg.get("scheduler_gamma") or 0.5)
+        return torch.optim.lr_scheduler.StepLR(optimizer, step_size=max(1, step_size), gamma=gamma)
+    raise ValueError(f"Unsupported scheduler={name}; supported: none, cosine, step")
+
+
+def _metric_improved(value: float, best: float, *, maximize: bool) -> bool:
+    return value > best if maximize else value < best
+
+
 def _checkpoint_state_dict(payload: Any) -> dict[str, Any]:
     if isinstance(payload, dict):
         for key in ("model_state_dict", "state_dict", "model"):
@@ -465,12 +521,12 @@ def _dice_iou_precision_recall(logits: torch.Tensor, target: torch.Tensor, thres
     }
 
 
-def _loss_fn(logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-    return segmentation_loss(logits, target)
+def _loss_fn(logits: torch.Tensor, target: torch.Tensor, config: dict[str, Any] | None = None) -> torch.Tensor:
+    return segmentation_loss(logits, target, config=config)
 
 
-def _loss_components(logits: torch.Tensor, target: torch.Tensor) -> dict[str, torch.Tensor]:
-    return segmentation_loss_components(logits, target)
+def _loss_components(logits: torch.Tensor, target: torch.Tensor, config: dict[str, Any] | None = None) -> dict[str, torch.Tensor]:
+    return segmentation_loss_components(logits, target, config=config)
 
 
 def _metric_class_key(class_name: str) -> str:
@@ -1616,14 +1672,39 @@ def run_real_train(
         log_fn(job_log, f"real_train loaded_initial_checkpoint={initial_checkpoint_info['path']}")
     freeze_batchnorm_default = model_name.lower().startswith(("deeplab", "deeplabv3plus"))
     freeze_batchnorm = bool(job.train.get("freeze_batchnorm", freeze_batchnorm_default))
-    mlflow_run.log_params({"freeze_batchnorm": freeze_batchnorm})
-    optimizer = torch.optim.AdamW(model.parameters(), lr=float(job.train.get("learning_rate") or 5e-4))
+    dropout_updated = _configure_dropout(model, job.train.get("dropout_p", job.train.get("dropout")))
+    optimizer = _build_optimizer(model, job.train)
     batch_size = job.train.get("batch_size") or 2
     if batch_size == "auto":
         batch_size = _auto_batch_size(model_name, patch_size, device)
     batch_size = max(1, int(batch_size))
+    epochs = int(job.train.get("epochs") or job.train.get("max_epochs") or 20)
+    scheduler = _build_scheduler(optimizer, job.train, epochs)
+    loss_cfg = job.train.get("loss") if isinstance(job.train.get("loss"), dict) else {}
+    if isinstance(job.train.get("loss"), str):
+        loss_cfg = {"name": job.train.get("loss")}
+    loss_name = str((loss_cfg or {}).get("name") or (loss_cfg or {}).get("type") or "bce_dice")
+    grad_clip_norm = job.train.get("grad_clip_norm")
+    objective_metric = str(job.train.get("objective_metric") or job.params.get("objective_metric") or "val/iou")
+    maximize_objective = bool(job.train.get("maximize", job.params.get("maximize", True)))
     mlflow_run.log_params(
         {
+            "freeze_batchnorm": freeze_batchnorm,
+            "train.dropout_p": job.train.get("dropout_p", job.train.get("dropout")),
+            "train.dropout_modules_updated": dropout_updated,
+            "train.optimizer": str(job.train.get("optimizer") or job.train.get("optimizer_name") or "adamw"),
+            "train.learning_rate": float(job.train.get("learning_rate") or 5e-4),
+            "train.weight_decay": float(job.train.get("weight_decay") or 0.0),
+            "train.scheduler": str((job.train.get("scheduler") or {}).get("name") if isinstance(job.train.get("scheduler"), dict) else (job.train.get("scheduler") or job.train.get("scheduler_name") or "none")),
+            "train.loss": loss_name,
+            "train.loss_bce_weight": (loss_cfg or {}).get("bce_weight"),
+            "train.loss_dice_weight": (loss_cfg or {}).get("dice_weight"),
+            "train.loss_focal_weight": (loss_cfg or {}).get("focal_weight"),
+            "train.loss_tversky_weight": (loss_cfg or {}).get("tversky_weight"),
+            "train.loss_pos_weight": (loss_cfg or {}).get("pos_weight", (loss_cfg or {}).get("positive_weight")),
+            "train.grad_clip_norm": grad_clip_norm,
+            "train.objective_metric": objective_metric,
+            "train.objective_maximize": maximize_objective,
             "train.batch_size_resolved": batch_size,
             "train.max_train_tiles": max_train_tiles,
             "train.max_val_tiles": max_val_tiles,
@@ -1632,7 +1713,6 @@ def run_real_train(
     )
     augmentations_cfg = job.train.get("augmentations") or {}
     mlflow_run.log_params({"train.augmentations_profile": _augmentation_profile(augmentations_cfg)})
-    epochs = int(job.train.get("epochs") or 20)
     wallclock_limit_sec = _resolve_wallclock_limit(job)
     time_limit_sec = int(wallclock_limit_sec or 0)
     early_cfg = job.train.get("early_stopping") or {}
@@ -1691,7 +1771,9 @@ def run_real_train(
         return [indices[i : i + batch_size] for i in range(0, len(indices), batch_size)]
 
     best_val_iou = -1.0
+    best_objective_value = -math.inf if maximize_objective else math.inf
     best_epoch = 0
+    best_state_dict: dict[str, torch.Tensor] | None = None
     epochs_without_improvement = 0
     metrics_debug_artifacts: list[Path] = []
     train_trace = trace_stage("train_model", {"job_id": job.job_id, "model_name": model_name, "tile_size": patch_size, "epoch_count": epochs})
@@ -1716,9 +1798,11 @@ def run_real_train(
                     x, y = _apply_train_augmentations(x, y, augmentations_cfg)
                     optimizer.zero_grad(set_to_none=True)
                     logits = model(x)
-                    components = _loss_components(logits, y)
+                    components = _loss_components(logits, y, loss_cfg)
                     loss = components["loss_total"]
                     loss.backward()
+                    if grad_clip_norm is not None:
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), float(grad_clip_norm))
                     optimizer.step()
                     train_loss_acc.update({name: float(value.detach().item()) for name, value in components.items()}, weight=int(y.shape[0]))
                     train_metric_acc.update_from_logits(logits.detach(), y)
@@ -1729,9 +1813,11 @@ def run_real_train(
                     x, y = _apply_train_augmentations(x, y, augmentations_cfg)
                     optimizer.zero_grad(set_to_none=True)
                     logits = model(x)
-                    components = _loss_components(logits, y)
+                    components = _loss_components(logits, y, loss_cfg)
                     loss = components["loss_total"]
                     loss.backward()
+                    if grad_clip_norm is not None:
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), float(grad_clip_norm))
                     optimizer.step()
                     train_loss_acc.update({name: float(value.detach().item()) for name, value in components.items()}, weight=int(y.shape[0]))
                     train_metric_acc.update_from_logits(logits.detach(), y)
@@ -1749,7 +1835,7 @@ def run_real_train(
                         x = val_x.index_select(0, idx)
                         y = val_y.index_select(0, idx)
                         logits = model(x)
-                        components = _loss_components(logits, y)
+                        components = _loss_components(logits, y, loss_cfg)
                         val_loss_acc.update({name: float(value.detach().item()) for name, value in components.items()}, weight=int(y.shape[0]))
                         val_metric_acc.update_from_logits(logits, y)
                         if debug_enabled:
@@ -1769,7 +1855,7 @@ def run_real_train(
                         x = torch.from_numpy(np.stack([val_samples[item][0] for item in batch_indices])).to(device)
                         y = torch.from_numpy(np.stack([val_samples[item][1] for item in batch_indices])).to(device)
                         logits = model(x)
-                        components = _loss_components(logits, y)
+                        components = _loss_components(logits, y, loss_cfg)
                         val_loss_acc.update({name: float(value.detach().item()) for name, value in components.items()}, weight=int(y.shape[0]))
                         val_metric_acc.update_from_logits(logits, y)
                         if debug_enabled:
@@ -1797,6 +1883,8 @@ def run_real_train(
                 "train/loss_total": train_loss_values.get("train/loss_total", 0.0),
                 "train/loss_bce": train_loss_values.get("train/loss_bce", 0.0),
                 "train/loss_dice": train_loss_values.get("train/loss_dice", 0.0),
+                "train/loss_focal": train_loss_values.get("train/loss_focal", 0.0),
+                "train/loss_tversky": train_loss_values.get("train/loss_tversky", 0.0),
                 "train/dice": float(train_metrics["pixel_f1"]),
                 "train/iou": float(train_metrics["pixel_iou"]),
                 "train/pixel_f1": float(train_metrics["pixel_f1"]),
@@ -1811,6 +1899,8 @@ def run_real_train(
                 "val/loss_total": val_loss_values.get("val/loss_total", 0.0),
                 "val/loss_bce": val_loss_values.get("val/loss_bce", 0.0),
                 "val/loss_dice": val_loss_values.get("val/loss_dice", 0.0),
+                "val/loss_focal": val_loss_values.get("val/loss_focal", 0.0),
+                "val/loss_tversky": val_loss_values.get("val/loss_tversky", 0.0),
                 "val/dice": float(val_metrics["pixel_f1"]),
                 "val/iou": float(val_metrics["pixel_iou"]),
                 "val/pixel_dice": float(val_metrics["pixel_f1"]),
@@ -1856,6 +1946,8 @@ def run_real_train(
                     "epoch/sec": row["epoch_duration_sec"],
                 }
             )
+            objective_value = float(row.get(objective_metric, row.get("val/iou", 0.0)))
+            row["objective/value"] = objective_value
             if device.type == "cuda":
                 torch.cuda.synchronize()
                 row["system/cuda_memory_allocated_mb"] = round(torch.cuda.memory_allocated(device) / (1024 * 1024), 3)
@@ -1899,9 +1991,14 @@ def run_real_train(
                     if artifact_path:
                         metrics_debug_artifacts.append(Path(str(artifact_path)))
             log_fn(job_log, f"real_train epoch={epoch} val_iou={row['val/iou']:.6f} duration={row['epoch_duration_sec']}")
+            if scheduler is not None:
+                scheduler.step()
             if row["val/iou"] > best_val_iou:
                 best_val_iou = row["val/iou"]
+            if _metric_improved(objective_value, best_objective_value, maximize=maximize_objective):
+                best_objective_value = objective_value
                 best_epoch = epoch
+                best_state_dict = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
                 epochs_without_improvement = 0
             else:
                 epochs_without_improvement += 1
@@ -1918,7 +2015,19 @@ def run_real_train(
     artifacts = _write_history(experiment_dir, history)
     checkpoint_path = experiment_dir / "tiny_unet_4ch.pt"
     checkpoint_path = experiment_dir / f"{model_name}.pt"
-    torch.save({"model_state_dict": model.state_dict(), "job_id": job.job_id, "model_name": model_name, "best_epoch": best_epoch}, checkpoint_path)
+    state_to_save = best_state_dict or {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
+    torch.save(
+        {
+            "model_state_dict": state_to_save,
+            "job_id": job.job_id,
+            "model_name": model_name,
+            "best_epoch": best_epoch,
+            "best_objective_metric": objective_metric,
+            "best_objective_value": best_objective_value,
+            "final_epoch": len(history),
+        },
+        checkpoint_path,
+    )
     metrics_debug_report: dict[str, Any] | None = None
     if debug_enabled and bool(metrics_debug_cfg.get("report_enabled", True)):
         airflow_metadata = job.params.get("airflow") if isinstance(job.params.get("airflow"), dict) else {}
@@ -2091,6 +2200,9 @@ def run_real_train(
         "max_wallclock_seconds": wallclock_limit_sec,
         "best_epoch": best_epoch,
         "best_val_iou": best_val_iou,
+        "best_objective_metric": objective_metric,
+        "best_objective_value": best_objective_value,
+        "best_val_pixel_f1": max((float(row.get("val/pixel_f1", 0.0)) for row in history), default=0.0),
         "metrics_source_of_truth": "micro_global_pixel_counts",
         "metrics_threshold": metric_threshold,
         "metrics_debug_enabled": debug_enabled,
