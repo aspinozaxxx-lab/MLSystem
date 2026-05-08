@@ -111,7 +111,7 @@ def match_objects_by_iou(
             if iou > iou_threshold:
                 candidates.append((iou, pred_index, gt_index, pred_area, gt_area, intersection, union))
 
-    candidates.sort(key=lambda item: item[0], reverse=True)
+    candidates.sort(key=lambda item: (-item[0], item[1], item[2]))
     used_preds: set[int] = set()
     used_gts: set[int] = set()
     matches: list[ObjectMatch] = []

@@ -44,6 +44,7 @@ artifacts/
 cache/
 models/
 checkpoints/
+metrics_debug/
 job.json
 request.json
 report.json

@@ -848,6 +848,7 @@ def _extract_pixel_metrics(training_result: dict[str, Any]) -> tuple[dict[str, A
         ("val/recall", "pixel_recall"),
         ("val/pixel_iou", "pixel_iou"),
         ("val/iou", "pixel_iou"),
+        ("val/pixel_accuracy", "pixel_accuracy"),
         ("val/accuracy", "pixel_accuracy"),
     ]
     metrics: dict[str, Any] = {}
@@ -892,18 +893,20 @@ def _extract_pixel_metrics(training_result: dict[str, Any]) -> tuple[dict[str, A
             warnings.append(f"{key} is not available in training_result.last_epoch_metrics.")
     counters = {
         "scenes_evaluated": training_result.get("val_scene_count"),
-        "threshold": None,
-        "pixel_tp": None,
-        "pixel_fp": None,
-        "pixel_fn": None,
-        "pixel_tn": None,
+        "threshold": last_metrics.get("val/threshold") or training_result.get("metrics_threshold"),
+        "pixel_tp": last_metrics.get("val/pixel_tp"),
+        "pixel_fp": last_metrics.get("val/pixel_fp"),
+        "pixel_fn": last_metrics.get("val/pixel_fn"),
+        "pixel_tn": last_metrics.get("val/pixel_tn"),
     }
-    warnings.extend(
-        [
-            "pixel tp/fp/fn/tn are not available because current training metrics do not persist confusion-matrix counts.",
-            "pixel threshold is not available because current validation metrics are logged at training default threshold only.",
-        ]
-    )
+    missing_counters = [key for key in ("pixel_tp", "pixel_fp", "pixel_fn", "pixel_tn") if counters.get(key) is None]
+    if missing_counters:
+        warnings.append(
+            "pixel confusion-matrix counters are not available in training_result.last_epoch_metrics: "
+            + ", ".join(missing_counters)
+        )
+    if counters.get("threshold") is None:
+        warnings.append("pixel threshold is not available in training_result.last_epoch_metrics.")
     return metrics, counters, alias_rows, warnings
 
 

@@ -270,6 +270,32 @@ class AirflowTasksTests(unittest.TestCase):
         self.assertTrue(any("inconsistent" in warning for warning in warnings))
         self.assertTrue(any(row["normalized_metric_name"] == "pixel_f1_source_value_not_used" for row in aliases))
 
+    def test_pixel_metrics_extracts_confusion_counts_and_threshold(self) -> None:
+        metrics, counters, _aliases, warnings = _extract_pixel_metrics(
+            {
+                "val_scene_count": 4,
+                "last_epoch_metrics": {
+                    "val/precision": 0.75,
+                    "val/recall": 0.6,
+                    "val/pixel_f1": 2 * 3 / (2 * 3 + 1 + 2),
+                    "val/pixel_iou": 3 / (3 + 1 + 2),
+                    "val/pixel_accuracy": 0.8,
+                    "val/pixel_tp": 3,
+                    "val/pixel_fp": 1,
+                    "val/pixel_fn": 2,
+                    "val/pixel_tn": 9,
+                    "val/threshold": 0.5,
+                },
+            }
+        )
+        self.assertAlmostEqual(metrics["pixel_f1"], 2 * 3 / (2 * 3 + 1 + 2))
+        self.assertEqual(counters["pixel_tp"], 3)
+        self.assertEqual(counters["pixel_fp"], 1)
+        self.assertEqual(counters["pixel_fn"], 2)
+        self.assertEqual(counters["pixel_tn"], 9)
+        self.assertEqual(counters["threshold"], 0.5)
+        self.assertFalse(any("not available" in warning for warning in warnings))
+
     def test_xcom_safe_value_normalizes_unsafe_types(self) -> None:
         self.assertEqual(xcom_safe_value(np.int64(5)), 5)
         self.assertEqual(type(xcom_safe_value(np.int64(5))), int)

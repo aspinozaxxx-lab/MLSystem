@@ -22,6 +22,8 @@ from .io_utils import write_json
 from .data import scene_matching as scene_matching_mod
 from .job_schema import JobSpec
 from .mlflow_adapter import MLflowJobRun, trace_stage
+from .metrics.debug_dump import build_sample_payload, metrics_debug_config, metrics_debug_enabled, write_epoch_debug
+from .metrics.segmentation import PixelMetricAccumulator, WeightedLossAccumulator, binary_segmentation_metrics_from_logits, probabilities_from_logits
 from .models.factory import build_model as build_model_mod
 from .models.factory import set_batchnorm_eval as set_batchnorm_eval_mod
 from .object_metrics import compute_object_f1
@@ -35,7 +37,7 @@ from .preprocessing.normalization import normalize_image as normalize_image_mod
 from .reporting.prediction_examples import write_prediction_examples_report as write_prediction_examples_report_mod
 from .storage import s3 as s3_storage
 from .tiling import windows as tiling_windows
-from .training.losses import segmentation_loss
+from .training.losses import segmentation_loss, segmentation_loss_components
 
 
 SceneMatch = scene_matching_mod.SceneMatch
@@ -416,26 +418,82 @@ def _normalize_image(arr: np.ndarray) -> np.ndarray:
     return normalize_image_mod(arr)
 
 
-def _dice_iou_precision_recall(logits: torch.Tensor, target: torch.Tensor) -> dict[str, float]:
-    probs = torch.sigmoid(logits)
-    pred = (probs >= 0.5).float()
-    target = target.float()
-    eps = 1e-7
-    tp = float((pred * target).sum().item())
-    fp = float((pred * (1 - target)).sum().item())
-    fn = float(((1 - pred) * target).sum().item())
-    intersection = tp
-    union = float(((pred + target) > 0).float().sum().item())
-    dice = (2 * intersection + eps) / (float(pred.sum().item() + target.sum().item()) + eps)
-    iou = (intersection + eps) / (union + eps)
-    precision = (tp + eps) / (tp + fp + eps)
-    recall = (tp + eps) / (tp + fn + eps)
-    f1 = (2 * precision * recall + eps) / (precision + recall + eps)
-    return {"dice": dice, "iou": iou, "precision": precision, "recall": recall, "f1": f1}
+def _dice_iou_precision_recall(logits: torch.Tensor, target: torch.Tensor, threshold: float = 0.5) -> dict[str, float]:
+    metrics = binary_segmentation_metrics_from_logits(logits, target, threshold=threshold)
+    return {
+        "dice": float(metrics["pixel_f1"]),
+        "iou": float(metrics["pixel_iou"]),
+        "precision": float(metrics["pixel_precision"]),
+        "recall": float(metrics["pixel_recall"]),
+        "f1": float(metrics["pixel_f1"]),
+    }
 
 
 def _loss_fn(logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     return segmentation_loss(logits, target)
+
+
+def _loss_components(logits: torch.Tensor, target: torch.Tensor) -> dict[str, torch.Tensor]:
+    return segmentation_loss_components(logits, target)
+
+
+def _metric_class_key(class_name: str) -> str:
+    value = str(class_name or "class").strip().lower()
+    if value in {"deforest", "cuttings", "clearcuts", "clear_cuts", "вырубки"}:
+        return "cuttings"
+    value = re.sub(r"[^a-z0-9_]+", "_", value)
+    return value.strip("_") or "class"
+
+
+def _collect_val_debug_samples(
+    *,
+    batch_indices: list[int],
+    x: torch.Tensor,
+    y: torch.Tensor,
+    logits: torch.Tensor,
+    val_sample_records: list[dict[str, Any]],
+    threshold: float,
+    rows: list[dict[str, Any]],
+    payloads: list[dict[str, Any]],
+    save_all: bool,
+) -> None:
+    probs = probabilities_from_logits(logits.detach())
+    pred_masks = probs >= float(threshold)
+    max_payloads = len(batch_indices) if save_all else max(0, 10 - len(payloads))
+    for local_index, sample_index in enumerate(batch_indices):
+        metadata = dict(val_sample_records[sample_index]) if sample_index < len(val_sample_records) else {"sample_id": str(sample_index)}
+        metadata.setdefault("sample_id", str(sample_index))
+        payload = build_sample_payload(
+            metadata=metadata,
+            image=x[local_index],
+            gt_mask=y[local_index],
+            pred_prob=probs[local_index],
+            pred_mask=pred_masks[local_index],
+        )
+        rows.append(dict(payload["metadata"]))
+        if len(payloads) < len(rows) and (save_all or local_index < max_payloads):
+            payloads.append(payload)
+
+
+def _object_summary_from_sample_rows(rows: list[dict[str, Any]]) -> dict[str, float]:
+    gt_total = sum(int(row.get("gt_objects_count") or 0) for row in rows)
+    pred_total = sum(int(row.get("pred_objects_count") or 0) for row in rows)
+    matched_total = sum(int(row.get("matched_objects_count") or 0) for row in rows)
+    fp = max(0, pred_total - matched_total)
+    fn = max(0, gt_total - matched_total)
+    precision = matched_total / pred_total if pred_total else 0.0
+    recall = matched_total / gt_total if gt_total else 0.0
+    f1 = (2 * matched_total) / (2 * matched_total + fp + fn) if (2 * matched_total + fp + fn) else 0.0
+    return {
+        "object_tp": float(matched_total),
+        "object_fp": float(fp),
+        "object_fn": float(fn),
+        "object_precision": float(precision),
+        "object_recall": float(recall),
+        "object_f1": float(f1),
+        "gt_objects": float(gt_total),
+        "pred_objects": float(pred_total),
+    }
 
 
 def _augmentation_profile(augmentations: Any) -> str:
@@ -556,12 +614,13 @@ def _read_samples(
     max_tiles_total: int,
     empty_share: float,
     seed: int,
-) -> tuple[list[tuple[np.ndarray, np.ndarray]], list[dict[str, Any]]]:
+) -> tuple[list[tuple[np.ndarray, np.ndarray]], list[dict[str, Any]], list[dict[str, Any]]]:
     import rasterio
     from rasterio.windows import Window
 
     samples: list[tuple[np.ndarray, np.ndarray]] = []
     report: list[dict[str, Any]] = []
+    sample_records: list[dict[str, Any]] = []
     aws = _aws_session(config)
     with rasterio.Env(aws, AWS_HTTPS="NO", AWS_VIRTUAL_HOSTING="FALSE"):
         for scene_idx, match in enumerate(matches):
@@ -603,7 +662,22 @@ def _read_samples(
                     )
                     if np.count_nonzero(arr) == 0:
                         continue
+                    sample_index = len(samples)
                     samples.append((_normalize_image(arr), mask.astype("float32")[None, :, :]))
+                    sample_records.append(
+                        {
+                            "sample_id": f"{scene_idx:04d}_{scene_samples:04d}",
+                            "scene_id": match.name,
+                            "scene": match.name,
+                            "tile_id": f"x{x}_y{y}_w{patch_size}_h{patch_size}",
+                            "source_image_path": path,
+                            "s3_key": match.key,
+                            "window": {"x": int(x), "y": int(y), "width": int(patch_size), "height": int(patch_size)},
+                            "sample_index": sample_index,
+                            "positive_tile": bool(mask.sum() > 0),
+                            "gt_positive_pixels": int(mask.sum()),
+                        }
+                    )
                     scene_samples += 1
                     positive_tiles += int(mask.sum() > 0)
                 report.append(
@@ -620,7 +694,7 @@ def _read_samples(
                         "negative_tiles": max(0, scene_samples - positive_tiles),
                     }
                 )
-    return samples, report
+    return samples, report, sample_records
 
 
 def _write_history(experiment_dir: Path, history: list[dict[str, float]]) -> list[Path]:
@@ -1330,7 +1404,7 @@ def run_real_train(
             stratify_positive=bool(job.preprocess.get("stratify_positive_validation", True)),
         )
         prepared_split_metadata = None
-    train_samples, train_report = _read_samples(
+    train_samples, train_report, train_sample_records = _read_samples(
         config,
         train_matches,
         shapes,
@@ -1341,7 +1415,7 @@ def run_real_train(
         empty_share,
         seed,
     )
-    val_samples, val_report = _read_samples(
+    val_samples, val_report, val_sample_records = _read_samples(
         config,
         val_matches,
         shapes,
@@ -1356,9 +1430,12 @@ def run_real_train(
         fallback_count = max(1, min(max_val_tiles, max(1, len(train_samples) // 4)))
         if len(train_samples) > fallback_count:
             val_samples = train_samples[-fallback_count:]
+            val_sample_records = train_sample_records[-fallback_count:]
             train_samples = train_samples[:-fallback_count]
+            train_sample_records = train_sample_records[:-fallback_count]
         else:
             val_samples = train_samples[-fallback_count:]
+            val_sample_records = train_sample_records[-fallback_count:]
         fallback_report = dict(train_report[-1]) if train_report else {"scene": "train_holdout"}
         fallback_report["validation_fallback_from_train_samples"] = True
         val_report = [fallback_report]
@@ -1393,6 +1470,8 @@ def run_real_train(
         "patch_size": patch_size,
         "train_scenes": train_report,
         "val_scenes": val_report,
+        "train_sample_records": train_sample_records,
+        "val_sample_records": val_sample_records,
         "prepared_dataset_manifest": prepared_split_metadata,
     }
     dataset_report_path = experiment_dir / "train_dataset_report.json"
@@ -1458,12 +1537,29 @@ def run_real_train(
     train_started = time.time()
     started = train_started
     history: list[dict[str, float]] = []
-
-    def make_batches(samples: list[tuple[np.ndarray, np.ndarray]], shuffle: bool) -> list[list[tuple[np.ndarray, np.ndarray]]]:
-        rows = list(samples)
-        if shuffle:
-            random.shuffle(rows)
-        return [rows[i : i + batch_size] for i in range(0, len(rows), batch_size)]
+    metric_threshold = float(
+        job.train.get("metric_threshold")
+        or job.evaluate.get("threshold")
+        or job.params.get("metric_threshold")
+        or job.params.get("threshold")
+        or 0.5
+    )
+    metric_class_name = str(job.params.get("class_name") or job.train.get("class_name") or "deforest")
+    metric_class_key = _metric_class_key(metric_class_name)
+    metrics_debug_cfg = metrics_debug_config(job)
+    debug_enabled = metrics_debug_enabled(metrics_debug_cfg)
+    metrics_debug_root = experiment_dir / "metrics_debug"
+    mlflow_run.log_params(
+        {
+            "metrics.threshold": metric_threshold,
+            "metrics.aggregation": "micro_global_pixel_counts",
+            "metrics.source_of_truth": "mlsystem.src.metrics.segmentation",
+            "metrics.val_shuffle": False,
+            "metrics.val_augmentations": "none",
+            "metrics.debug_enabled": debug_enabled,
+            "metrics.debug_class_name": metrics_debug_cfg.get("class_name"),
+        }
+    )
 
     train_tensor_pair: tuple[torch.Tensor, torch.Tensor] | None = None
     val_tensor_pair: tuple[torch.Tensor, torch.Tensor] | None = None
@@ -1492,6 +1588,7 @@ def run_real_train(
     best_val_iou = -1.0
     best_epoch = 0
     epochs_without_improvement = 0
+    metrics_debug_artifacts: list[Path] = []
     train_trace = trace_stage("train_model", {"job_id": job.job_id, "model_name": model_name, "tile_size": patch_size, "epoch_count": epochs})
     train_trace.__enter__()
     try:
@@ -1500,8 +1597,8 @@ def run_real_train(
             model.train()
             if freeze_batchnorm:
                 _set_batchnorm_eval(model)
-            train_losses = []
-            train_metrics = []
+            train_loss_acc = WeightedLossAccumulator()
+            train_metric_acc = PixelMetricAccumulator(threshold=metric_threshold)
             if train_tensor_pair is not None:
                 train_x, train_y = train_tensor_pair
                 for batch_indices in make_index_batches(train_x.shape[0], shuffle=True):
@@ -1511,31 +1608,35 @@ def run_real_train(
                     x, y = _apply_train_augmentations(x, y, augmentations_cfg)
                     optimizer.zero_grad(set_to_none=True)
                     logits = model(x)
-                    loss = _loss_fn(logits, y)
+                    components = _loss_components(logits, y)
+                    loss = components["loss_total"]
                     loss.backward()
                     optimizer.step()
-                    train_losses.append(float(loss.item()))
-                    train_metrics.append(_dice_iou_precision_recall(logits.detach(), y))
+                    train_loss_acc.update({name: float(value.detach().item()) for name, value in components.items()}, weight=int(y.shape[0]))
+                    train_metric_acc.update_from_logits(logits.detach(), y)
                     if time.time() - started > time_limit_sec:
                         break
             else:
-                for batch in make_batches(train_samples, shuffle=True):
-                    x = torch.from_numpy(np.stack([item[0] for item in batch])).to(device)
-                    y = torch.from_numpy(np.stack([item[1] for item in batch])).to(device)
+                for batch_indices in make_index_batches(len(train_samples), shuffle=True):
+                    x = torch.from_numpy(np.stack([train_samples[item][0] for item in batch_indices])).to(device)
+                    y = torch.from_numpy(np.stack([train_samples[item][1] for item in batch_indices])).to(device)
                     x, y = _apply_train_augmentations(x, y, augmentations_cfg)
                     optimizer.zero_grad(set_to_none=True)
                     logits = model(x)
-                    loss = _loss_fn(logits, y)
+                    components = _loss_components(logits, y)
+                    loss = components["loss_total"]
                     loss.backward()
                     optimizer.step()
-                    train_losses.append(float(loss.item()))
-                    train_metrics.append(_dice_iou_precision_recall(logits.detach(), y))
+                    train_loss_acc.update({name: float(value.detach().item()) for name, value in components.items()}, weight=int(y.shape[0]))
+                    train_metric_acc.update_from_logits(logits.detach(), y)
                     if time.time() - started > time_limit_sec:
                         break
 
             model.eval()
-            val_losses = []
-            val_metrics = []
+            val_loss_acc = WeightedLossAccumulator()
+            val_metric_acc = PixelMetricAccumulator(threshold=metric_threshold)
+            val_sample_rows: list[dict[str, Any]] = []
+            val_sample_payloads: list[dict[str, Any]] = []
             with torch.no_grad():
                 if val_tensor_pair is not None:
                     val_x, val_y = val_tensor_pair
@@ -1544,35 +1645,106 @@ def run_real_train(
                         x = val_x.index_select(0, idx)
                         y = val_y.index_select(0, idx)
                         logits = model(x)
-                        val_losses.append(float(_loss_fn(logits, y).item()))
-                        val_metrics.append(_dice_iou_precision_recall(logits, y))
+                        components = _loss_components(logits, y)
+                        val_loss_acc.update({name: float(value.detach().item()) for name, value in components.items()}, weight=int(y.shape[0]))
+                        val_metric_acc.update_from_logits(logits, y)
+                        if debug_enabled:
+                            _collect_val_debug_samples(
+                                batch_indices=batch_indices,
+                                x=x,
+                                y=y,
+                                logits=logits,
+                                val_sample_records=val_sample_records,
+                                threshold=metric_threshold,
+                                rows=val_sample_rows,
+                                payloads=val_sample_payloads,
+                                save_all=bool(metrics_debug_cfg.get("save_all_val_samples", True)),
+                            )
                 else:
-                    for batch in make_batches(val_samples, shuffle=False):
-                        x = torch.from_numpy(np.stack([item[0] for item in batch])).to(device)
-                        y = torch.from_numpy(np.stack([item[1] for item in batch])).to(device)
+                    for batch_indices in make_index_batches(len(val_samples), shuffle=False):
+                        x = torch.from_numpy(np.stack([val_samples[item][0] for item in batch_indices])).to(device)
+                        y = torch.from_numpy(np.stack([val_samples[item][1] for item in batch_indices])).to(device)
                         logits = model(x)
-                        val_losses.append(float(_loss_fn(logits, y).item()))
-                        val_metrics.append(_dice_iou_precision_recall(logits, y))
+                        components = _loss_components(logits, y)
+                        val_loss_acc.update({name: float(value.detach().item()) for name, value in components.items()}, weight=int(y.shape[0]))
+                        val_metric_acc.update_from_logits(logits, y)
+                        if debug_enabled:
+                            _collect_val_debug_samples(
+                                batch_indices=batch_indices,
+                                x=x,
+                                y=y,
+                                logits=logits,
+                                val_sample_records=val_sample_records,
+                                threshold=metric_threshold,
+                                rows=val_sample_rows,
+                                payloads=val_sample_payloads,
+                                save_all=bool(metrics_debug_cfg.get("save_all_val_samples", True)),
+                            )
 
-            def avg_metric(rows: list[dict[str, float]], name: str) -> float:
-                return float(np.mean([row[name] for row in rows])) if rows else 0.0
+            train_loss_values = train_loss_acc.averages("train")
+            val_loss_values = val_loss_acc.averages("val")
+            train_metrics = train_metric_acc.metrics()
+            val_metrics = val_metric_acc.metrics()
+            val_object_metrics = _object_summary_from_sample_rows(val_sample_rows) if debug_enabled else {}
 
             row = {
                 "epoch": float(epoch),
-                "train/loss": float(np.mean(train_losses)) if train_losses else 0.0,
-                "train/dice": avg_metric(train_metrics, "dice"),
-                "train/iou": avg_metric(train_metrics, "iou"),
-                "val/loss": float(np.mean(val_losses)) if val_losses else 0.0,
-                "val/dice": avg_metric(val_metrics, "dice"),
-                "val/iou": avg_metric(val_metrics, "iou"),
-                "val/pixel_dice": avg_metric(val_metrics, "dice"),
-                "val/pixel_iou": avg_metric(val_metrics, "iou"),
-                "val/precision": avg_metric(val_metrics, "precision"),
-                "val/recall": avg_metric(val_metrics, "recall"),
-                "val/pixel_f1": avg_metric(val_metrics, "f1"),
+                "train/loss": train_loss_values.get("train/loss_total", 0.0),
+                "train/loss_total": train_loss_values.get("train/loss_total", 0.0),
+                "train/loss_bce": train_loss_values.get("train/loss_bce", 0.0),
+                "train/loss_dice": train_loss_values.get("train/loss_dice", 0.0),
+                "train/dice": float(train_metrics["pixel_f1"]),
+                "train/iou": float(train_metrics["pixel_iou"]),
+                "train/pixel_f1": float(train_metrics["pixel_f1"]),
+                "train/pixel_iou": float(train_metrics["pixel_iou"]),
+                "train/precision": float(train_metrics["pixel_precision"]),
+                "train/recall": float(train_metrics["pixel_recall"]),
+                "train/pixel_tp": float(train_metrics["pixel_tp"]),
+                "train/pixel_fp": float(train_metrics["pixel_fp"]),
+                "train/pixel_fn": float(train_metrics["pixel_fn"]),
+                "train/pixel_tn": float(train_metrics["pixel_tn"]),
+                "val/loss": val_loss_values.get("val/loss_total", 0.0),
+                "val/loss_total": val_loss_values.get("val/loss_total", 0.0),
+                "val/loss_bce": val_loss_values.get("val/loss_bce", 0.0),
+                "val/loss_dice": val_loss_values.get("val/loss_dice", 0.0),
+                "val/dice": float(val_metrics["pixel_f1"]),
+                "val/iou": float(val_metrics["pixel_iou"]),
+                "val/pixel_dice": float(val_metrics["pixel_f1"]),
+                "val/pixel_iou": float(val_metrics["pixel_iou"]),
+                "val/precision": float(val_metrics["pixel_precision"]),
+                "val/recall": float(val_metrics["pixel_recall"]),
+                "val/pixel_f1": float(val_metrics["pixel_f1"]),
+                "val/pixel_accuracy": float(val_metrics["pixel_accuracy"]),
+                "val/pixel_tp": float(val_metrics["pixel_tp"]),
+                "val/pixel_fp": float(val_metrics["pixel_fp"]),
+                "val/pixel_fn": float(val_metrics["pixel_fn"]),
+                "val/pixel_tn": float(val_metrics["pixel_tn"]),
+                "val/threshold": metric_threshold,
+                f"val/{metric_class_key}_pixel_f1": float(val_metrics["pixel_f1"]),
+                f"val/{metric_class_key}_pixel_precision": float(val_metrics["pixel_precision"]),
+                f"val/{metric_class_key}_pixel_recall": float(val_metrics["pixel_recall"]),
+                f"val/{metric_class_key}_pixel_iou": float(val_metrics["pixel_iou"]),
+                f"val/{metric_class_key}_gt_pixels": float(int(val_metrics["pixel_tp"]) + int(val_metrics["pixel_fn"])),
+                f"val/{metric_class_key}_pred_pixels": float(int(val_metrics["pixel_tp"]) + int(val_metrics["pixel_fp"])),
                 "learning_rate": float(optimizer.param_groups[0]["lr"]),
                 "epoch_duration_sec": round(time.time() - epoch_started, 4),
             }
+            if val_object_metrics:
+                row.update(
+                    {
+                        "val/object_tp": val_object_metrics["object_tp"],
+                        "val/object_fp": val_object_metrics["object_fp"],
+                        "val/object_fn": val_object_metrics["object_fn"],
+                        "val/object_precision": val_object_metrics["object_precision"],
+                        "val/object_recall": val_object_metrics["object_recall"],
+                        "val/object_f1": val_object_metrics["object_f1"],
+                        f"val/{metric_class_key}_object_precision": val_object_metrics["object_precision"],
+                        f"val/{metric_class_key}_object_recall": val_object_metrics["object_recall"],
+                        f"val/{metric_class_key}_object_f1": val_object_metrics["object_f1"],
+                        f"val/{metric_class_key}_gt_objects": val_object_metrics["gt_objects"],
+                        f"val/{metric_class_key}_pred_objects": val_object_metrics["pred_objects"],
+                    }
+                )
             row.update(
                 {
                     "epoch/pixel_f1": row["val/pixel_f1"],
@@ -1586,7 +1758,33 @@ def run_real_train(
                 row["system/cuda_memory_reserved_mb"] = round(torch.cuda.memory_reserved(device) / (1024 * 1024), 3)
                 row["system/gpu_train_confirmed"] = 1.0
             history.append(row)
-            mlflow_run.log_metrics({key: value for key, value in row.items() if key != "epoch"}, step=epoch)
+            logged_metrics = {key: value for key, value in row.items() if key != "epoch"}
+            mlflow_run.log_metrics(logged_metrics, step=epoch)
+            if debug_enabled:
+                debug_result = write_epoch_debug(
+                    root_dir=metrics_debug_root,
+                    run_id=job.job_id,
+                    epoch=epoch,
+                    mlflow_run_id=mlflow_run.run_id,
+                    model_checkpoint_path=None,
+                    val_manifest_path=str(dataset_report_path),
+                    val_manifest=val_sample_records,
+                    class_name=str(metrics_debug_cfg.get("class_name") or metric_class_name),
+                    class_id=metrics_debug_cfg.get("class_id"),
+                    threshold=metric_threshold,
+                    metric_row=row,
+                    train_loss=train_loss_values,
+                    val_loss=val_loss_values,
+                    per_sample_metrics=val_sample_rows,
+                    sample_payloads=val_sample_payloads,
+                    logged_metrics=logged_metrics,
+                )
+                if not debug_result.get("recompute", {}).get("ok", False):
+                    log_fn(job_log, f"real_train metrics_debug recompute mismatch epoch={epoch} path={debug_result.get('metrics_recompute_check')}")
+                for artifact_key in ("epoch_summary", "per_sample_metrics", "val_manifest_snapshot", "metrics_recompute_check", "mlflow_logged_metrics"):
+                    artifact_path = debug_result.get(artifact_key)
+                    if artifact_path:
+                        metrics_debug_artifacts.append(Path(str(artifact_path)))
             log_fn(job_log, f"real_train epoch={epoch} val_iou={row['val/iou']:.6f} duration={row['epoch_duration_sec']}")
             if row["val/iou"] > best_val_iou:
                 best_val_iou = row["val/iou"]
@@ -1607,7 +1805,7 @@ def run_real_train(
     checkpoint_path = experiment_dir / "tiny_unet_4ch.pt"
     checkpoint_path = experiment_dir / f"{model_name}.pt"
     torch.save({"model_state_dict": model.state_dict(), "job_id": job.job_id, "model_name": model_name, "best_epoch": best_epoch}, checkpoint_path)
-    artifacts.extend([dataset_report_path, train_scenes_path, val_scenes_path, checkpoint_path])
+    artifacts.extend([dataset_report_path, train_scenes_path, val_scenes_path, checkpoint_path, *metrics_debug_artifacts])
     train_tensor_pair = None
     val_tensor_pair = None
     if device.type == "cuda":
@@ -1714,6 +1912,10 @@ def run_real_train(
         "time_limit_sec": time_limit_sec,
         "best_epoch": best_epoch,
         "best_val_iou": best_val_iou,
+        "metrics_source_of_truth": "micro_global_pixel_counts",
+        "metrics_threshold": metric_threshold,
+        "metrics_debug_enabled": debug_enabled,
+        "metrics_debug_root": str(metrics_debug_root / job.job_id) if debug_enabled else None,
         "checkpoint_path": str(checkpoint_path),
         "last_epoch_metrics": last,
         "postprocess_metrics": postprocess_metrics,
