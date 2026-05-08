@@ -280,8 +280,9 @@ def _default_mlmarkup_class_dir(class_name: str | None) -> str:
 
 def _git_output(repo_path: Path, *args: str) -> str:
     try:
+        git_bin = "/usr/bin/git" if Path("/usr/bin/git").exists() else "git"
         result = subprocess.run(
-            ["git", "-C", str(repo_path), *args],
+            [git_bin, "-C", str(repo_path), *args],
             check=False,
             capture_output=True,
             text=True,
