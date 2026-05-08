@@ -16,6 +16,17 @@ def s3_parts(uri: str) -> tuple[str, str]:
     return bucket, prefix
 
 
+def _is_s3_uri(uri: str) -> bool:
+    return str(uri).startswith("s3://")
+
+
+def _local_path_from_uri(uri: str) -> Path:
+    value = str(uri)
+    if value.startswith("file://"):
+        value = value[7:]
+    return Path(value)
+
+
 def credentials_from_mc(config: PipelineConfig) -> tuple[str, str]:
     access = os.getenv("AWS_ACCESS_KEY_ID")
     secret = os.getenv("AWS_SECRET_ACCESS_KEY")
@@ -98,6 +109,31 @@ def aws_session(config: PipelineConfig):
 
 
 def list_s3_objects(config: PipelineConfig, uri: str, suffixes: tuple[str, ...] | None = None) -> list[dict[str, Any]]:
+    if not _is_s3_uri(uri):
+        root = _local_path_from_uri(uri)
+        if not root.exists():
+            raise FileNotFoundError(f"Local layout path does not exist: {root}")
+        normalized_suffixes = tuple(item.lower() for item in suffixes) if suffixes else None
+        objects: list[dict[str, Any]] = []
+        for path in sorted(root.rglob("*"), key=lambda item: str(item).lower()):
+            if not path.is_file():
+                continue
+            if normalized_suffixes and not path.name.lower().endswith(normalized_suffixes):
+                continue
+            rel = path.relative_to(root).as_posix()
+            objects.append(
+                {
+                    "bucket": "local",
+                    "key": rel,
+                    "name": path.name,
+                    "size": int(path.stat().st_size),
+                    "last_modified": None,
+                    "etag": "",
+                    "path": str(path),
+                }
+            )
+        return objects
+
     client = s3_client(config)
     bucket, prefix = s3_parts(uri)
     objects: list[dict[str, Any]] = []
@@ -127,6 +163,8 @@ def list_s3_objects(config: PipelineConfig, uri: str, suffixes: tuple[str, ...] 
 
 
 def read_s3_text(config: PipelineConfig, uri: str) -> str:
+    if not _is_s3_uri(uri):
+        return _local_path_from_uri(uri).read_text(encoding="utf-8-sig")
     client = s3_client(config)
     bucket, key = s3_parts(uri)
     body = client.get_object(Bucket=bucket, Key=key)["Body"].read()
@@ -138,6 +176,30 @@ def read_s3_json(config: PipelineConfig, uri: str) -> Any:
 
 
 def find_layout_files(config: PipelineConfig, layout_uri: str, scenes_file: str, annotation_file: str) -> tuple[str, str]:
+    if not _is_s3_uri(layout_uri):
+        root = _local_path_from_uri(layout_uri)
+        if not root.exists():
+            raise FileNotFoundError(f"Local layout path does not exist: {root}")
+        files = [path for path in root.rglob("*") if path.is_file()]
+        if annotation_file and annotation_file != "auto":
+            annotation_path = root / annotation_file
+            if not annotation_path.exists():
+                matches = [path for path in files if path.name.lower() == annotation_file.lower()]
+                if not matches:
+                    raise RuntimeError(f"No {annotation_file} found under {layout_uri}")
+                annotation_path = sorted(matches, key=lambda item: str(item).lower())[-1]
+        else:
+            geojsons = [path for path in files if path.name.lower().endswith(".geojson")]
+            if not geojsons:
+                raise RuntimeError(f"No GeoJSON annotation found under {layout_uri}")
+            annotation_path = sorted(geojsons, key=lambda item: str(item).lower())[-1]
+
+        scene_candidates = [path for path in files if path.name.lower() == scenes_file.lower()]
+        if not scene_candidates:
+            raise RuntimeError(f"No {scenes_file} found under {layout_uri}")
+        scenes_path = sorted(scene_candidates, key=lambda item: str(item).lower())[-1]
+        return str(annotation_path), str(scenes_path)
+
     objects = list_s3_objects(config, layout_uri)
     keys = [item["key"] for item in objects]
     bucket, _ = s3_parts(layout_uri)

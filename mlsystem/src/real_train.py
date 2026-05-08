@@ -1397,6 +1397,8 @@ def run_real_train(
         "layout_uri": layout_uri,
         "annotation_uri": annotation_uri,
         "scenes_uri": scenes_uri,
+        "annotation_source": (data.get("annotations") or job.params.get("annotations") or {}).get("source") or "layout_uri",
+        "annotations": data.get("annotations") or job.params.get("annotations") or {},
         "matched": [match.__dict__ for match in matches],
     }
     scenes_report_path = experiment_dir / "scenes_match_report.json"
@@ -1411,6 +1413,10 @@ def run_real_train(
             "scene_ambiguous_count": len(ambiguous),
             "annotation_uri": annotation_uri,
             "scenes_uri": scenes_uri,
+            "annotations.source": scene_report["annotation_source"],
+            "mlmarkup.commit": (scene_report.get("annotations") or {}).get("commit"),
+            "mlmarkup.repo_path": (scene_report.get("annotations") or {}).get("repo_path"),
+            "pseudolabeling.enabled": False,
         }
     )
     log_fn(job_log, f"real_train matched={len(matches)} missing={len(missing)} ambiguous={len(ambiguous)}")
@@ -1495,6 +1501,8 @@ def run_real_train(
     train_negative_tiles = sum(int(mask.sum() == 0) for _, mask in train_samples)
     val_negative_tiles = sum(int(mask.sum() == 0) for _, mask in val_samples)
     dataset_report = {
+        "annotation_source": scene_report["annotation_source"],
+        "annotations": scene_report.get("annotations") or {},
         "train_scene_count": len(train_matches),
         "val_scene_count": len(val_matches),
         "positive_scene_count": train_positive_scene_count + val_positive_scene_count,
@@ -1871,6 +1879,8 @@ def run_real_train(
         )
         dataset_check = {
             "class_name": metrics_debug_cfg.get("class_name") or metric_class_name,
+            "annotation_source": dataset_report.get("annotation_source"),
+            "annotations": dataset_report.get("annotations") or {},
             "full_dataset": not any(
                 value is not None
                 for value in (

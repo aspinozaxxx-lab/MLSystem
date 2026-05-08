@@ -18,6 +18,20 @@ MLFLOW_EXCLUDED_ARTIFACT_NAMES = {
     "accepted_debug.geojson",
     "windows_preview.geojson",
 }
+MLFLOW_EXCLUDED_METRIC_PREFIXES = (
+    "recource/",
+    "recource.",
+    "recource_",
+    "resource/",
+    "resource.",
+    "resource_",
+    "resourse/",
+    "resourse.",
+    "resourse_",
+    "resources/",
+    "resources.",
+    "resources_",
+)
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -293,16 +307,10 @@ class MLflowJobRun:
         self.experiment_id = experiment.experiment_id
         self.started_at = utc_now()
         self.resource_start = _resource_snapshot()
-        try:
-            if self.existing_run_id:
-                self._run = mlflow.start_run(run_id=self.existing_run_id, log_system_metrics=True)
-            else:
-                self._run = mlflow.start_run(run_name=self.run_name, log_system_metrics=True)
-        except TypeError:
-            if self.existing_run_id:
-                self._run = mlflow.start_run(run_id=self.existing_run_id)
-            else:
-                self._run = mlflow.start_run(run_name=self.run_name)
+        if self.existing_run_id:
+            self._run = mlflow.start_run(run_id=self.existing_run_id)
+        else:
+            self._run = mlflow.start_run(run_name=self.run_name)
         self.run_id = self._run.info.run_id
         if self.existing_run_id:
             try:
@@ -342,12 +350,6 @@ class MLflowJobRun:
                 "mlsystem.run_exception": "" if exc_type is None else str(exc_type),
             }
         )
-        final_metrics: dict[str, float] = {}
-        for key, value in resource_finish.items():
-            if isinstance(value, (int, float)):
-                final_metrics[f"resource/final_{key}"] = float(value)
-        if final_metrics:
-            self.log_metrics(final_metrics)
         self._mlflow.end_run(status="FAILED" if exc_type else "FINISHED")
 
     def log_params(self, params: dict[str, Any]) -> None:
@@ -362,7 +364,11 @@ class MLflowJobRun:
     def log_metrics(self, metrics: dict[str, float | int | None], step: int | None = None) -> None:
         if not self._mlflow:
             return
-        clean = {key: float(value) for key, value in metrics.items() if value is not None}
+        clean = {
+            key: float(value)
+            for key, value in metrics.items()
+            if value is not None and not _is_excluded_metric_key(str(key))
+        }
         if clean:
             self._mlflow.log_metrics(clean, step=step)
 
@@ -386,7 +392,7 @@ class MLflowJobRun:
             "started_at": self.started_at,
             "start": self.resource_start,
             "finish": _resource_snapshot(),
-            "system_metrics_source": "mlflow.start_run(log_system_metrics=True); final resource snapshot stored in summaries",
+            "system_metrics_source": "local resource snapshot stored in summaries; MLflow resource/system metrics disabled",
         }
 
     def log_table(self, data: Any, artifact_file: str) -> bool:
@@ -423,6 +429,11 @@ def start_job_run(
     run_id: str | None = None,
 ) -> MLflowJobRun:
     return MLflowJobRun(config, experiment_name, run_name, params=params, tags=tags, run_id=run_id)
+
+
+def _is_excluded_metric_key(key: str) -> bool:
+    lowered = key.lower()
+    return any(lowered.startswith(prefix) for prefix in MLFLOW_EXCLUDED_METRIC_PREFIXES)
 
 def set_run_tags(config: PipelineConfig, run_id: str, tags: dict[str, Any]) -> None:
     import mlflow

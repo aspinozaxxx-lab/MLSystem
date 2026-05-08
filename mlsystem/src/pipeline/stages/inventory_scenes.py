@@ -79,6 +79,8 @@ def run(ctx: StageContext) -> StageReport:
         "schema_version": 1,
         "stage": ctx.stage_id,
         "experiment_id": ctx.config.experiment_id,
+        "annotation_source": (getattr(ctx.config, "annotations", None) or {}).get("source") or "layout_uri",
+        "annotations": getattr(ctx.config, "annotations", None) or {},
         "images_uri": ctx.config.images_uri,
         "layout_uri": ctx.config.layout_uri,
         "annotation_uri": annotation_uri,

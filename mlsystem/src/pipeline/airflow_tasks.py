@@ -15,7 +15,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from ..job_schema import JobSpec
 from ..mlflow_adapter import MLFLOW_EXCLUDED_ARTIFACT_NAMES, MLflowJobRun
@@ -204,6 +204,7 @@ class AirflowExperimentConfig(BaseModel):
     postprocess: dict[str, Any] = Field(default_factory=dict)
     inference: dict[str, Any] = Field(default_factory=dict)
     predict: dict[str, Any] = Field(default_factory=dict)
+    annotations: dict[str, Any] = Field(default_factory=dict)
     params: dict[str, Any] = Field(default_factory=dict)
     mlflow: dict[str, Any] = Field(default_factory=dict)
 
@@ -214,6 +215,23 @@ class AirflowExperimentConfig(BaseModel):
             raise ValueError("experiment_id may contain only letters, digits, dot, underscore and dash")
         return value
 
+    @model_validator(mode="after")
+    def resolve_annotation_source(self) -> "AirflowExperimentConfig":
+        annotations = dict(self.annotations or {})
+        if _is_mlmarkup_source(annotations):
+            resolved = _resolve_mlmarkup_annotation_config(annotations, self.class_name)
+            self.annotations = resolved
+            self.layout_uri = resolved["layout_uri"]
+            self.scenes_file = resolved["scenes_file"]
+            self.annotation_file = resolved["annotation_file"]
+            self.pseudolabel = {**(self.pseudolabel or {}), "enabled": False}
+            self.params = {
+                **(self.params or {}),
+                "annotations": resolved,
+                "pseudolabeling.enabled": False,
+            }
+        return self
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -221,6 +239,69 @@ def utc_now() -> str:
 
 def safe_run_id(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", value)[:180] or "run"
+
+
+def _is_mlmarkup_source(annotations: dict[str, Any]) -> bool:
+    return str(annotations.get("source") or "").strip().lower() in {"mlmarkup", "ml_markup", "ml-markup"}
+
+
+def _resolve_mlmarkup_annotation_config(annotations: dict[str, Any], class_name: str | None) -> dict[str, Any]:
+    repo_path = Path(str(annotations.get("repo_path") or os.getenv("MLSYSTEM_MLMARKUP_REPO_PATH") or "/data/MLMarkup"))
+    class_dir = str(annotations.get("class_dir") or annotations.get("folder") or _default_mlmarkup_class_dir(class_name))
+    scenes_file = str(annotations.get("scenes_file") or "deforestation.txt")
+    annotation_file = str(annotations.get("annotation_file") or "deforestation.geojson")
+    commit = str(annotations.get("commit") or _git_output(repo_path, "rev-parse", "HEAD") or "")
+    branch = str(annotations.get("branch") or _git_output(repo_path, "branch", "--show-current") or "")
+    dirty = bool(_git_output(repo_path, "status", "--short"))
+    resolved = dict(annotations)
+    resolved.update(
+        {
+            "source": "MLMarkup",
+            "repo_path": str(repo_path),
+            "class_dir": class_dir,
+            "layout_uri": str(repo_path / class_dir),
+            "scenes_file": scenes_file,
+            "annotation_file": annotation_file,
+            "commit": commit,
+            "branch": branch,
+            "dirty": dirty,
+            "use_pseudolabels": False,
+        }
+    )
+    return resolved
+
+
+def _default_mlmarkup_class_dir(class_name: str | None) -> str:
+    normalized = str(class_name or "").strip().lower()
+    if normalized in {"deforest", "cuttings", "clearcuts", "clear_cuts", "вырубки"}:
+        return "Вырубки"
+    return str(class_name or "").strip() or "Вырубки"
+
+
+def _git_output(repo_path: Path, *args: str) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_path), *args],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=10,
+        )
+    except Exception:
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _model_name_from_config(model_cfg: dict[str, Any]) -> str:
+    configured = model_cfg.get("name") or model_cfg.get("model_name")
+    if configured:
+        return str(configured).replace("-", "_")
+    architecture = str(model_cfg.get("architecture") or "").strip().lower().replace("-", "_")
+    backbone = str(model_cfg.get("backbone") or "").strip().lower().replace("-", "_")
+    if architecture == "segformer" and backbone:
+        return backbone if backbone.startswith("segformer_") else f"segformer_{backbone.replace('mit_', 'b')}"
+    return "tiny_unet_4ch"
 
 
 def load_conf(conf_file: str | None = None, conf_json: str | None = None) -> dict[str, Any]:
@@ -545,6 +626,7 @@ def _build_airflow_job(conf: AirflowExperimentConfig) -> JobSpec:
     pseudolabel_cfg = dict(conf.pseudolabel or {})
     predict_cfg = dict(conf.predict or {})
     params_cfg = dict(conf.params or {})
+    annotations_cfg = dict(conf.annotations or {})
     if "tile_size" in preprocess_cfg and "patch_size" not in train_cfg:
         train_cfg["patch_size"] = preprocess_cfg["tile_size"]
     if "max_epochs" in train_cfg and "epochs" not in train_cfg:
@@ -561,7 +643,7 @@ def _build_airflow_job(conf: AirflowExperimentConfig) -> JobSpec:
     train_cfg.setdefault("require_gpu", True)
     train_cfg.setdefault("allow_train_val_sample_fallback", True)
     train_cfg.setdefault("model", model_cfg)
-    train_cfg.setdefault("model_name", model_cfg.get("name") or "tiny_unet_4ch")
+    train_cfg.setdefault("model_name", _model_name_from_config(model_cfg))
     if conf.inference:
         params_cfg.setdefault("inference", dict(conf.inference))
         predict_cfg.setdefault("inference", dict(conf.inference))
@@ -570,6 +652,11 @@ def _build_airflow_job(conf: AirflowExperimentConfig) -> JobSpec:
             "model": model_cfg,
             "input_bands": model_cfg.get("input_bands") or [1, 2, 3, 4],
             "pseudolabel": pseudolabel_cfg,
+            "annotations": annotations_cfg,
+            "annotations.source": annotations_cfg.get("source"),
+            "mlmarkup.commit": annotations_cfg.get("commit"),
+            "mlmarkup.repo_path": annotations_cfg.get("repo_path"),
+            "pseudolabeling.enabled": bool(pseudolabel_cfg.get("enabled", False)),
         }
     )
     predict_cfg.update({"pseudolabel": pseudolabel_cfg, "model": model_cfg})
@@ -584,6 +671,7 @@ def _build_airflow_job(conf: AirflowExperimentConfig) -> JobSpec:
             "layout_uri": conf.layout_uri,
             "scenes_file": conf.scenes_file,
             "annotation_file": conf.annotation_file,
+            "annotations": annotations_cfg,
         },
         preprocess=preprocess_cfg,
         train=train_cfg,

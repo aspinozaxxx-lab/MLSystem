@@ -153,6 +153,8 @@ def run(ctx: StageContext) -> StageReport:
         "experiment_id": ctx.config.experiment_id,
         "created_by": "prepare_dataset",
         "source": "airflow",
+        "annotation_source": inventory.get("annotation_source") or "layout_uri",
+        "annotations": inventory.get("annotations") or getattr(ctx.config, "annotations", None) or {},
         "split_strategy": split_strategy,
         "object_count_mode": rows[0].matched_by if rows else count_mode,
         "scene_matching": matching,
