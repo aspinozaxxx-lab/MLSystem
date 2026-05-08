@@ -246,7 +246,7 @@ def _is_mlmarkup_source(annotations: dict[str, Any]) -> bool:
 
 
 def _resolve_mlmarkup_annotation_config(annotations: dict[str, Any], class_name: str | None) -> dict[str, Any]:
-    repo_path = Path(str(annotations.get("repo_path") or os.getenv("MLSYSTEM_MLMARKUP_REPO_PATH") or "/data/MLMarkup"))
+    repo_path = Path(str(annotations.get("repo_path") or os.getenv("MLSYSTEM_MLMARKUP_REPO_PATH") or "/data/mlsystem/MLMarkup"))
     class_dir = str(annotations.get("class_dir") or annotations.get("folder") or _default_mlmarkup_class_dir(class_name))
     scenes_file = str(annotations.get("scenes_file") or "deforestation.txt")
     annotation_file = str(annotations.get("annotation_file") or "deforestation.geojson")
