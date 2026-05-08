@@ -245,7 +245,7 @@ def write_metrics_debug_report(
         (out_epoch / "samples").mkdir(parents=True, exist_ok=True)
         _copy_epoch_level_files(epoch_dir, out_epoch)
         _copy_epoch_geojson(epoch_dir, out_epoch)
-        copied_samples = _copy_selected_sample_artifacts(epoch_dir / "samples", out_epoch / "samples")
+        copied_samples = _copy_selected_sample_artifacts(epoch_dir, out_epoch / "samples")
 
         snapshot = _read_json(epoch_dir / "production_metrics_snapshot.json")
         recompute = _read_json(epoch_dir / "metrics_recompute_check.json")
@@ -256,6 +256,7 @@ def write_metrics_debug_report(
         mlflow_checks.extend(_compare_snapshot_to_logged(snapshot, logged))
         report_structure["epochs"][epoch_name] = {
             "copied_samples": copied_samples,
+            "sample_copy_strategy": "selected positive/worst/high-fp/high-fn examples; per_sample_metrics and aggregate GeoJSON cover all validation samples",
             "has_per_sample_metrics": (out_epoch / "per_sample_metrics.csv").exists(),
             "has_epoch_geojson": (out_epoch / "geojson" / "gt_objects.geojson").exists()
             and (out_epoch / "geojson" / "pred_objects.geojson").exists(),
@@ -454,11 +455,15 @@ def _copy_epoch_geojson(source_epoch: Path, target_epoch: Path) -> None:
             shutil.copy2(source, target_dir / name)
 
 
-def _copy_selected_sample_artifacts(source_samples: Path, target_samples: Path) -> int:
+def _copy_selected_sample_artifacts(source_epoch: Path, target_samples: Path) -> int:
+    source_samples = source_epoch / "samples"
     if not source_samples.exists():
         return 0
+    selected_ids = _select_compact_sample_ids(source_epoch / "per_sample_metrics.csv")
     copied = 0
     for sample_dir in sorted(item for item in source_samples.iterdir() if item.is_dir()):
+        if selected_ids and sample_dir.name not in selected_ids:
+            continue
         target_dir = target_samples / sample_dir.name
         target_dir.mkdir(parents=True, exist_ok=True)
         has_any = False
@@ -477,6 +482,43 @@ def _copy_selected_sample_artifacts(source_samples: Path, target_samples: Path) 
                 has_any = True
         copied += int(has_any)
     return copied
+
+
+def _select_compact_sample_ids(per_sample_csv: Path, *, max_samples: int = 16) -> set[str]:
+    if not per_sample_csv.exists():
+        return set()
+    with per_sample_csv.open("r", encoding="utf-8", newline="") as fh:
+        rows = list(csv.DictReader(fh))
+    if not rows:
+        return set()
+
+    def sample_id(row: dict[str, Any]) -> str:
+        return _safe_name(str(row.get("sample_id") or row.get("tile_id") or "sample"))
+
+    def numeric(row: dict[str, Any], key: str) -> float:
+        try:
+            return float(row.get(key) or 0)
+        except Exception:
+            return 0.0
+
+    selected: list[str] = []
+
+    def add(rows_to_add: list[dict[str, Any]], limit: int) -> None:
+        for row in rows_to_add:
+            sid = sample_id(row)
+            if sid not in selected:
+                selected.append(sid)
+            if len(selected) >= max_samples or limit <= 0:
+                return
+            limit -= 1
+
+    positives = [row for row in rows if numeric(row, "gt_positive_pixels") > 0]
+    add(sorted(positives, key=lambda row: numeric(row, "pixel_f1")), 6)
+    add(sorted(rows, key=lambda row: numeric(row, "pixel_f1")), 4)
+    add(sorted(rows, key=lambda row: numeric(row, "fp"), reverse=True), 3)
+    add(sorted(rows, key=lambda row: numeric(row, "fn"), reverse=True), 3)
+    add(rows[: max_samples], max_samples)
+    return set(selected[:max_samples])
 
 
 def _timeseries_row(snapshot: dict[str, Any]) -> dict[str, Any]:
