@@ -422,6 +422,34 @@ def _set_batchnorm_eval(model: torch.nn.Module) -> None:
     set_batchnorm_eval_mod(model)
 
 
+def _checkpoint_state_dict(payload: Any) -> dict[str, Any]:
+    if isinstance(payload, dict):
+        for key in ("model_state_dict", "state_dict", "model"):
+            state = payload.get(key)
+            if isinstance(state, dict):
+                return state
+        if payload and all(isinstance(key, str) for key in payload.keys()):
+            return payload
+    raise RuntimeError("Unsupported checkpoint payload: expected model_state_dict/state_dict mapping")
+
+
+def _load_initial_checkpoint(model: torch.nn.Module, checkpoint_path: str | Path, *, device: torch.device, strict: bool) -> dict[str, Any]:
+    path = Path(str(checkpoint_path))
+    if not path.exists():
+        raise FileNotFoundError(f"Initial checkpoint is missing: {path}")
+    payload = torch.load(str(path), map_location=device)
+    state = _checkpoint_state_dict(payload)
+    incompatible = model.load_state_dict(state, strict=strict)
+    missing = list(getattr(incompatible, "missing_keys", []) or [])
+    unexpected = list(getattr(incompatible, "unexpected_keys", []) or [])
+    return {
+        "path": str(path),
+        "strict": strict,
+        "missing_keys": missing,
+        "unexpected_keys": unexpected,
+    }
+
+
 def _normalize_image(arr: np.ndarray) -> np.ndarray:
     return normalize_image_mod(arr)
 
@@ -1563,6 +1591,29 @@ def run_real_train(
     log_fn(job_log, f"real_train device={device} cuda_available={cuda_available} gpu_name={gpu_name or 'none'}")
     model_name = str(model_cfg.get("name") or job.train.get("model_name") or "tiny_unet_4ch")
     model = _build_model(model_name, len(input_bands), 1, int(job.train.get("base_channels") or 8)).to(device)
+    initial_checkpoint_path = (
+        job.train.get("initial_checkpoint_path")
+        or job.train.get("checkpoint_path")
+        or job.params.get("initial_checkpoint_path")
+        or job.params.get("train.initial_checkpoint_path")
+    )
+    initial_checkpoint_info: dict[str, Any] | None = None
+    if initial_checkpoint_path:
+        initial_checkpoint_info = _load_initial_checkpoint(
+            model,
+            str(initial_checkpoint_path),
+            device=device,
+            strict=bool(job.train.get("initial_checkpoint_strict", True)),
+        )
+        mlflow_run.log_params(
+            {
+                "train.initial_checkpoint_path": initial_checkpoint_info["path"],
+                "train.initial_checkpoint_strict": initial_checkpoint_info["strict"],
+                "train.initial_checkpoint_missing_keys": len(initial_checkpoint_info["missing_keys"]),
+                "train.initial_checkpoint_unexpected_keys": len(initial_checkpoint_info["unexpected_keys"]),
+            }
+        )
+        log_fn(job_log, f"real_train loaded_initial_checkpoint={initial_checkpoint_info['path']}")
     freeze_batchnorm_default = model_name.lower().startswith(("deeplab", "deeplabv3plus"))
     freeze_batchnorm = bool(job.train.get("freeze_batchnorm", freeze_batchnorm_default))
     mlflow_run.log_params({"freeze_batchnorm": freeze_batchnorm})
@@ -2046,6 +2097,7 @@ def run_real_train(
         "metrics_debug_root": str(metrics_debug_root / job.job_id) if debug_enabled else None,
         "metrics_debug_report": metrics_debug_report,
         "checkpoint_path": str(checkpoint_path),
+        "initial_checkpoint": initial_checkpoint_info,
         "last_epoch_metrics": last,
         "postprocess_metrics": postprocess_metrics,
         "pseudolabel": {

@@ -5,8 +5,10 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+import torch
+
 from mlsystem.src.io_utils import write_json
-from mlsystem.src.real_train import SceneMatch, _load_prepared_dataset_split
+from mlsystem.src.real_train import SceneMatch, TinyUNet, _load_initial_checkpoint, _load_prepared_dataset_split
 
 
 class RealTrainPreparedSplitTests(unittest.TestCase):
@@ -54,6 +56,24 @@ class RealTrainPreparedSplitTests(unittest.TestCase):
             job = SimpleNamespace(preprocess={"prepared_dataset_manifest": str(manifest)})
             with self.assertRaisesRegex(RuntimeError, "lost 1 matched scenes"):
                 _load_prepared_dataset_split(root, matches, job)
+
+    def test_load_initial_checkpoint_restores_model_weights(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "model.pt"
+            source = TinyUNet(in_channels=4, out_channels=1, base=4)
+            with torch.no_grad():
+                for param in source.parameters():
+                    param.fill_(0.25)
+            torch.save({"model_state_dict": source.state_dict()}, path)
+
+            target = TinyUNet(in_channels=4, out_channels=1, base=4)
+            info = _load_initial_checkpoint(target, path, device=torch.device("cpu"), strict=True)
+
+            self.assertEqual(info["path"], str(path))
+            self.assertEqual(info["missing_keys"], [])
+            self.assertEqual(info["unexpected_keys"], [])
+            for param in target.parameters():
+                self.assertTrue(torch.allclose(param, torch.full_like(param, 0.25)))
 
 
 if __name__ == "__main__":
