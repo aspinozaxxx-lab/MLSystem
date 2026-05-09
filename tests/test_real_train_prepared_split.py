@@ -16,6 +16,8 @@ from mlsystem.src.real_train import (
     _configure_dropout,
     _load_initial_checkpoint,
     _load_prepared_dataset_split,
+    _resolve_metric_thresholds,
+    _threshold_metric_suffix,
 )
 
 
@@ -96,6 +98,11 @@ class RealTrainPreparedSplitTests(unittest.TestCase):
 
         scheduler = _build_scheduler(optimizer, {"scheduler": {"name": "cosine", "t_max": 3, "eta_min": 1e-6}}, epochs=5)
         self.assertIsInstance(scheduler, torch.optim.lr_scheduler.CosineAnnealingLR)
+
+    def test_metric_threshold_sweep_keeps_base_and_deduplicates(self) -> None:
+        job = SimpleNamespace(train={"metric_thresholds": [0.7, "0.80", 0.8]}, evaluate={}, params={})
+        self.assertEqual(_resolve_metric_thresholds(job, 0.75), [0.7, 0.75, 0.8])
+        self.assertEqual(_threshold_metric_suffix(0.8), "0_8")
 
 
 if __name__ == "__main__":

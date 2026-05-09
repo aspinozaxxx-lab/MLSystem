@@ -478,6 +478,48 @@ def _metric_improved(value: float, best: float, *, maximize: bool) -> bool:
     return value > best if maximize else value < best
 
 
+def _threshold_metric_suffix(threshold: float) -> str:
+    text = f"{float(threshold):.4f}".rstrip("0").rstrip(".")
+    return text.replace("-", "m").replace(".", "_") or "0"
+
+
+def _coerce_threshold_values(value: Any) -> list[float]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        items = [item.strip() for item in value.split(",")]
+    elif isinstance(value, dict):
+        items = value.get("values") or value.get("thresholds") or []
+    elif isinstance(value, (list, tuple, set)):
+        items = list(value)
+    else:
+        items = [value]
+    thresholds: list[float] = []
+    for item in items:
+        if item is None or item == "":
+            continue
+        threshold = float(item)
+        if threshold < 0.0 or threshold > 1.0:
+            raise ValueError(f"metric threshold must be in [0, 1], got {threshold}")
+        thresholds.append(threshold)
+    return thresholds
+
+
+def _resolve_metric_thresholds(job: JobSpec, base_threshold: float) -> list[float]:
+    raw = (
+        job.train.get("metric_thresholds")
+        or job.train.get("threshold_sweep")
+        or job.evaluate.get("metric_thresholds")
+        or job.params.get("metric_thresholds")
+        or job.params.get("threshold_sweep")
+    )
+    values = [float(base_threshold), *_coerce_threshold_values(raw)]
+    unique: dict[str, float] = {}
+    for threshold in values:
+        unique[f"{float(threshold):.6f}"] = float(threshold)
+    return sorted(unique.values())
+
+
 def _checkpoint_state_dict(payload: Any) -> dict[str, Any]:
     if isinstance(payload, dict):
         for key in ("model_state_dict", "state_dict", "model"):
@@ -1728,6 +1770,7 @@ def run_real_train(
         or job.params.get("threshold")
         or 0.5
     )
+    metric_thresholds = _resolve_metric_thresholds(job, metric_threshold)
     metric_class_name = str(job.params.get("class_name") or job.train.get("class_name") or "deforest")
     metric_class_key = _metric_class_key(metric_class_name)
     metrics_debug_cfg = metrics_debug_config(job)
@@ -1736,6 +1779,7 @@ def run_real_train(
     mlflow_run.log_params(
         {
             "metrics.threshold": metric_threshold,
+            "metrics.threshold_sweep": ",".join(f"{item:.4f}".rstrip("0").rstrip(".") for item in metric_thresholds),
             "metrics.aggregation": "micro_global_pixel_counts",
             "metrics.source_of_truth": "mlsystem.src.metrics.segmentation",
             "metrics.val_shuffle": False,
@@ -1825,6 +1869,7 @@ def run_real_train(
             model.eval()
             val_loss_acc = WeightedLossAccumulator()
             val_metric_acc = PixelMetricAccumulator(threshold=metric_threshold)
+            val_threshold_accs = {threshold: PixelMetricAccumulator(threshold=threshold) for threshold in metric_thresholds}
             val_sample_rows: list[dict[str, Any]] = []
             val_sample_payloads: list[dict[str, Any]] = []
             with torch.no_grad():
@@ -1838,6 +1883,8 @@ def run_real_train(
                         components = _loss_components(logits, y, loss_cfg)
                         val_loss_acc.update({name: float(value.detach().item()) for name, value in components.items()}, weight=int(y.shape[0]))
                         val_metric_acc.update_from_logits(logits, y)
+                        for accumulator in val_threshold_accs.values():
+                            accumulator.update_from_logits(logits, y)
                         if debug_enabled:
                             _collect_val_debug_samples(
                                 batch_indices=batch_indices,
@@ -1858,6 +1905,8 @@ def run_real_train(
                         components = _loss_components(logits, y, loss_cfg)
                         val_loss_acc.update({name: float(value.detach().item()) for name, value in components.items()}, weight=int(y.shape[0]))
                         val_metric_acc.update_from_logits(logits, y)
+                        for accumulator in val_threshold_accs.values():
+                            accumulator.update_from_logits(logits, y)
                         if debug_enabled:
                             _collect_val_debug_samples(
                                 batch_indices=batch_indices,
@@ -1875,6 +1924,11 @@ def run_real_train(
             val_loss_values = val_loss_acc.averages("val")
             train_metrics = train_metric_acc.metrics()
             val_metrics = val_metric_acc.metrics()
+            threshold_metrics = {threshold: accumulator.metrics() for threshold, accumulator in val_threshold_accs.items()}
+            best_threshold, best_threshold_metrics = max(
+                threshold_metrics.items(),
+                key=lambda item: (float(item[1]["pixel_f1"]), -abs(float(item[0]) - metric_threshold)),
+            )
             val_object_metrics = _object_summary_from_sample_rows(val_sample_rows) if debug_enabled else {}
 
             row = {
@@ -1923,6 +1977,25 @@ def run_real_train(
                 "learning_rate": float(optimizer.param_groups[0]["lr"]),
                 "epoch_duration_sec": round(time.time() - epoch_started, 4),
             }
+            row.update(
+                {
+                    "val/best_threshold": float(best_threshold),
+                    "val/pixel_f1_best_threshold": float(best_threshold_metrics["pixel_f1"]),
+                    "val/pixel_iou_best_threshold": float(best_threshold_metrics["pixel_iou"]),
+                    "val/precision_best_threshold": float(best_threshold_metrics["pixel_precision"]),
+                    "val/recall_best_threshold": float(best_threshold_metrics["pixel_recall"]),
+                }
+            )
+            for threshold, metrics_payload in threshold_metrics.items():
+                suffix = _threshold_metric_suffix(threshold)
+                row.update(
+                    {
+                        f"val/pixel_f1_at_threshold_{suffix}": float(metrics_payload["pixel_f1"]),
+                        f"val/pixel_iou_at_threshold_{suffix}": float(metrics_payload["pixel_iou"]),
+                        f"val/precision_at_threshold_{suffix}": float(metrics_payload["pixel_precision"]),
+                        f"val/recall_at_threshold_{suffix}": float(metrics_payload["pixel_recall"]),
+                    }
+                )
             if val_object_metrics:
                 row.update(
                     {
