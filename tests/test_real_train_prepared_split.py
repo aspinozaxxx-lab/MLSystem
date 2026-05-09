@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import sys
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import torch
 
@@ -11,6 +13,7 @@ from mlsystem.src.io_utils import write_json
 from mlsystem.src.real_train import (
     SceneMatch,
     TinyUNet,
+    _build_model,
     _build_optimizer,
     _build_scheduler,
     _configure_dropout,
@@ -98,6 +101,22 @@ class RealTrainPreparedSplitTests(unittest.TestCase):
 
         scheduler = _build_scheduler(optimizer, {"scheduler": {"name": "cosine", "t_max": 3, "eta_min": 1e-6}}, epochs=5)
         self.assertIsInstance(scheduler, torch.optim.lr_scheduler.CosineAnnealingLR)
+
+    def test_build_model_passes_encoder_weights_to_smp_models(self) -> None:
+        captured: dict[str, object] = {}
+
+        class FakeSegformer(torch.nn.Module):
+            def __init__(self, **kwargs: object) -> None:
+                super().__init__()
+                captured.update(kwargs)
+
+        fake_smp = SimpleNamespace(Segformer=FakeSegformer)
+        with patch.dict(sys.modules, {"segmentation_models_pytorch": fake_smp}):
+            _build_model("segformer_b2", in_channels=4, out_channels=1, base_channels=8, encoder_weights="imagenet")
+
+        self.assertEqual(captured["encoder_name"], "mit_b2")
+        self.assertEqual(captured["encoder_weights"], "imagenet")
+        self.assertEqual(captured["in_channels"], 4)
 
     def test_metric_threshold_sweep_keeps_base_and_deduplicates(self) -> None:
         job = SimpleNamespace(train={"metric_thresholds": [0.7, "0.80", 0.8]}, evaluate={}, params={})

@@ -350,8 +350,24 @@ class TinyUNet(torch.nn.Module):
         return self.dec(torch.cat([x, skip], dim=1))
 
 
-def _build_model(model_name: str, in_channels: int, out_channels: int, base_channels: int) -> torch.nn.Module:
+def _normalize_encoder_weights(value: Any) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    if not normalized or normalized.lower() in {"none", "null", "false", "0"}:
+        return None
+    return normalized
+
+
+def _build_model(
+    model_name: str,
+    in_channels: int,
+    out_channels: int,
+    base_channels: int,
+    encoder_weights: Any = None,
+) -> torch.nn.Module:
     normalized = model_name.lower()
+    resolved_encoder_weights = _normalize_encoder_weights(encoder_weights)
     if normalized in {"tiny", "tiny_unet", "tiny_unet_4ch"}:
         return TinyUNet(in_channels=in_channels, out_channels=out_channels, base=base_channels)
     encoders = {
@@ -364,7 +380,7 @@ def _build_model(model_name: str, in_channels: int, out_channels: int, base_chan
 
         return smp.Unet(
             encoder_name=encoders[normalized],
-            encoder_weights=None,
+            encoder_weights=resolved_encoder_weights,
             in_channels=in_channels,
             classes=out_channels,
             activation=None,
@@ -380,7 +396,7 @@ def _build_model(model_name: str, in_channels: int, out_channels: int, base_chan
 
         return smp.Segformer(
             encoder_name=segformer_encoders[normalized],
-            encoder_weights=None,
+            encoder_weights=resolved_encoder_weights,
             in_channels=in_channels,
             classes=out_channels,
             activation=None,
@@ -396,7 +412,7 @@ def _build_model(model_name: str, in_channels: int, out_channels: int, base_chan
 
         return smp.DeepLabV3Plus(
             encoder_name=deeplab_encoders[normalized],
-            encoder_weights=None,
+            encoder_weights=resolved_encoder_weights,
             in_channels=in_channels,
             classes=out_channels,
             activation=None,
@@ -1688,7 +1704,14 @@ def run_real_train(
     )
     log_fn(job_log, f"real_train device={device} cuda_available={cuda_available} gpu_name={gpu_name or 'none'}")
     model_name = str(model_cfg.get("name") or job.train.get("model_name") or "tiny_unet_4ch")
-    model = _build_model(model_name, len(input_bands), 1, int(job.train.get("base_channels") or 8)).to(device)
+    encoder_weights = model_cfg.get("encoder_weights", job.train.get("encoder_weights"))
+    model = _build_model(
+        model_name,
+        len(input_bands),
+        1,
+        int(job.train.get("base_channels") or 8),
+        encoder_weights=encoder_weights,
+    ).to(device)
     initial_checkpoint_path = (
         job.train.get("initial_checkpoint_path")
         or job.train.get("checkpoint_path")
@@ -1732,6 +1755,7 @@ def run_real_train(
     mlflow_run.log_params(
         {
             "freeze_batchnorm": freeze_batchnorm,
+            "model.encoder_weights": _normalize_encoder_weights(encoder_weights),
             "train.dropout_p": job.train.get("dropout_p", job.train.get("dropout")),
             "train.dropout_modules_updated": dropout_updated,
             "train.optimizer": str(job.train.get("optimizer") or job.train.get("optimizer_name") or "adamw"),
