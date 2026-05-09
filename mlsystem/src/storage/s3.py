@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -78,10 +79,14 @@ def cached_s3_object_path(config: PipelineConfig, bucket: str, key: str) -> Path
     if path.exists() and path.stat().st_size > 0:
         return path
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_name(path.name + ".tmp")
+    tmp_path = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     client = s3_client(config)
-    client.download_file(bucket, key, str(tmp_path))
-    tmp_path.replace(path)
+    try:
+        client.download_file(bucket, key, str(tmp_path))
+        tmp_path.replace(path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
     return path
 
 
