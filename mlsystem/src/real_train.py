@@ -1909,6 +1909,7 @@ def run_real_train(
             "train.objective_metric": objective_metric,
             "train.objective_maximize": maximize_objective,
             "train.save_best_checkpoint_each_epoch": bool(job.train.get("save_best_checkpoint_each_epoch", False)),
+            "train.eval_before_training": bool(job.train.get("eval_before_training", False)),
             "train.batch_size_resolved": batch_size,
             "train.max_train_tiles": max_train_tiles,
             "train.max_val_tiles": max_val_tiles,
@@ -1993,6 +1994,115 @@ def run_real_train(
     train_trace.__enter__()
     encoder_trainable_state: bool | None = None
     try:
+        if bool(job.train.get("eval_before_training", False)):
+            model.eval()
+            val_loss_acc = WeightedLossAccumulator()
+            val_metric_acc = PixelMetricAccumulator(threshold=metric_threshold)
+            val_threshold_accs = {threshold: PixelMetricAccumulator(threshold=threshold) for threshold in metric_thresholds}
+            with torch.no_grad():
+                if val_tensor_pair is not None:
+                    val_x, val_y = val_tensor_pair
+                    for batch_indices in make_index_batches(val_x.shape[0], shuffle=False):
+                        idx = torch.as_tensor(batch_indices, dtype=torch.long, device=device)
+                        x = val_x.index_select(0, idx)
+                        y = val_y.index_select(0, idx)
+                        logits = model(x)
+                        components = _loss_components(logits, y, loss_cfg)
+                        val_loss_acc.update({name: float(value.detach().item()) for name, value in components.items()}, weight=int(y.shape[0]))
+                        val_metric_acc.update_from_logits(logits, y)
+                        for accumulator in val_threshold_accs.values():
+                            accumulator.update_from_logits(logits, y)
+                else:
+                    for batch_indices in make_index_batches(len(val_samples), shuffle=False):
+                        x = torch.from_numpy(np.stack([val_samples[item][0] for item in batch_indices])).to(device)
+                        y = torch.from_numpy(np.stack([val_samples[item][1] for item in batch_indices])).to(device)
+                        logits = model(x)
+                        components = _loss_components(logits, y, loss_cfg)
+                        val_loss_acc.update({name: float(value.detach().item()) for name, value in components.items()}, weight=int(y.shape[0]))
+                        val_metric_acc.update_from_logits(logits, y)
+                        for accumulator in val_threshold_accs.values():
+                            accumulator.update_from_logits(logits, y)
+            val_loss_values = val_loss_acc.averages("val")
+            val_metrics = val_metric_acc.metrics()
+            threshold_metrics = {threshold: accumulator.metrics() for threshold, accumulator in val_threshold_accs.items()}
+            best_threshold, best_threshold_metrics = max(
+                threshold_metrics.items(),
+                key=lambda item: (float(item[1]["pixel_f1"]), -abs(float(item[0]) - metric_threshold)),
+            )
+            pretrain_row = {
+                "val/loss": val_loss_values.get("val/loss_total", 0.0),
+                "val/loss_total": val_loss_values.get("val/loss_total", 0.0),
+                "val/loss_bce": val_loss_values.get("val/loss_bce", 0.0),
+                "val/loss_dice": val_loss_values.get("val/loss_dice", 0.0),
+                "val/loss_focal": val_loss_values.get("val/loss_focal", 0.0),
+                "val/loss_tversky": val_loss_values.get("val/loss_tversky", 0.0),
+                "val/dice": float(val_metrics["pixel_f1"]),
+                "val/iou": float(val_metrics["pixel_iou"]),
+                "val/pixel_dice": float(val_metrics["pixel_f1"]),
+                "val/pixel_iou": float(val_metrics["pixel_iou"]),
+                "val/precision": float(val_metrics["pixel_precision"]),
+                "val/recall": float(val_metrics["pixel_recall"]),
+                "val/pixel_f1": float(val_metrics["pixel_f1"]),
+                "val/pixel_accuracy": float(val_metrics["pixel_accuracy"]),
+                "val/pixel_tp": float(val_metrics["pixel_tp"]),
+                "val/pixel_fp": float(val_metrics["pixel_fp"]),
+                "val/pixel_fn": float(val_metrics["pixel_fn"]),
+                "val/pixel_tn": float(val_metrics["pixel_tn"]),
+                "val/threshold": metric_threshold,
+                f"val/{metric_class_key}_pixel_f1": float(val_metrics["pixel_f1"]),
+                f"val/{metric_class_key}_pixel_precision": float(val_metrics["pixel_precision"]),
+                f"val/{metric_class_key}_pixel_recall": float(val_metrics["pixel_recall"]),
+                f"val/{metric_class_key}_pixel_iou": float(val_metrics["pixel_iou"]),
+                f"val/{metric_class_key}_gt_pixels": float(int(val_metrics["pixel_tp"]) + int(val_metrics["pixel_fn"])),
+                f"val/{metric_class_key}_pred_pixels": float(int(val_metrics["pixel_tp"]) + int(val_metrics["pixel_fp"])),
+                "val/best_threshold": float(best_threshold),
+                "val/pixel_f1_best_threshold": float(best_threshold_metrics["pixel_f1"]),
+                "val/pixel_iou_best_threshold": float(best_threshold_metrics["pixel_iou"]),
+                "val/precision_best_threshold": float(best_threshold_metrics["pixel_precision"]),
+                "val/recall_best_threshold": float(best_threshold_metrics["pixel_recall"]),
+            }
+            for threshold, metrics_payload in threshold_metrics.items():
+                suffix = _threshold_metric_suffix(threshold)
+                pretrain_row.update(
+                    {
+                        f"val/pixel_f1_at_threshold_{suffix}": float(metrics_payload["pixel_f1"]),
+                        f"val/pixel_iou_at_threshold_{suffix}": float(metrics_payload["pixel_iou"]),
+                        f"val/precision_at_threshold_{suffix}": float(metrics_payload["pixel_precision"]),
+                        f"val/recall_at_threshold_{suffix}": float(metrics_payload["pixel_recall"]),
+                    }
+                )
+            objective_value = float(pretrain_row.get(objective_metric, pretrain_row.get("val/iou", 0.0)))
+            pretrain_row["objective/value"] = objective_value
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+                pretrain_row["system/cuda_memory_allocated_mb"] = round(torch.cuda.memory_allocated(device) / (1024 * 1024), 3)
+                pretrain_row["system/cuda_memory_reserved_mb"] = round(torch.cuda.memory_reserved(device) / (1024 * 1024), 3)
+                pretrain_row["system/gpu_train_confirmed"] = 1.0
+            mlflow_run.log_metrics(pretrain_row, step=0)
+            if pretrain_row["val/iou"] > best_val_iou:
+                best_val_iou = pretrain_row["val/iou"]
+            if _metric_improved(objective_value, best_objective_value, maximize=maximize_objective):
+                best_objective_value = objective_value
+                best_epoch = 0
+                best_state_dict = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
+                if save_best_checkpoint_each_epoch:
+                    _save_training_checkpoint(
+                        best_checkpoint_path,
+                        state_dict=best_state_dict,
+                        job_id=job.job_id,
+                        model_name=model_name,
+                        best_epoch=best_epoch,
+                        best_objective_metric=objective_metric,
+                        best_objective_value=best_objective_value,
+                        final_epoch=0,
+                    )
+            log_fn(
+                job_log,
+                "real_train eval_before_training "
+                f"val_pixel_f1={pretrain_row['val/pixel_f1']:.6f} "
+                f"best_threshold={pretrain_row['val/best_threshold']:.4f} "
+                f"best_threshold_f1={pretrain_row['val/pixel_f1_best_threshold']:.6f}",
+            )
         for epoch in range(1, epochs + 1):
             if history and wallclock_limit_sec is not None and time.time() - started > wallclock_limit_sec:
                 log_fn(job_log, f"real_train wallclock_stop before_epoch={epoch} limit_sec={wallclock_limit_sec}")
