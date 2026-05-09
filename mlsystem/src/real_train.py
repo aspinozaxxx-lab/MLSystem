@@ -564,6 +564,32 @@ def _load_initial_checkpoint(model: torch.nn.Module, checkpoint_path: str | Path
     }
 
 
+def _save_training_checkpoint(
+    path: Path,
+    *,
+    state_dict: dict[str, torch.Tensor],
+    job_id: str,
+    model_name: str,
+    best_epoch: int,
+    best_objective_metric: str,
+    best_objective_value: float,
+    final_epoch: int,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "model_state_dict": state_dict,
+            "job_id": job_id,
+            "model_name": model_name,
+            "best_epoch": best_epoch,
+            "best_objective_metric": best_objective_metric,
+            "best_objective_value": best_objective_value,
+            "final_epoch": final_epoch,
+        },
+        path,
+    )
+
+
 def _normalize_image(arr: np.ndarray) -> np.ndarray:
     return normalize_image_mod(arr)
 
@@ -1774,6 +1800,7 @@ def run_real_train(
             "train.grad_clip_norm": grad_clip_norm,
             "train.objective_metric": objective_metric,
             "train.objective_maximize": maximize_objective,
+            "train.save_best_checkpoint_each_epoch": bool(job.train.get("save_best_checkpoint_each_epoch", False)),
             "train.batch_size_resolved": batch_size,
             "train.max_train_tiles": max_train_tiles,
             "train.max_val_tiles": max_val_tiles,
@@ -1845,6 +1872,9 @@ def run_real_train(
     best_objective_value = -math.inf if maximize_objective else math.inf
     best_epoch = 0
     best_state_dict: dict[str, torch.Tensor] | None = None
+    checkpoint_path = experiment_dir / f"{model_name}.pt"
+    best_checkpoint_path = experiment_dir / f"{model_name}.best.pt"
+    save_best_checkpoint_each_epoch = bool(job.train.get("save_best_checkpoint_each_epoch", False))
     epochs_without_improvement = 0
     metrics_debug_artifacts: list[Path] = []
     train_trace = trace_stage("train_model", {"job_id": job.job_id, "model_name": model_name, "tile_size": patch_size, "epoch_count": epochs})
@@ -2099,6 +2129,17 @@ def run_real_train(
                 best_objective_value = objective_value
                 best_epoch = epoch
                 best_state_dict = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
+                if save_best_checkpoint_each_epoch:
+                    _save_training_checkpoint(
+                        best_checkpoint_path,
+                        state_dict=best_state_dict,
+                        job_id=job.job_id,
+                        model_name=model_name,
+                        best_epoch=best_epoch,
+                        best_objective_metric=objective_metric,
+                        best_objective_value=best_objective_value,
+                        final_epoch=epoch,
+                    )
                 epochs_without_improvement = 0
             else:
                 epochs_without_improvement += 1
@@ -2113,20 +2154,16 @@ def run_real_train(
 
     train_duration_sec = round(time.time() - train_started, 3)
     artifacts = _write_history(experiment_dir, history)
-    checkpoint_path = experiment_dir / "tiny_unet_4ch.pt"
-    checkpoint_path = experiment_dir / f"{model_name}.pt"
     state_to_save = best_state_dict or {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
-    torch.save(
-        {
-            "model_state_dict": state_to_save,
-            "job_id": job.job_id,
-            "model_name": model_name,
-            "best_epoch": best_epoch,
-            "best_objective_metric": objective_metric,
-            "best_objective_value": best_objective_value,
-            "final_epoch": len(history),
-        },
+    _save_training_checkpoint(
         checkpoint_path,
+        state_dict=state_to_save,
+        job_id=job.job_id,
+        model_name=model_name,
+        best_epoch=best_epoch,
+        best_objective_metric=objective_metric,
+        best_objective_value=best_objective_value,
+        final_epoch=len(history),
     )
     metrics_debug_report: dict[str, Any] | None = None
     if debug_enabled and bool(metrics_debug_cfg.get("report_enabled", True)):

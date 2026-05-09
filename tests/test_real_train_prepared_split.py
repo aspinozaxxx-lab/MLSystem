@@ -21,6 +21,7 @@ from mlsystem.src.real_train import (
     _load_initial_checkpoint,
     _load_prepared_dataset_split,
     _resolve_metric_thresholds,
+    _save_training_checkpoint,
     _threshold_metric_suffix,
 )
 
@@ -88,6 +89,30 @@ class RealTrainPreparedSplitTests(unittest.TestCase):
             self.assertEqual(info["unexpected_keys"], [])
             for param in target.parameters():
                 self.assertTrue(torch.allclose(param, torch.full_like(param, 0.25)))
+
+    def test_save_training_checkpoint_writes_best_epoch_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "model.best.pt"
+            state = {"weight": torch.ones(1)}
+
+            _save_training_checkpoint(
+                path,
+                state_dict=state,
+                job_id="run_train_model_abcd",
+                model_name="segformer_b2",
+                best_epoch=17,
+                best_objective_metric="val/pixel_f1_best_threshold",
+                best_objective_value=0.514,
+                final_epoch=17,
+            )
+
+            payload = torch.load(path, map_location="cpu")
+            self.assertEqual(payload["job_id"], "run_train_model_abcd")
+            self.assertEqual(payload["model_name"], "segformer_b2")
+            self.assertEqual(payload["best_epoch"], 17)
+            self.assertEqual(payload["best_objective_metric"], "val/pixel_f1_best_threshold")
+            self.assertAlmostEqual(payload["best_objective_value"], 0.514)
+            self.assertTrue(torch.equal(payload["model_state_dict"]["weight"], torch.ones(1)))
 
     def test_training_knobs_build_optimizer_scheduler_and_dropout(self) -> None:
         model = torch.nn.Sequential(torch.nn.Conv2d(1, 1, 1), torch.nn.Dropout2d(p=0.5))
