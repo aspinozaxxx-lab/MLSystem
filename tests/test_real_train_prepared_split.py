@@ -22,6 +22,7 @@ from mlsystem.src.real_train import (
     _load_prepared_dataset_split,
     _resolve_metric_thresholds,
     _save_training_checkpoint,
+    _scene_tile_limit,
     _threshold_metric_suffix,
 )
 
@@ -163,6 +164,28 @@ class RealTrainPreparedSplitTests(unittest.TestCase):
         job = SimpleNamespace(train={"metric_thresholds": [0.7, "0.80", 0.8]}, evaluate={}, params={})
         self.assertEqual(_resolve_metric_thresholds(job, 0.75), [0.7, 0.75, 0.8])
         self.assertEqual(_threshold_metric_suffix(0.8), "0_8")
+
+    def test_scene_tile_limit_allows_balancing_negative_scenes(self) -> None:
+        self.assertEqual(_scene_tile_limit(32, positive_scene=True), 32)
+        self.assertEqual(_scene_tile_limit(32, positive_scene=False), 32)
+        self.assertEqual(
+            _scene_tile_limit(
+                32,
+                positive_scene=True,
+                max_tiles_per_positive_scene=24,
+                max_tiles_per_negative_scene=4,
+            ),
+            24,
+        )
+        self.assertEqual(
+            _scene_tile_limit(
+                32,
+                positive_scene=False,
+                max_tiles_per_positive_scene=24,
+                max_tiles_per_negative_scene=4,
+            ),
+            4,
+        )
 
 
 if __name__ == "__main__":

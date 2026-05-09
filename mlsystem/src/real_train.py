@@ -783,6 +783,27 @@ def _sample_windows(
     return windows[:max_tiles]
 
 
+def _positive_int_or_none(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    number = int(value)
+    return number if number > 0 else None
+
+
+def _scene_tile_limit(
+    default_tiles_per_scene: int,
+    *,
+    positive_scene: bool,
+    max_tiles_per_positive_scene: int | None = None,
+    max_tiles_per_negative_scene: int | None = None,
+) -> int:
+    if positive_scene and max_tiles_per_positive_scene is not None:
+        return max(1, int(max_tiles_per_positive_scene))
+    if (not positive_scene) and max_tiles_per_negative_scene is not None:
+        return max(1, int(max_tiles_per_negative_scene))
+    return max(1, int(default_tiles_per_scene))
+
+
 def _read_samples(
     config: PipelineConfig,
     matches: list[SceneMatch],
@@ -793,6 +814,9 @@ def _read_samples(
     max_tiles_total: int,
     empty_share: float,
     seed: int,
+    *,
+    max_tiles_per_positive_scene: int | None = None,
+    max_tiles_per_negative_scene: int | None = None,
 ) -> tuple[list[tuple[np.ndarray, np.ndarray]], list[dict[str, Any]], list[dict[str, Any]]]:
     import rasterio
     from rasterio.windows import Window
@@ -815,11 +839,17 @@ def _read_samples(
                 usable_bands = [band for band in input_bands if band <= ds.count]
                 if len(usable_bands) != len(input_bands):
                     raise RuntimeError(f"{match.name} has {ds.count} bands, expected {input_bands}")
+                scene_tile_limit = _scene_tile_limit(
+                    max_tiles_per_scene,
+                    positive_scene=bool(positive_scene),
+                    max_tiles_per_positive_scene=max_tiles_per_positive_scene,
+                    max_tiles_per_negative_scene=max_tiles_per_negative_scene,
+                )
                 windows = _sample_windows(
                     ds,
                     shapes,
                     patch_size,
-                    max_tiles_per_scene,
+                    scene_tile_limit,
                     empty_share,
                     seed + scene_idx,
                 )
@@ -868,6 +898,7 @@ def _read_samples(
                         "bands": ds.count,
                         "crs": str(ds.crs),
                         "positive_scene": bool(positive_scene),
+                        "tile_limit": int(scene_tile_limit),
                         "samples": scene_samples,
                         "positive_tiles": positive_tiles,
                         "negative_tiles": max(0, scene_samples - positive_tiles),
@@ -901,6 +932,17 @@ def _default_tile_limits(job: JobSpec) -> tuple[int, int, int]:
         or default_tiles_per_scene
     )
     return max_train_tiles, max_val_tiles, max_tiles_per_scene
+
+
+def _scene_tile_limit_from_config(job: JobSpec, prefix: str, polarity: str) -> int | None:
+    key = f"max_{prefix}_tiles_per_{polarity}_scene"
+    generic_key = f"max_tiles_per_{polarity}_scene"
+    return _positive_int_or_none(
+        job.train.get(key)
+        or job.preprocess.get(key)
+        or job.train.get(generic_key)
+        or job.preprocess.get(generic_key)
+    )
 
 
 def _explicit_tile_total_limit(job: JobSpec, key: str) -> Any:
@@ -1598,6 +1640,10 @@ def run_real_train(
     max_train_tiles, max_val_tiles, max_tiles_per_scene = _default_tile_limits(job)
     explicit_max_train_tiles = _explicit_tile_total_limit(job, "max_train_tiles")
     explicit_max_val_tiles = _explicit_tile_total_limit(job, "max_val_tiles")
+    max_train_tiles_per_positive_scene = _scene_tile_limit_from_config(job, "train", "positive")
+    max_train_tiles_per_negative_scene = _scene_tile_limit_from_config(job, "train", "negative")
+    max_val_tiles_per_positive_scene = _scene_tile_limit_from_config(job, "val", "positive")
+    max_val_tiles_per_negative_scene = _scene_tile_limit_from_config(job, "val", "negative")
     empty_share = float(job.preprocess.get("max_empty_tile_share") or 0.5)
     with trace_stage("prepare_dataset", {"job_id": job.job_id, "scene_count": len(matches), "tile_size": patch_size}):
         shapes = _load_shapes(config, annotation_uri)
@@ -1635,6 +1681,8 @@ def run_real_train(
         max_train_tiles,
         empty_share,
         seed,
+        max_tiles_per_positive_scene=max_train_tiles_per_positive_scene,
+        max_tiles_per_negative_scene=max_train_tiles_per_negative_scene,
     )
     val_samples, val_report, val_sample_records = _read_samples(
         config,
@@ -1646,6 +1694,8 @@ def run_real_train(
         max_val_tiles,
         empty_share,
         seed + 1000,
+        max_tiles_per_positive_scene=max_val_tiles_per_positive_scene,
+        max_tiles_per_negative_scene=max_val_tiles_per_negative_scene,
     )
     if not val_samples and train_samples and bool(job.train.get("allow_train_val_sample_fallback", False)):
         fallback_count = max(1, min(max_val_tiles, max(1, len(train_samples) // 4)))
@@ -1696,6 +1746,18 @@ def run_real_train(
         "train_sample_records": train_sample_records,
         "val_sample_records": val_sample_records,
         "prepared_dataset_manifest": prepared_split_metadata,
+        "train_tile_limits": {
+            "max_tiles_per_scene": max_tiles_per_scene,
+            "max_tiles_per_positive_scene": max_train_tiles_per_positive_scene,
+            "max_tiles_per_negative_scene": max_train_tiles_per_negative_scene,
+            "max_tiles_total": max_train_tiles,
+        },
+        "val_tile_limits": {
+            "max_tiles_per_scene": max(1, max_tiles_per_scene // 2),
+            "max_tiles_per_positive_scene": max_val_tiles_per_positive_scene,
+            "max_tiles_per_negative_scene": max_val_tiles_per_negative_scene,
+            "max_tiles_total": max_val_tiles,
+        },
     }
     dataset_report_path = experiment_dir / "train_dataset_report.json"
     write_json(dataset_report_path, dataset_report)
@@ -1707,6 +1769,10 @@ def run_real_train(
             "negative_scene_count": dataset_report["negative_scene_count"],
             "positive_tile_count": dataset_report["positive_tile_count"],
             "negative_tile_count": dataset_report["negative_tile_count"],
+            "train.max_train_tiles_per_positive_scene": max_train_tiles_per_positive_scene,
+            "train.max_train_tiles_per_negative_scene": max_train_tiles_per_negative_scene,
+            "train.max_val_tiles_per_positive_scene": max_val_tiles_per_positive_scene,
+            "train.max_val_tiles_per_negative_scene": max_val_tiles_per_negative_scene,
         }
     )
     prepare_duration_sec = round(time.time() - prepare_started, 3)
@@ -1805,6 +1871,10 @@ def run_real_train(
             "train.max_train_tiles": max_train_tiles,
             "train.max_val_tiles": max_val_tiles,
             "train.max_tiles_per_scene": max_tiles_per_scene,
+            "train.max_train_tiles_per_positive_scene": max_train_tiles_per_positive_scene,
+            "train.max_train_tiles_per_negative_scene": max_train_tiles_per_negative_scene,
+            "train.max_val_tiles_per_positive_scene": max_val_tiles_per_positive_scene,
+            "train.max_val_tiles_per_negative_scene": max_val_tiles_per_negative_scene,
         }
     )
     augmentations_cfg = job.train.get("augmentations") or {}
