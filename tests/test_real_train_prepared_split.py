@@ -23,6 +23,7 @@ from mlsystem.src.real_train import (
     _resolve_metric_thresholds,
     _save_training_checkpoint,
     _scene_tile_limit,
+    _set_encoder_trainable,
     _threshold_metric_suffix,
 )
 
@@ -128,6 +129,29 @@ class RealTrainPreparedSplitTests(unittest.TestCase):
 
         scheduler = _build_scheduler(optimizer, {"scheduler": {"name": "cosine", "t_max": 3, "eta_min": 1e-6}}, epochs=5)
         self.assertIsInstance(scheduler, torch.optim.lr_scheduler.CosineAnnealingLR)
+
+    def test_encoder_lr_multiplier_and_freeze_encoder_knobs(self) -> None:
+        class EncoderModel(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.encoder = torch.nn.Conv2d(1, 2, 1)
+                self.decoder = torch.nn.Conv2d(2, 1, 1)
+
+        model = EncoderModel()
+        optimizer = _build_optimizer(model, {"learning_rate": 1e-4, "encoder_lr_multiplier": 0.1})
+
+        self.assertEqual(len(optimizer.param_groups), 2)
+        groups = {group.get("name"): group for group in optimizer.param_groups}
+        self.assertAlmostEqual(groups["encoder"]["lr"], 1e-5)
+        self.assertAlmostEqual(groups["head"]["lr"], 1e-4)
+
+        updated = _set_encoder_trainable(model, False)
+        self.assertGreater(updated, 0)
+        self.assertFalse(any(param.requires_grad for param in model.encoder.parameters()))
+        self.assertTrue(any(param.requires_grad for param in model.decoder.parameters()))
+
+        _set_encoder_trainable(model, True)
+        self.assertTrue(all(param.requires_grad for param in model.encoder.parameters()))
 
     def test_build_model_passes_encoder_weights_to_smp_models(self) -> None:
         captured: dict[str, object] = {}

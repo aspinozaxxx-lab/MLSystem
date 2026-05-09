@@ -452,18 +452,57 @@ def _configure_dropout(model: torch.nn.Module, dropout_p: Any) -> int:
     return updated
 
 
+def _encoder_parameter_ids(model: torch.nn.Module) -> set[int]:
+    encoder = getattr(model, "encoder", None)
+    if encoder is None:
+        return set()
+    return {id(param) for param in encoder.parameters()}
+
+
+def _set_encoder_trainable(model: torch.nn.Module, trainable: bool) -> int:
+    encoder = getattr(model, "encoder", None)
+    if encoder is None:
+        return 0
+    updated = 0
+    for param in encoder.parameters():
+        if param.requires_grad != trainable:
+            param.requires_grad = trainable
+            updated += 1
+    return updated
+
+
 def _build_optimizer(model: torch.nn.Module, train_cfg: dict[str, Any]) -> torch.optim.Optimizer:
     name = str(train_cfg.get("optimizer") or train_cfg.get("optimizer_name") or "adamw").strip().lower()
     lr = float(train_cfg.get("learning_rate") or 5e-4)
     weight_decay = float(train_cfg.get("weight_decay") or 0.0)
+    encoder_lr_multiplier_value = train_cfg.get("encoder_lr_multiplier")
+    params: Any = model.parameters()
+    if encoder_lr_multiplier_value is not None:
+        encoder_lr_multiplier = float(encoder_lr_multiplier_value)
+        if encoder_lr_multiplier <= 0:
+            raise ValueError(f"encoder_lr_multiplier must be positive, got {encoder_lr_multiplier}")
+        encoder_param_ids = _encoder_parameter_ids(model)
+        if encoder_param_ids:
+            encoder_params: list[torch.nn.Parameter] = []
+            head_params: list[torch.nn.Parameter] = []
+            for param in model.parameters():
+                if id(param) in encoder_param_ids:
+                    encoder_params.append(param)
+                else:
+                    head_params.append(param)
+            if encoder_params and head_params:
+                params = [
+                    {"params": encoder_params, "lr": lr * encoder_lr_multiplier, "weight_decay": weight_decay, "name": "encoder"},
+                    {"params": head_params, "lr": lr, "weight_decay": weight_decay, "name": "head"},
+                ]
     if name in {"adamw", "adam_w"}:
-        return torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+        return torch.optim.AdamW(params, lr=lr, weight_decay=weight_decay)
     if name == "adam":
-        return torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+        return torch.optim.Adam(params, lr=lr, weight_decay=weight_decay)
     if name in {"sgd", "momentum_sgd"}:
         momentum = float(train_cfg.get("momentum") or 0.9)
         nesterov = bool(train_cfg.get("nesterov", False))
-        return torch.optim.SGD(model.parameters(), lr=lr, weight_decay=weight_decay, momentum=momentum, nesterov=nesterov)
+        return torch.optim.SGD(params, lr=lr, weight_decay=weight_decay, momentum=momentum, nesterov=nesterov)
     raise ValueError(f"Unsupported optimizer={name}; supported: adamw, adam, sgd")
 
 
@@ -1832,6 +1871,7 @@ def run_real_train(
         log_fn(job_log, f"real_train loaded_initial_checkpoint={initial_checkpoint_info['path']}")
     freeze_batchnorm_default = model_name.lower().startswith(("deeplab", "deeplabv3plus"))
     freeze_batchnorm = bool(job.train.get("freeze_batchnorm", freeze_batchnorm_default))
+    freeze_encoder_epochs = max(0, int(job.train.get("freeze_encoder_epochs") or 0))
     dropout_updated = _configure_dropout(model, job.train.get("dropout_p", job.train.get("dropout")))
     optimizer = _build_optimizer(model, job.train)
     batch_size = job.train.get("batch_size") or 2
@@ -1855,6 +1895,8 @@ def run_real_train(
             "train.dropout_modules_updated": dropout_updated,
             "train.optimizer": str(job.train.get("optimizer") or job.train.get("optimizer_name") or "adamw"),
             "train.learning_rate": float(job.train.get("learning_rate") or 5e-4),
+            "train.encoder_lr_multiplier": job.train.get("encoder_lr_multiplier"),
+            "train.freeze_encoder_epochs": freeze_encoder_epochs,
             "train.weight_decay": float(job.train.get("weight_decay") or 0.0),
             "train.scheduler": str((job.train.get("scheduler") or {}).get("name") if isinstance(job.train.get("scheduler"), dict) else (job.train.get("scheduler") or job.train.get("scheduler_name") or "none")),
             "train.loss": loss_name,
@@ -1949,12 +1991,22 @@ def run_real_train(
     metrics_debug_artifacts: list[Path] = []
     train_trace = trace_stage("train_model", {"job_id": job.job_id, "model_name": model_name, "tile_size": patch_size, "epoch_count": epochs})
     train_trace.__enter__()
+    encoder_trainable_state: bool | None = None
     try:
         for epoch in range(1, epochs + 1):
             if history and wallclock_limit_sec is not None and time.time() - started > wallclock_limit_sec:
                 log_fn(job_log, f"real_train wallclock_stop before_epoch={epoch} limit_sec={wallclock_limit_sec}")
                 break
             epoch_started = time.time()
+            encoder_trainable = not (freeze_encoder_epochs and epoch <= freeze_encoder_epochs)
+            if encoder_trainable_state is None or encoder_trainable_state != encoder_trainable:
+                updated_encoder_params = _set_encoder_trainable(model, encoder_trainable)
+                if updated_encoder_params:
+                    log_fn(
+                        job_log,
+                        f"real_train encoder_trainable={encoder_trainable} epoch={epoch} updated_params={updated_encoder_params}",
+                    )
+                encoder_trainable_state = encoder_trainable
             model.train()
             if freeze_batchnorm:
                 _set_batchnorm_eval(model)
@@ -2101,7 +2153,28 @@ def run_real_train(
                 f"val/{metric_class_key}_pixel_iou": float(val_metrics["pixel_iou"]),
                 f"val/{metric_class_key}_gt_pixels": float(int(val_metrics["pixel_tp"]) + int(val_metrics["pixel_fn"])),
                 f"val/{metric_class_key}_pred_pixels": float(int(val_metrics["pixel_tp"]) + int(val_metrics["pixel_fp"])),
-                "learning_rate": float(optimizer.param_groups[0]["lr"]),
+                "learning_rate": float(max(group["lr"] for group in optimizer.param_groups)),
+                "learning_rate_encoder": float(
+                    next(
+                        (
+                            group["lr"]
+                            for group in optimizer.param_groups
+                            if group.get("name") == "encoder"
+                        ),
+                        optimizer.param_groups[0]["lr"],
+                    )
+                ),
+                "learning_rate_head": float(
+                    next(
+                        (
+                            group["lr"]
+                            for group in optimizer.param_groups
+                            if group.get("name") == "head"
+                        ),
+                        optimizer.param_groups[-1]["lr"],
+                    )
+                ),
+                "encoder_trainable": 1.0 if encoder_trainable else 0.0,
                 "epoch_duration_sec": round(time.time() - epoch_started, 4),
             }
             row.update(
