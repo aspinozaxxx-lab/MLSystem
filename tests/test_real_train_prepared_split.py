@@ -13,6 +13,7 @@ from mlsystem.src.io_utils import write_json
 from mlsystem.src.real_train import (
     SceneMatch,
     TinyUNet,
+    _apply_train_augmentations,
     _build_model,
     _build_optimizer,
     _build_scheduler,
@@ -117,6 +118,21 @@ class RealTrainPreparedSplitTests(unittest.TestCase):
         self.assertEqual(captured["encoder_name"], "mit_b2")
         self.assertEqual(captured["encoder_weights"], "imagenet")
         self.assertEqual(captured["in_channels"], 4)
+
+    def test_train_augmentations_support_hflip_and_vflip_keys(self) -> None:
+        x = torch.arange(16, dtype=torch.float32).reshape(1, 1, 4, 4) / 16.0
+        y = torch.arange(16, dtype=torch.float32).reshape(1, 1, 4, 4)
+        random_masks = [torch.tensor([0.0]), torch.tensor([0.0])]
+
+        def fake_rand(*args: object, **kwargs: object) -> torch.Tensor:
+            return random_masks.pop(0)
+
+        with patch("torch.rand", side_effect=fake_rand):
+            augmented_x, augmented_y = _apply_train_augmentations(x, y, {"hflip": True, "vflip": True})
+
+        expected_y = torch.flip(torch.flip(y, dims=(-1,)), dims=(-2,))
+        self.assertTrue(torch.equal(augmented_y, expected_y))
+        self.assertTrue(torch.allclose(augmented_x, torch.flip(torch.flip(x, dims=(-1,)), dims=(-2,))))
 
     def test_metric_threshold_sweep_keeps_base_and_deduplicates(self) -> None:
         job = SimpleNamespace(train={"metric_thresholds": [0.7, "0.80", 0.8]}, evaluate={}, params={})

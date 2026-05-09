@@ -666,12 +666,15 @@ def _apply_train_augmentations(
     batch_size = int(x.shape[0])
     device = x.device
 
-    if augmentations.get("flips"):
+    hflip_enabled = bool(augmentations.get("flips") or augmentations.get("hflip") or augmentations.get("horizontal_flip"))
+    vflip_enabled = bool(augmentations.get("flips") or augmentations.get("vflip") or augmentations.get("vertical_flip"))
+    if hflip_enabled:
         h_mask = torch.rand(batch_size, device=device) < 0.5
-        v_mask = torch.rand(batch_size, device=device) < 0.5
         if bool(h_mask.any()):
             x[h_mask] = torch.flip(x[h_mask], dims=(-1,))
             y[h_mask] = torch.flip(y[h_mask], dims=(-1,))
+    if vflip_enabled:
+        v_mask = torch.rand(batch_size, device=device) < 0.5
         if bool(v_mask.any()):
             x[v_mask] = torch.flip(x[v_mask], dims=(-2,))
             y[v_mask] = torch.flip(y[v_mask], dims=(-2,))
