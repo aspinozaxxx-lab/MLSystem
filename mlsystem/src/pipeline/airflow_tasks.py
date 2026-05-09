@@ -1167,6 +1167,18 @@ def _write_simple_key_value_report(path: Path, title: str, sections: dict[str, d
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _safe_set_mlflow_experiment_tag(client: Any, experiment_id: str, key: str, value: str) -> str | None:
+    try:
+        client.set_experiment_tag(experiment_id, key, value)
+        return None
+    except Exception as exc:
+        message = f"{type(exc).__name__}: {exc}"
+        lowered = message.lower()
+        if "experiment_tag_pk" in lowered or ("duplicate key" in lowered and "experiment_tags" in lowered):
+            return f"Skipped concurrent MLflow experiment tag write: {key}"
+        raise
+
+
 def _create_mlflow_run(conf: AirflowExperimentConfig, store: AirflowRunStore) -> dict[str, Any]:
     try:
         import mlflow
@@ -1176,11 +1188,17 @@ def _create_mlflow_run(conf: AirflowExperimentConfig, store: AirflowRunStore) ->
         experiment_name = conf.mlflow.get("experiment") or pipeline_config.mlflow_default_experiment
         mlflow.set_experiment(experiment_name)
         experiment = mlflow.get_experiment_by_name(experiment_name)
+        tag_warnings: list[str] = []
         if experiment and conf.class_name:
             client = mlflow.tracking.MlflowClient()
-            client.set_experiment_tag(experiment.experiment_id, "class_name", conf.class_name)
-            client.set_experiment_tag(experiment.experiment_id, "mlsystem.class_name", conf.class_name)
-            client.set_experiment_tag(experiment.experiment_id, "task", conf.task)
+            for key, value in (
+                ("class_name", conf.class_name),
+                ("mlsystem.class_name", conf.class_name),
+                ("task", conf.task),
+            ):
+                warning = _safe_set_mlflow_experiment_tag(client, experiment.experiment_id, key, str(value))
+                if warning:
+                    tag_warnings.append(warning)
         with mlflow.start_run(run_name=conf.experiment_id) as run:
             mlflow.set_tags(
                 {
@@ -1231,7 +1249,7 @@ def _create_mlflow_run(conf: AirflowExperimentConfig, store: AirflowRunStore) ->
             mlflow_experiment_name=experiment_name,
             artifact_uri=artifact_uri,
             counters={"mlflow_experiment_id": experiment_id, "mlflow_run_id": run_id},
-            warnings=url_warnings,
+            warnings=[*url_warnings, *tag_warnings],
             details={
                 "mlflow": {
                     "experiment_name": experiment_name,

@@ -17,6 +17,7 @@ from mlsystem.src.pipeline.airflow_tasks import (
     AirflowExperimentConfig,
     _build_airflow_job,
     _extract_pixel_metrics,
+    _safe_set_mlflow_experiment_tag,
     push_stage_xcom,
     run_airflow_stage,
     run_stage,
@@ -89,6 +90,14 @@ class AirflowTasksTests(unittest.TestCase):
         job.train.pop("time_limit_sec", None)
         job.train.pop("max_wallclock_seconds", None)
         self.assertIsNone(_resolve_wallclock_limit(job))
+
+    def test_mlflow_experiment_tag_race_is_nonfatal(self) -> None:
+        class FakeClient:
+            def set_experiment_tag(self, experiment_id: str, key: str, value: str) -> None:
+                raise RuntimeError('duplicate key value violates unique constraint "experiment_tag_pk" in experiment_tags')
+
+        warning = _safe_set_mlflow_experiment_tag(FakeClient(), "1", "class_name", "deforest")
+        self.assertIn("class_name", warning or "")
 
     def test_unknown_stage_error_is_clear(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
