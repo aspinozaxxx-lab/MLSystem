@@ -1179,6 +1179,27 @@ def _safe_set_mlflow_experiment_tag(client: Any, experiment_id: str, key: str, v
         raise
 
 
+def _is_mlflow_duplicate_experiment_error(exc: Exception) -> bool:
+    message = f"{type(exc).__name__}: {exc}".lower()
+    return "resource_already_exists" in message or ("already exists" in message and "experiment" in message)
+
+
+def _get_or_create_mlflow_experiment_id(client: Any, experiment_name: str, *, attempts: int = 5) -> str:
+    import time
+
+    for attempt in range(max(1, attempts)):
+        experiment = client.get_experiment_by_name(experiment_name)
+        if experiment is not None:
+            return str(experiment.experiment_id)
+        try:
+            return str(client.create_experiment(experiment_name))
+        except Exception as exc:
+            if not _is_mlflow_duplicate_experiment_error(exc) or attempt == attempts - 1:
+                raise
+            time.sleep(0.2 * (attempt + 1))
+    raise RuntimeError(f"MLflow experiment was not created: {experiment_name}")
+
+
 def _create_mlflow_run(conf: AirflowExperimentConfig, store: AirflowRunStore) -> dict[str, Any]:
     try:
         import mlflow
@@ -1186,20 +1207,19 @@ def _create_mlflow_run(conf: AirflowExperimentConfig, store: AirflowRunStore) ->
         pipeline_config = load_config()
         mlflow.set_tracking_uri(pipeline_config.mlflow_tracking_uri_internal)
         experiment_name = conf.mlflow.get("experiment") or pipeline_config.mlflow_default_experiment
-        mlflow.set_experiment(experiment_name)
-        experiment = mlflow.get_experiment_by_name(experiment_name)
+        client = mlflow.tracking.MlflowClient()
+        experiment_id = _get_or_create_mlflow_experiment_id(client, experiment_name)
         tag_warnings: list[str] = []
-        if experiment and conf.class_name:
-            client = mlflow.tracking.MlflowClient()
+        if conf.class_name:
             for key, value in (
                 ("class_name", conf.class_name),
                 ("mlsystem.class_name", conf.class_name),
                 ("task", conf.task),
             ):
-                warning = _safe_set_mlflow_experiment_tag(client, experiment.experiment_id, key, str(value))
+                warning = _safe_set_mlflow_experiment_tag(client, experiment_id, key, str(value))
                 if warning:
                     tag_warnings.append(warning)
-        with mlflow.start_run(run_name=conf.experiment_id) as run:
+        with mlflow.start_run(experiment_id=experiment_id, run_name=conf.experiment_id) as run:
             mlflow.set_tags(
                 {
                     "job_id": conf.experiment_id,
@@ -1225,7 +1245,6 @@ def _create_mlflow_run(conf: AirflowExperimentConfig, store: AirflowRunStore) ->
                 }
             )
             run_id = run.info.run_id
-            experiment_id = run.info.experiment_id
             artifact_uri = run.info.artifact_uri
         url_fields, url_warnings = _mlflow_url_fields(pipeline_config, experiment_id, run_id)
         run_url = url_fields.get("url_mlflow_run")
