@@ -34,7 +34,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: mlsystem-ansible-${{ github.ref }}
+  group: mlsystem-gpu-deploy-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:

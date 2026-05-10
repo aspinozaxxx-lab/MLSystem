@@ -24,6 +24,10 @@ on:
         type: boolean
         default: false
 
+concurrency:
+  group: mlsystem-gpu-deploy-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   syntax:
     runs-on: ubuntu-latest

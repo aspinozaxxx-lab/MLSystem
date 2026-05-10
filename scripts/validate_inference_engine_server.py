@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import time
@@ -301,13 +302,44 @@ def _ensure_triton_model(triton_url: str, model: str) -> dict[str, Any]:
 
 def _export_model_via_compose(model: str) -> str:
     compose = "docker compose --env-file /etc/mlsystem/gpu-platform.env -f /data/mlsystem/platform/docker-compose.yml"
-    cmd = (
-        f"{compose} exec -T mlsystem-api "
-        "python /opt/mlsystem-scripts/export_mlflow_run_to_triton.py "
-        f"--run-id {DEFAULT_RUN_ID} --repository /data/mlsystem/triton/model_repository "
-        f"--triton-model-name {model} --model-name {model} --input-bands 4 --tile-size 1024 --max-batch-size 8 --backend onnx"
-    )
+    _ensure_mlsystem_api_deps(compose)
+    shell_script = f"""set -e
+if [ -f /opt/mlsystem-scripts/export_mlflow_run_to_triton.py ]; then
+  python /opt/mlsystem-scripts/export_mlflow_run_to_triton.py --run-id {DEFAULT_RUN_ID} --repository /data/mlsystem/triton/model_repository --triton-model-name {model} --model-name {model} --input-bands 4 --tile-size 1024 --max-batch-size 8 --backend onnx
+else
+  python - <<'PY'
+import mlflow
+from pathlib import Path
+from src.inference.triton_export import export_segmentation_checkpoint_to_onnx
+
+run_id = "{DEFAULT_RUN_ID}"
+local_dir = Path(mlflow.artifacts.download_artifacts(run_id=run_id))
+candidates = []
+for suffix in ("*.pt", "*.pth", "*.ckpt"):
+    candidates.extend(local_dir.rglob(suffix))
+if not candidates:
+    client = mlflow.tracking.MlflowClient()
+    raise RuntimeError(f"No checkpoint artifact found for MLflow run {{run_id}}. Top-level artifacts: {{[item.path for item in client.list_artifacts(run_id)]}}")
+preferred = [path for path in candidates if "best" in path.name.lower() or "checkpoint" in path.name.lower()]
+checkpoint = sorted(preferred or candidates, key=lambda item: (len(item.parts), str(item).lower()))[0]
+print(export_segmentation_checkpoint_to_onnx(
+    checkpoint_path=checkpoint,
+    model_name="{model}",
+    output_repository=Path("/data/mlsystem/triton/model_repository"),
+    triton_model_name="{model}",
+    input_bands=4,
+    tile_size=1024,
+    max_batch_size=8,
+))
+PY
+fi"""
+    cmd = f"{compose} exec -T mlsystem-api bash -lc {shlex.quote(shell_script)}"
     return _run_text(cmd, timeout_sec=7200)
+
+
+def _ensure_mlsystem_api_deps(compose: str) -> None:
+    shell_script = """python -c "import importlib.util,sys; mods=('mlflow','boto3','torch','rasterio','shapely','tritonclient','onnx'); sys.exit(0 if all(importlib.util.find_spec(m) for m in mods) else 1)" || python -m pip install --user ${_PIP_ADDITIONAL_REQUIREMENTS}"""
+    _run_text(f"{compose} exec -T mlsystem-api bash -lc {shlex.quote(shell_script)}", timeout_sec=7200)
 
 
 def _model_ready(triton_url: str, model: str) -> bool:

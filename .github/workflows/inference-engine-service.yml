@@ -22,6 +22,10 @@ on:
       - ".github/workflows/inference-engine-service.yml"
   workflow_dispatch:
 
+concurrency:
+  group: mlsystem-gpu-deploy-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   test:
     runs-on: ubuntu-latest
