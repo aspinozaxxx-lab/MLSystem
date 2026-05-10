@@ -60,12 +60,23 @@
         mode: "0600"
       when: gpu_platform_env_stat.stat.exists
 
+    - name: Build InferenceEngine image
+      ansible.builtin.command:
+        cmd: >-
+          docker compose --env-file "{{ mlsystem_gpu_env_path }}"
+          -f "{{ mlsystem_gpu_compose_path }}"
+          build inference-engine-api
+      changed_when: true
+      when:
+        - gpu_platform_compose_stat.stat.exists
+        - gpu_platform_env_stat.stat.exists
+
     - name: Rebuild and restart InferenceEngine containers
       ansible.builtin.command:
         cmd: >-
           docker compose --env-file "{{ mlsystem_gpu_env_path }}"
           -f "{{ mlsystem_gpu_compose_path }}"
-          up -d --build --remove-orphans
+          up -d --remove-orphans
           inference-engine-api inference-engine-planner inference-engine-preprocess-worker
           inference-engine-triton-worker inference-engine-aggregator inference-engine-block-worker inference-engine-merger
           inference-engine-finalizer
