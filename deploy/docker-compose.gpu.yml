@@ -44,6 +44,25 @@ services:
         done
     networks: [mlsystem-gpu]
 
+  rabbitmq:
+    image: ${RABBITMQ_IMAGE:-rabbitmq:3.13-management}
+    container_name: mlsystem-gpu-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "127.0.0.1:${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    volumes:
+      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/rabbitmq:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD-SHELL", "rabbitmq-diagnostics -q ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+    networks: [mlsystem-gpu]
+
   mlflow-postgres:
     image: ${POSTGRES_IMAGE:-postgres:15}
     container_name: mlsystem-gpu-mlflow-postgres
@@ -127,7 +146,7 @@ services:
     env_file: /etc/mlsystem/gpu-platform.env
     user: "0:0"
     environment:
-      PYTHONPATH: /opt/mlsystem
+      PYTHONPATH: /opt/mlsystem:/opt
       MLSYSTEM_PIPELINE_CONFIG: ${MLSYSTEM_PIPELINE_CONFIG:-/opt/mlsystem/configs/pipeline.server.yaml}
     entrypoint: /bin/bash
     command:
@@ -148,6 +167,7 @@ services:
       - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/airflow/plugins:/opt/airflow/plugins
       - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/airflow/include:/opt/airflow/include
       - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/mlsystem:/opt/mlsystem
+      - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/InferenceEngine:/opt/InferenceEngine
       - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/airflow/logs:/opt/airflow/logs
       - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/airflow/status:/opt/airflow/mlsystem_runs
       - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}:/data/mlsystem
@@ -163,9 +183,11 @@ services:
         condition: service_healthy
       triton:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     env_file: /etc/mlsystem/gpu-platform.env
     environment:
-      PYTHONPATH: /opt/mlsystem
+      PYTHONPATH: /opt/mlsystem:/opt
       MLSYSTEM_API_JOB_ROOT: ${MLSYSTEM_API_JOB_ROOT:-/data/mlsystem/api/jobs}
       MLSYSTEM_AIRFLOW_STATE_DIR: ${MLSYSTEM_AIRFLOW_STATE_DIR:-/data/mlsystem/airflow/status}
       MLSYSTEM_PIPELINE_CONFIG: ${MLSYSTEM_PIPELINE_CONFIG:-/opt/mlsystem/configs/pipeline.server.yaml}
@@ -178,6 +200,7 @@ services:
       - "127.0.0.1:${MLSYSTEM_API_PORT:-8088}:8088"
     volumes:
       - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/mlsystem:/opt/mlsystem
+      - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/InferenceEngine:/opt/InferenceEngine
       - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}:/data/mlsystem
       - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/airflow/status:/opt/airflow/mlsystem_runs
     healthcheck:
@@ -186,6 +209,147 @@ services:
       timeout: 10s
       retries: 10
       start_period: 60s
+    restart: unless-stopped
+    networks: [mlsystem-gpu]
+
+  inference-engine-api:
+    build:
+      context: ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}
+      dockerfile: InferenceEngine/Dockerfile
+    image: ${INFERENCE_ENGINE_IMAGE:-mlsystem/inference-engine:local}
+    container_name: mlsystem-gpu-inference-engine-api
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      triton:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+    env_file: /etc/mlsystem/gpu-platform.env
+    environment:
+      INFERENCE_ENGINE_USE_RABBITMQ: ${INFERENCE_ENGINE_USE_RABBITMQ:-true}
+      INFERENCE_ENGINE_RABBITMQ_URL: ${INFERENCE_ENGINE_RABBITMQ_URL}
+      INFERENCE_ENGINE_JOB_ROOT: ${INFERENCE_ENGINE_JOB_ROOT:-/data/mlsystem/inference-engine/jobs}
+      INFERENCE_ENGINE_SPOOL_ROOT: ${INFERENCE_ENGINE_SPOOL_ROOT:-/data/mlsystem/inference-engine/spool}
+      INFERENCE_ENGINE_ARTIFACT_ROOT: ${INFERENCE_ENGINE_ARTIFACT_ROOT:-/data/mlsystem/inference-engine/artifacts}
+      INFERENCE_ENGINE_LOGS_ROOT: ${INFERENCE_ENGINE_LOGS_ROOT:-/data/mlsystem/inference-engine/logs}
+      INFERENCE_ENGINE_TRITON_URL: ${INFERENCE_ENGINE_TRITON_URL:-http://triton:8000}
+      INFERENCE_ENGINE_API_TOKEN: ${INFERENCE_ENGINE_API_TOKEN}
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+    command: ["uvicorn", "inference_engine.api.app:app", "--host", "0.0.0.0", "--port", "8095"]
+    ports:
+      - "127.0.0.1:${INFERENCE_ENGINE_API_PORT:-8095}:8095"
+    volumes:
+      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}:/data/mlsystem
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail http://localhost:8095/health || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    restart: unless-stopped
+    networks: [mlsystem-gpu]
+
+  inference-engine-planner:
+    image: ${INFERENCE_ENGINE_IMAGE:-mlsystem/inference-engine:local}
+    container_name: mlsystem-gpu-inference-engine-planner
+    depends_on:
+      inference-engine-api:
+        condition: service_healthy
+    env_file: /etc/mlsystem/gpu-platform.env
+    environment: &inference-engine-worker-env
+      INFERENCE_ENGINE_USE_RABBITMQ: "true"
+      INFERENCE_ENGINE_RABBITMQ_URL: ${INFERENCE_ENGINE_RABBITMQ_URL}
+      INFERENCE_ENGINE_JOB_ROOT: ${INFERENCE_ENGINE_JOB_ROOT:-/data/mlsystem/inference-engine/jobs}
+      INFERENCE_ENGINE_SPOOL_ROOT: ${INFERENCE_ENGINE_SPOOL_ROOT:-/data/mlsystem/inference-engine/spool}
+      INFERENCE_ENGINE_ARTIFACT_ROOT: ${INFERENCE_ENGINE_ARTIFACT_ROOT:-/data/mlsystem/inference-engine/artifacts}
+      INFERENCE_ENGINE_LOGS_ROOT: ${INFERENCE_ENGINE_LOGS_ROOT:-/data/mlsystem/inference-engine/logs}
+      INFERENCE_ENGINE_TRITON_URL: ${INFERENCE_ENGINE_TRITON_URL:-http://triton:8000}
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+    command: ["inference-engine-worker", "worker", "--role", "planner"]
+    volumes:
+      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}:/data/mlsystem
+    restart: unless-stopped
+    networks: [mlsystem-gpu]
+
+  inference-engine-preprocess-worker:
+    image: ${INFERENCE_ENGINE_IMAGE:-mlsystem/inference-engine:local}
+    container_name: mlsystem-gpu-inference-engine-preprocess-worker
+    depends_on: [inference-engine-api]
+    env_file: /etc/mlsystem/gpu-platform.env
+    environment: *inference-engine-worker-env
+    command: ["inference-engine-worker", "worker", "--role", "preprocess"]
+    volumes:
+      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}:/data/mlsystem
+    restart: unless-stopped
+    networks: [mlsystem-gpu]
+
+  inference-engine-triton-worker:
+    image: ${INFERENCE_ENGINE_IMAGE:-mlsystem/inference-engine:local}
+    container_name: mlsystem-gpu-inference-engine-triton-worker
+    depends_on: [inference-engine-api]
+    env_file: /etc/mlsystem/gpu-platform.env
+    environment: *inference-engine-worker-env
+    command: ["inference-engine-worker", "worker", "--role", "triton"]
+    gpus: all
+    volumes:
+      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}:/data/mlsystem
+    restart: unless-stopped
+    networks: [mlsystem-gpu]
+
+  inference-engine-aggregator:
+    image: ${INFERENCE_ENGINE_IMAGE:-mlsystem/inference-engine:local}
+    container_name: mlsystem-gpu-inference-engine-aggregator
+    depends_on: [inference-engine-api]
+    env_file: /etc/mlsystem/gpu-platform.env
+    environment: *inference-engine-worker-env
+    command: ["inference-engine-worker", "worker", "--role", "aggregator"]
+    volumes:
+      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}:/data/mlsystem
+    restart: unless-stopped
+    networks: [mlsystem-gpu]
+
+  inference-engine-block-worker:
+    image: ${INFERENCE_ENGINE_IMAGE:-mlsystem/inference-engine:local}
+    container_name: mlsystem-gpu-inference-engine-block-worker
+    depends_on: [inference-engine-api]
+    env_file: /etc/mlsystem/gpu-platform.env
+    environment: *inference-engine-worker-env
+    command: ["inference-engine-worker", "worker", "--role", "block"]
+    volumes:
+      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}:/data/mlsystem
+    restart: unless-stopped
+    networks: [mlsystem-gpu]
+
+  inference-engine-merger:
+    image: ${INFERENCE_ENGINE_IMAGE:-mlsystem/inference-engine:local}
+    container_name: mlsystem-gpu-inference-engine-merger
+    depends_on: [inference-engine-api]
+    env_file: /etc/mlsystem/gpu-platform.env
+    environment: *inference-engine-worker-env
+    command: ["inference-engine-worker", "worker", "--role", "merger"]
+    volumes:
+      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}:/data/mlsystem
+    restart: unless-stopped
+    networks: [mlsystem-gpu]
+
+  inference-engine-finalizer:
+    image: ${INFERENCE_ENGINE_IMAGE:-mlsystem/inference-engine:local}
+    container_name: mlsystem-gpu-inference-engine-finalizer
+    depends_on: [inference-engine-api]
+    env_file: /etc/mlsystem/gpu-platform.env
+    environment: *inference-engine-worker-env
+    command: ["inference-engine-worker", "worker", "--role", "finalizer"]
+    volumes:
+      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}:/data/mlsystem
     restart: unless-stopped
     networks: [mlsystem-gpu]
 
@@ -254,9 +418,11 @@ services:
         condition: service_healthy
       mlsystem-api:
         condition: service_healthy
+      inference-engine-api:
+        condition: service_healthy
     env_file: /etc/mlsystem/gpu-platform.env
     environment:
-      PYTHONPATH: /opt/mlsystem
+      PYTHONPATH: /opt/mlsystem:/opt
       MLSYSTEM_PIPELINE_CONFIG: ${MLSYSTEM_PIPELINE_CONFIG:-/opt/mlsystem/configs/pipeline.server.yaml}
     command: webserver
     ports:
@@ -266,6 +432,7 @@ services:
       - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/airflow/plugins:/opt/airflow/plugins
       - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/airflow/include:/opt/airflow/include
       - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/mlsystem:/opt/mlsystem
+      - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/InferenceEngine:/opt/InferenceEngine
       - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/airflow/logs:/opt/airflow/logs
       - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/airflow/status:/opt/airflow/mlsystem_runs
       - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}:/data/mlsystem
@@ -287,7 +454,7 @@ services:
         condition: service_healthy
     env_file: /etc/mlsystem/gpu-platform.env
     environment:
-      PYTHONPATH: /opt/mlsystem
+      PYTHONPATH: /opt/mlsystem:/opt
       MLSYSTEM_PIPELINE_CONFIG: ${MLSYSTEM_PIPELINE_CONFIG:-/opt/mlsystem/configs/pipeline.server.yaml}
     command: scheduler
     gpus: all
@@ -310,7 +477,7 @@ services:
         condition: service_healthy
     env_file: /etc/mlsystem/gpu-platform.env
     environment:
-      PYTHONPATH: /opt/mlsystem
+      PYTHONPATH: /opt/mlsystem:/opt
       MLSYSTEM_PIPELINE_CONFIG: ${MLSYSTEM_PIPELINE_CONFIG:-/opt/mlsystem/configs/pipeline.server.yaml}
     command: triggerer
     volumes: *airflow-volumes
@@ -320,6 +487,8 @@ services:
     image: ${TRITON_IMAGE:-nvcr.io/nvidia/tritonserver:25.03-py3}
     container_name: mlsystem-gpu-triton
     command: tritonserver --model-repository=/models --strict-model-config=false --model-control-mode=explicit --load-model=identity_python
+    environment:
+      PYTHONPATH: /opt/mlsystem
     gpus: all
     ports:
       - "${TRITON_HTTP_PORT:-8000}:8000"
@@ -327,6 +496,7 @@ services:
       - "${TRITON_METRICS_PORT:-8002}:8002"
     volumes:
       - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/triton/model_repository:/models
+      - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/mlsystem:/opt/mlsystem
     healthcheck:
       test: ["CMD-SHELL", "curl --fail http://localhost:8000/v2/health/ready || exit 1"]
       interval: 20s

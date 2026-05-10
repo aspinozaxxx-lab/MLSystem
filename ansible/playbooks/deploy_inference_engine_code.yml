@@ -1,0 +1,15 @@
+---
+- name: Deploy InferenceEngine code
+  hosts: gpu_mlserver
+  become: true
+  tasks:
+    - name: Rebuild and restart InferenceEngine containers
+      ansible.builtin.command:
+        cmd: >-
+          docker compose --env-file /etc/mlsystem/gpu-platform.env
+          -f /data/mlsystem/platform/docker-compose.yml
+          up -d --build --remove-orphans
+          inference-engine-api inference-engine-planner inference-engine-preprocess-worker
+          inference-engine-triton-worker inference-engine-aggregator inference-engine-block-worker inference-engine-merger
+          inference-engine-finalizer
+      changed_when: true

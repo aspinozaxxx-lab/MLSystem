@@ -1,0 +1,6 @@
+---
+- name: Deploy RabbitMQ for MLSystem InferenceEngine
+  hosts: gpu_mlserver
+  become: true
+  roles:
+    - gpu_platform

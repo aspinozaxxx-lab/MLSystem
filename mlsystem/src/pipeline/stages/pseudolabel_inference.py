@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from ...storage.local_io import read_json, write_json
@@ -26,6 +27,8 @@ def run(ctx: StageContext) -> StageReport:
         )
     if not ctx.config.pseudolabel.get("enabled", False):
         return StageReport(ctx.stage_id, "skipped", [StageCheck("pseudolabel.enabled", "skipped", "pseudolabel.enabled=false")])
+    if _is_inference_engine_source(ctx.config.pseudolabel):
+        return _run_inference_engine_compat(ctx)
 
     effective_config = ctx.config
     inference_manifest = read_json(ctx.store.run_dir / "inference_manifest.json", default={}) or {}
@@ -157,3 +160,133 @@ def _safe_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _is_inference_engine_source(pseudolabel_cfg: dict[str, Any]) -> bool:
+    source = str(pseudolabel_cfg.get("source") or pseudolabel_cfg.get("engine") or "").strip().lower().replace("-", "_")
+    return source == "inference_engine"
+
+
+def _run_inference_engine_compat(ctx: StageContext) -> StageReport:
+    from ...orchestration.inference_engine_client import InferenceEngineClient
+
+    inference_manifest = read_json(ctx.store.run_dir / "inference_manifest.json", default={}) or {}
+    payload = _build_inference_engine_payload(ctx, inference_manifest)
+    client = InferenceEngineClient()
+    created = client.create_job(payload)
+    poll_sec = float(os.getenv("INFERENCE_ENGINE_AIRFLOW_POLL_SEC") or "10")
+    timeout_sec = float(os.getenv("INFERENCE_ENGINE_AIRFLOW_TIMEOUT_SEC") or str(24 * 3600))
+    final_state = client.wait(str(created["job_id"]), poll_sec=poll_sec, timeout_sec=timeout_sec)
+    if final_state.get("status") != "success":
+        return StageReport(
+            ctx.stage_id,
+            "failed",
+            [StageCheck("InferenceEngine job", "failed", str(final_state.get("error") or final_state.get("status")))],
+            errors=[str(final_state.get("error") or f"InferenceEngine job {created['job_id']} ended with {final_state.get('status')}")],
+            details={"job": final_state},
+        )
+    artifacts = final_state.get("artifacts") or {}
+    metrics = final_state.get("metrics") or {}
+    coverage = read_json(ctx.store.run_dir / "coverage_report.json", default={}) or {}
+    probability_index = read_json(ctx.store.run_dir / "pseudolabel_scene_results_manifest.json", default={}) or {}
+    probability_index_path = ctx.store.run_dir / "probability_maps_index.json"
+    if probability_index:
+        write_json(probability_index_path, probability_index)
+    inference_results_path = ctx.store.run_dir / "inference_results.json"
+    if not inference_results_path.exists():
+        write_json(
+            inference_results_path,
+            {
+                "source": "inference_engine",
+                "job_id": created["job_id"],
+                "coverage": coverage,
+                "probability_maps_index": str(probability_index_path),
+            },
+        )
+    return StageReport(
+        ctx.stage_id,
+        "success",
+        [StageCheck("InferenceEngine job", "ok", f"job_id={created['job_id']}")],
+        counters={
+            "backend": "inference_engine",
+            "scene_count": coverage.get("scenes_processed"),
+            "scenes_processed": coverage.get("scenes_processed"),
+            "scenes_failed": coverage.get("scenes_failed") or 0,
+            "scenes_skipped": 0,
+            "total_predicted_windows": coverage.get("total_predicted_windows"),
+            "probability_maps": len((probability_index.get("scenes") or [])) if isinstance(probability_index, dict) else None,
+            "tiles_total": metrics.get("tiles_total"),
+            "tiles_done": metrics.get("tiles_done"),
+            "blocks_total": metrics.get("blocks_total"),
+            "blocks_done": metrics.get("blocks_done"),
+            "triton_batches": metrics.get("triton_batches"),
+        },
+        artifacts={
+            "inference_results.json": str(inference_results_path),
+            "probability_maps_index.json": str(probability_index_path),
+            "pseudolabel_scene_results_manifest.json": str(ctx.store.run_dir / "pseudolabel_scene_results_manifest.json"),
+            "coverage_report.json": str(ctx.store.run_dir / "coverage_report.json"),
+            **{str(name): str(path) for name, path in artifacts.items() if isinstance(path, str)},
+        },
+        details={"inference_engine_job": final_state},
+        summary="InferenceEngine pseudolabel pipeline completed; downstream stages are validate-only for source=inference_engine.",
+    )
+
+
+def _build_inference_engine_payload(ctx: StageContext, inference_manifest: dict[str, Any]) -> dict[str, Any]:
+    pseudolabel_cfg = dict(ctx.config.pseudolabel or {})
+    vector_cfg = dict(pseudolabel_cfg.get("vectorization") or {})
+    preprocess_cfg = dict(ctx.config.preprocess or {})
+    inference_cfg = dict(ctx.config.inference or {})
+    model_cfg = dict(ctx.config.model or {})
+    scenes = inference_manifest.get("scenes") or []
+    return {
+        "run_id": ctx.run_id,
+        "experiment_id": ctx.config.experiment_id,
+        "scenes": scenes,
+        "inference_manifest": str(ctx.store.run_dir / "inference_manifest.json"),
+        "images_uri": ctx.config.images_uri,
+        "layout_uri": ctx.config.layout_uri,
+        "run_dir": str(ctx.store.run_dir),
+        "storage": {
+            "source": "airflow",
+            "state_dir": str(ctx.status_dir),
+        },
+        "model": {
+            "mlflow_run_id": model_cfg.get("mlflow_run_id") or pseudolabel_cfg.get("mlflow_run_id") or "a7838f91528a47e1931b685c2ea06686",
+            "model_name": model_cfg.get("name") or model_cfg.get("model_name") or "segformer_b2",
+            "architecture": model_cfg.get("architecture") or "segformer_b2",
+            "triton_model_name": inference_cfg.get("triton_model_name") or pseudolabel_cfg.get("triton_model_name") or "segformer_b2",
+        },
+        "preprocess": {
+            "tile_size": preprocess_cfg.get("tile_size") or preprocess_cfg.get("patch_size") or pseudolabel_cfg.get("tile_size"),
+            "patch_size": preprocess_cfg.get("patch_size") or pseudolabel_cfg.get("patch_size") or 1024,
+            "stride": preprocess_cfg.get("stride") or pseudolabel_cfg.get("stride") or 768,
+            "input_bands": preprocess_cfg.get("input_bands") or pseudolabel_cfg.get("input_bands") or [1, 2, 3, 4],
+            "crop_mode": pseudolabel_cfg.get("crop_mode") or "full",
+            "center_size": pseudolabel_cfg.get("center_size"),
+            "context_bounds": pseudolabel_cfg.get("context_bounds"),
+            "stitch_mode": pseudolabel_cfg.get("stitch_mode") or "weighted_overlap",
+        },
+        "pseudolabel": {
+            "threshold": vector_cfg.get("threshold") or (ctx.config.postprocess or {}).get("threshold") or 0.5,
+            "core_size_px": vector_cfg.get("core_size_px") or 4096,
+            "halo_px": vector_cfg.get("halo_px") or 512,
+            "workers": vector_cfg.get("workers") or 4,
+            "local_min_area": vector_cfg.get("local_min_area") or 0,
+            "final_min_area": vector_cfg.get("final_min_area") or (ctx.config.postprocess or {}).get("min_area_m2") or 0,
+            "merge_epsilon": vector_cfg.get("merge_epsilon") if vector_cfg.get("merge_epsilon") is not None else 1.0,
+            "simplify_tolerance": (ctx.config.postprocess or {}).get("simplify_tolerance_m") or 0,
+            "max_objects": (ctx.config.postprocess or {}).get("max_objects"),
+        },
+        "resource": {
+            "triton_batch_size": inference_cfg.get("triton_batch_size") or pseudolabel_cfg.get("batch_size") or 8,
+            "batches_ahead": inference_cfg.get("batches_ahead") or 4,
+            "max_preprocess_queue": inference_cfg.get("max_preprocess_queue") or 512,
+            "max_spool_bytes": inference_cfg.get("max_spool_bytes") or 20 * 1024 * 1024 * 1024,
+            "max_scenes_inflight": inference_cfg.get("max_scenes_inflight") or 1,
+            "max_blocks_inflight": inference_cfg.get("max_blocks_inflight") or 8,
+        },
+        "max_scenes": pseudolabel_cfg.get("max_scenes") or pseudolabel_cfg.get("max_debug_scenes"),
+        "source": "inference_engine",
+    }

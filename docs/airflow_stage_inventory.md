@@ -51,6 +51,20 @@ finalize_mlflow_run
 - MinIO/S3: scene discovery, layout files, training/inference artifacts.
 - MLflow: runs, params, metrics, summary artifacts.
 - Triton HTTP: production inference path.
+- InferenceEngine API: pseudolabel pipeline owner when `pseudolabel.source=inference_engine`.
+- RabbitMQ: InferenceEngine descriptor queues and dead-letter routing.
 - Airflow metadata DB: DAG/task state and small scalar XCom only.
 - Local status root: `/data/mlsystem/airflow/status/<run_id>/`.
 - API job root: `/data/mlsystem/api/jobs/<job_id>/`.
+
+## InferenceEngine Compatibility Mode
+
+When DAG config sets `pseudolabel.source=inference_engine`, Airflow keeps the same stage list but changes pseudolabel stage responsibilities:
+
+- `run_pseudolabel_inference` calls `INFERENCE_ENGINE_API_URL`, submits `/api/v1/jobs`, polls until terminal status, and expects compatibility artifacts in `/data/mlsystem/airflow/status/<run_id>/<experiment_id>/`.
+- `validate_probability_maps` validates `coverage_report.json` and `probability_maps_index.json`.
+- `vectorize_pseudolabel` is validate-only and skips mlsystem CPU vectorization.
+- `postprocess_pseudolabel` is validate-only and reads `postprocess_summary.json`.
+- `export_pseudolabel_artifacts` keeps the old artifact presence checks.
+
+Training, MLflow run lifecycle, validation predictions, metrics, and final MLflow logging remain in `mlsystem`.

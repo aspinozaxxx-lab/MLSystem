@@ -1,0 +1,118 @@
+# InferenceEngine
+
+InferenceEngine is a separate FastAPI service for pseudolabel inference. Airflow calls its API and receives ready artifacts instead of running pseudolabel domain logic inside `mlsystem`.
+
+## Architecture
+
+Pipeline:
+
+1. `scene.plan`: build inference tile plan and block/core/halo plan.
+2. `tile.preprocess`: read raster window, normalize, write bounded spool artifact.
+3. `tile.infer`: batch descriptors, call Triton with `INPUT__0`, persist probability tiles.
+4. `tile.done`: mark tile durable after checksum write.
+5. `block.ready`: dependency tracker releases a block when all expanded-window tiles are ready.
+6. `block.vectorize`: materialize expanded probability block, threshold/vectorize, clip to core.
+7. `scene.merge`: dissolve block GeoJSON, apply `merge_epsilon` and final area filter.
+8. `job.finalize`: write old-pipeline-compatible artifacts into Airflow run dir.
+
+The acceptance metric is:
+
+`first_block_vectorized_at < last_tile_inferred_at`
+
+for jobs with more than one block.
+
+## Queues
+
+RabbitMQ queues:
+
+- `ie.jobs.submit`
+- `ie.scene.plan`
+- `ie.tile.preprocess`
+- `ie.tile.infer`
+- `ie.tile.done`
+- `ie.block.ready`
+- `ie.block.vectorize`
+- `ie.block.done`
+- `ie.scene.merge`
+- `ie.job.finalize`
+- `ie.events`
+- `ie.dead_letter`
+
+Messages contain descriptors only: `job_id`, `scene_id`, `tile_id`, `block_id`, paths, checksums, retry attempt, and stage name. Numpy arrays are stored in `/data/mlsystem/inference-engine/jobs` or `/data/mlsystem/inference-engine/spool`.
+
+## Worker Roles
+
+Production uses separate RabbitMQ consumers:
+
+- `inference-engine-worker planner`: consumes `ie.jobs.submit` and `ie.scene.plan`.
+- `inference-engine-worker preprocess`: consumes `ie.tile.preprocess`, writes spool descriptors, publishes `ie.tile.infer`.
+- `inference-engine-worker triton`: batches `ie.tile.infer`, calls Triton, writes probability tile artifacts, publishes `ie.tile.done`.
+- `inference-engine-worker aggregator`: consumes `ie.tile.done`, updates dependency counters, publishes `ie.block.ready`.
+- `inference-engine-worker block`: consumes `ie.block.ready` and `ie.block.vectorize`, materializes expanded blocks, vectorizes, clips to core, publishes `ie.block.done`.
+- `inference-engine-worker merger`: consumes `ie.block.done` and `ie.scene.merge`, merges scene outputs, publishes `ie.job.finalize`.
+- `inference-engine-worker finalizer`: consumes `ie.job.finalize`, writes compatibility artifacts and marks the job successful.
+
+Ack happens after durable state/artifact writes. Retry republishes with incremented attempt count; exhausted messages go to `ie.dead_letter`.
+
+## Backpressure
+
+Adaptive producer tracks:
+
+- `infer_queue_depth`
+- `spool_bytes`
+- `preprocess_pauses_total`
+- `preprocess_resumes_total`
+- `triton_batch_fill_ratio`
+- `triton_request_duration_ms`
+- `gpu_util_snapshot_count`
+
+Target ready tiles:
+
+`triton_batch_size * max(2, triton_instance_count * batches_ahead)`
+
+Publishing pauses when infer queue depth exceeds the configured high watermark or spool bytes exceed `max_spool_bytes`.
+
+## API
+
+- `GET /health`
+- `GET /ready`
+- `GET /queues`
+- `GET /metrics`
+- `POST /api/v1/jobs`
+- `GET /api/v1/jobs/{job_id}`
+- `GET /api/v1/jobs/{job_id}/events`
+- `GET /api/v1/jobs/{job_id}/artifacts`
+- `POST /api/v1/jobs/{job_id}/cancel`
+
+## Testing
+
+Unit tests live in `InferenceEngine/tests`.
+
+```bash
+python -m unittest discover -s InferenceEngine/tests
+```
+
+Synthetic handtest:
+
+```bash
+python scripts/handtest_inference_engine_synthetic.py --api http://127.0.0.1:8095
+```
+
+Real handtests:
+
+```bash
+python scripts/handtest_inference_engine_real.py --manifest /path/to/inference_manifest.json --max-scenes 2
+python scripts/handtest_inference_engine_20_scenes.py --manifest /path/to/inference_manifest.json
+```
+
+Production worker startup:
+
+```bash
+inference-engine-worker planner
+inference-engine-worker preprocess
+inference-engine-worker triton
+inference-engine-worker aggregator
+inference-engine-worker block
+inference-engine-worker merger
+inference-engine-worker finalizer
+```

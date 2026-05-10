@@ -37,6 +37,26 @@ def run(ctx: StageContext) -> StageReport:
             },
             artifacts={"postprocess_summary.json": str(summary_path)},
         )
+    if _is_inference_engine_source(pseudolabel_cfg):
+        summary_path = ctx.store.run_dir / "postprocess_summary.json"
+        metrics = read_json(summary_path, default={}) or {}
+        if not metrics:
+            report = StageReport(ctx.stage_id, "failed", [StageCheck("InferenceEngine postprocess metrics", "failed", "postprocess_summary.json is missing")], errors=["postprocess_summary.json is missing"])
+            raise StageFailure("postprocess_summary.json is missing", report)
+        return StageReport(
+            ctx.stage_id,
+            "success",
+            [StageCheck("InferenceEngine postprocess", "ok", "Postprocess metrics already produced by InferenceEngine")],
+            counters={
+                "accepted_objects": metrics.get("accepted_objects"),
+                "threshold_used": metrics.get("threshold_used"),
+                "min_object_area_m2_used": metrics.get("min_object_area_m2_used"),
+                "simplify_tolerance_m_used": metrics.get("simplify_tolerance_m_used"),
+            },
+            artifacts={"postprocess_summary.json": str(summary_path)},
+            details={"source": "inference_engine"},
+            summary="InferenceEngine postprocess artifacts validated; heavy postprocess skipped in mlsystem.",
+        )
 
     training_result = _read_training_result(ctx.store)
     metrics = training_result.get("postprocess_metrics") or {}
@@ -57,3 +77,8 @@ def run(ctx: StageContext) -> StageReport:
         },
         artifacts={"postprocess_summary.json": str(summary_path)},
     )
+
+
+def _is_inference_engine_source(pseudolabel_cfg: dict) -> bool:
+    source = str((pseudolabel_cfg or {}).get("source") or (pseudolabel_cfg or {}).get("engine") or "").strip().lower().replace("-", "_")
+    return source == "inference_engine"

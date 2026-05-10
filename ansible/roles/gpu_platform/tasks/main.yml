@@ -26,6 +26,9 @@
     mlsystem_gpu_airflow_fernet_key_resolved: "{{ lookup('env', 'AIRFLOW_FERNET_KEY') | default('', true) or (gpu_existing_env | default({})).get('AIRFLOW_FERNET_KEY', lookup('password', '/dev/null length=44 chars=ascii_letters,digits')) }}"
     mlsystem_gpu_airflow_secret_key_resolved: "{{ lookup('env', 'AIRFLOW_SECRET_KEY') | default('', true) or (gpu_existing_env | default({})).get('AIRFLOW_SECRET_KEY', lookup('password', '/dev/null length=48 chars=ascii_letters,digits')) }}"
     mlsystem_gpu_api_token_resolved: "{{ lookup('env', 'MLSYSTEM_API_TOKEN') | default('', true) or (gpu_existing_env | default({})).get('MLSYSTEM_API_TOKEN', lookup('password', '/dev/null length=40 chars=ascii_letters,digits')) }}"
+    mlsystem_gpu_rabbitmq_user_resolved: "{{ lookup('env', 'RABBITMQ_DEFAULT_USER') | default('', true) or (gpu_existing_env | default({})).get('RABBITMQ_DEFAULT_USER', mlsystem_gpu_rabbitmq_user) }}"
+    mlsystem_gpu_rabbitmq_password_resolved: "{{ lookup('env', 'RABBITMQ_DEFAULT_PASS') | default('', true) or (gpu_existing_env | default({})).get('RABBITMQ_DEFAULT_PASS', lookup('password', '/dev/null length=32 chars=ascii_letters,digits')) }}"
+    mlsystem_gpu_inference_engine_api_token_resolved: "{{ lookup('env', 'INFERENCE_ENGINE_API_TOKEN') | default('', true) or (gpu_existing_env | default({})).get('INFERENCE_ENGINE_API_TOKEN', lookup('password', '/dev/null length=40 chars=ascii_letters,digits')) }}"
     mlsystem_gpu_frontend_user_resolved: "{{ lookup('env', 'MLSYSTEM_FRONTEND_USER') | default('', true) or (gpu_existing_env | default({})).get('MLSYSTEM_FRONTEND_USER', mlsystem_gpu_frontend_user) }}"
     mlsystem_gpu_frontend_password_resolved: "{{ lookup('env', 'MLSYSTEM_FRONTEND_PASSWORD') | default('', true) or (gpu_existing_env | default({})).get('MLSYSTEM_FRONTEND_PASSWORD', mlsystem_gpu_frontend_default_password) }}"
     mlsystem_gpu_frontend_session_secret_resolved: "{{ lookup('env', 'MLSYSTEM_FRONTEND_SESSION_SECRET') | default('', true) or (gpu_existing_env | default({})).get('MLSYSTEM_FRONTEND_SESSION_SECRET', lookup('password', '/dev/null length=48 chars=ascii_letters,digits')) }}"
@@ -44,6 +47,11 @@
     - "{{ mlsystem_gpu_data_root }}/airflow/logs"
     - "{{ mlsystem_gpu_data_root }}/airflow/status"
     - "{{ mlsystem_gpu_data_root }}/api/jobs"
+    - "{{ mlsystem_gpu_data_root }}/rabbitmq"
+    - "{{ mlsystem_gpu_data_root }}/inference-engine/jobs"
+    - "{{ mlsystem_gpu_data_root }}/inference-engine/spool"
+    - "{{ mlsystem_gpu_data_root }}/inference-engine/artifacts"
+    - "{{ mlsystem_gpu_data_root }}/inference-engine/logs"
     - "{{ mlsystem_gpu_data_root }}/frontend/uploads"
     - "{{ mlsystem_gpu_data_root }}/airflow/postgres"
     - "{{ mlsystem_gpu_data_root }}/triton/model_repository/identity_python/1"
@@ -139,7 +147,16 @@
 
 - name: Start GPU ML platform core services
   ansible.builtin.command:
-    cmd: docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}" up -d --remove-orphans minio mlflow-postgres mlflow triton
+    cmd: docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}" up -d --remove-orphans minio mlflow-postgres mlflow triton rabbitmq
+  changed_when: true
+
+- name: Start InferenceEngine services
+  ansible.builtin.command:
+    cmd: >-
+      docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}"
+      up -d --remove-orphans
+      inference-engine-api inference-engine-planner inference-engine-preprocess-worker inference-engine-triton-worker
+      inference-engine-aggregator inference-engine-block-worker inference-engine-merger inference-engine-finalizer
   changed_when: true
 
 - name: Start MLSystem API service
@@ -182,6 +199,15 @@
   delay: 5
   register: mlsystem_api_ready
   until: mlsystem_api_ready.status == 200
+
+- name: Wait for InferenceEngine readiness
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ mlsystem_gpu_inference_engine_api_port }}/ready"
+    status_code: 200
+  retries: 30
+  delay: 5
+  register: inference_engine_ready
+  until: inference_engine_ready.status == 200
 
 - name: Start Airflow services after MLSystem API is ready
   ansible.builtin.command:

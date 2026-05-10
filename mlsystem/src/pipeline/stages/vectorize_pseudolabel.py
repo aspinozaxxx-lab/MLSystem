@@ -12,6 +12,30 @@ def run(ctx: StageContext) -> StageReport:
     if "enabled" in ctx.config.pseudolabel and not bool(ctx.config.pseudolabel.get("enabled")) and not ctx.config.smoke:
         return StageReport(ctx.stage_id, "skipped", [StageCheck("pseudolabel.enabled", "skipped", "pseudolabel.enabled=false")])
     accepted = ctx.store.run_dir / f"{ctx.config.experiment_id}.accepted.geojson"
+    if _is_inference_engine_source(ctx.config.pseudolabel):
+        summary_path = ctx.store.run_dir / "vectorization_summary.json"
+        summary = read_json(summary_path, default={}) or {}
+        if not accepted.exists():
+            return StageReport(
+                ctx.stage_id,
+                "failed",
+                [StageCheck("InferenceEngine accepted_geojson", "failed", f"missing={accepted}")],
+                errors=[f"InferenceEngine accepted GeoJSON is missing: {accepted}"],
+            )
+        return StageReport(
+            ctx.stage_id,
+            "success",
+            [StageCheck("InferenceEngine vectorization", "ok", "Artifacts already produced by InferenceEngine")],
+            counters={
+                "vectorization_mode": "inference_engine_validate_only",
+                "accepted_objects": ((summary.get("pseudolabel") or {}).get("accepted_objects") if isinstance(summary, dict) else None),
+                "blocks_total": ((summary.get("vectorization") or {}).get("blocks_total") if isinstance(summary, dict) else None),
+                "blocks_done": ((summary.get("vectorization") or {}).get("blocks_done") if isinstance(summary, dict) else None),
+            },
+            artifacts={"accepted_geojson": str(accepted), "vectorization_summary.json": str(summary_path)},
+            details={"source": "inference_engine", "summary": summary},
+            summary="InferenceEngine vectorization artifacts validated; heavy vectorization skipped in mlsystem.",
+        )
     vector_cfg = dict((ctx.config.pseudolabel or {}).get("vectorization") or {})
     mode = str(vector_cfg.get("mode") or "legacy").lower()
     if mode == "block_parallel":
@@ -174,3 +198,8 @@ def run(ctx: StageContext) -> StageReport:
         artifacts={"accepted_geojson": str(accepted), "vectorization_summary.json": str(summary_path)},
         summary="CPU vectorization compatibility stage completed from saved probability maps.",
     )
+
+
+def _is_inference_engine_source(pseudolabel_cfg: dict) -> bool:
+    source = str((pseudolabel_cfg or {}).get("source") or (pseudolabel_cfg or {}).get("engine") or "").strip().lower().replace("-", "_")
+    return source == "inference_engine"

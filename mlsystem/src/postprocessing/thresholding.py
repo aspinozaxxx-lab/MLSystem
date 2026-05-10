@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import numpy as np
+from InferenceEngine.src.inference_engine.postprocessing.thresholding import threshold_probability_map
 
-
-def threshold_probability_map(prob_map: np.ndarray, threshold: float) -> np.ndarray:
-    return (prob_map >= float(threshold)).astype("uint8")
+__all__ = ["threshold_probability_map"]
