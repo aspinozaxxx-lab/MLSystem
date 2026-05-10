@@ -309,6 +309,7 @@ if [ -f /opt/mlsystem-scripts/export_mlflow_run_to_triton.py ]; then
 else
   python - <<'PY'
 import mlflow
+import subprocess
 from pathlib import Path
 from src.inference.triton_export import export_segmentation_checkpoint_to_onnx
 
@@ -319,9 +320,25 @@ for suffix in ("*.pt", "*.pth", "*.ckpt"):
     candidates.extend(local_dir.rglob(suffix))
 if not candidates:
     client = mlflow.tracking.MlflowClient()
-    raise RuntimeError(f"No checkpoint artifact found for MLflow run {{run_id}}. Top-level artifacts: {{[item.path for item in client.list_artifacts(run_id)]}}")
+    run = client.get_run(run_id)
+    for child in client.search_runs([run.info.experiment_id], filter_string=f"tags.mlflow.parentRunId = '{{run_id}}'", max_results=200):
+        child_dir = Path(mlflow.artifacts.download_artifacts(run_id=child.info.run_id))
+        for suffix in ("*.pt", "*.pth", "*.ckpt"):
+            candidates.extend(child_dir.rglob(suffix))
+    if not candidates:
+        roots = [Path("/data/mlsystem/models"), Path("/data/mlsystem/artifacts"), Path("/data/mlsystem/mlflow"), Path("/data/mlsystem/minio")]
+        for root in roots:
+            if not root.exists():
+                continue
+            try:
+                output = subprocess.check_output(f"find {{root}} -type f \\( -name '*.pt' -o -name '*.pth' -o -name '*.ckpt' \\) 2>/dev/null | head -2000", shell=True, text=True, timeout=120)
+            except Exception:
+                continue
+            candidates.extend(Path(line.strip()) for line in output.splitlines() if line.strip())
+    if not candidates:
+        raise RuntimeError(f"No checkpoint artifact found for MLflow run {{run_id}}. Top-level artifacts: {{[item.path for item in client.list_artifacts(run_id)]}}")
 preferred = [path for path in candidates if "best" in path.name.lower() or "checkpoint" in path.name.lower()]
-checkpoint = sorted(preferred or candidates, key=lambda item: (len(item.parts), str(item).lower()))[0]
+checkpoint = sorted(preferred or candidates, key=lambda item: ((100 if run_id[:12].lower() in str(item).lower() else 0) + (30 if "b2" in str(item).lower() or "segformer" in str(item).lower() else 0), item.stat().st_mtime if item.exists() else 0), reverse=True)[0]
 print(export_segmentation_checkpoint_to_onnx(
     checkpoint_path=checkpoint,
     model_name="{model}",

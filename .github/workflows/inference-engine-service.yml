@@ -23,7 +23,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: mlsystem-gpu-deploy-${{ github.ref }}
+  group: inference-engine-service-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:

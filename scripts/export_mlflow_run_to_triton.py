@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 from pathlib import Path
+from typing import Any
 
 
 DEFAULT_RUN_ID = "a7838f91528a47e1931b685c2ea06686"
@@ -25,8 +27,7 @@ def export_mlflow_run_to_triton(
     if tracking_uri:
         mlflow.set_tracking_uri(tracking_uri)
     client = mlflow.tracking.MlflowClient()
-    local_dir = Path(mlflow.artifacts.download_artifacts(run_id=run_id))
-    checkpoint = _find_checkpoint(local_dir)
+    checkpoint = _find_checkpoint_for_run(client, run_id=run_id, model_name=model_name)
     if checkpoint is None:
         artifacts = [item.path for item in client.list_artifacts(run_id)]
         raise RuntimeError(f"No checkpoint artifact found for MLflow run {run_id}. Top-level artifacts: {artifacts}")
@@ -143,6 +144,106 @@ def _find_checkpoint(root: Path) -> Path | None:
         return None
     preferred = [path for path in candidates if "best" in path.name.lower() or "checkpoint" in path.name.lower()]
     return sorted(preferred or candidates, key=lambda item: (len(item.parts), str(item).lower()))[0]
+
+
+def _find_checkpoint_for_run(client: Any, *, run_id: str, model_name: str) -> Path | None:
+    import mlflow
+
+    checked_dirs: list[Path] = []
+    try:
+        checked_dirs.append(Path(mlflow.artifacts.download_artifacts(run_id=run_id)))
+    except Exception:
+        pass
+    for directory in checked_dirs:
+        checkpoint = _find_checkpoint(directory)
+        if checkpoint is not None:
+            return checkpoint
+    run = client.get_run(run_id)
+    for value in _checkpoint_hints(run.data.params, run.data.tags):
+        checkpoint = _checkpoint_from_hint(value)
+        if checkpoint is not None:
+            return checkpoint
+    try:
+        children = client.search_runs(
+            [run.info.experiment_id],
+            filter_string=f"tags.mlflow.parentRunId = '{run_id}'",
+            max_results=200,
+            order_by=["attributes.start_time DESC"],
+        )
+    except Exception:
+        children = []
+    for child in children:
+        try:
+            checkpoint = _find_checkpoint(Path(mlflow.artifacts.download_artifacts(run_id=child.info.run_id)))
+            if checkpoint is not None:
+                return checkpoint
+        except Exception:
+            continue
+        for value in _checkpoint_hints(child.data.params, child.data.tags):
+            checkpoint = _checkpoint_from_hint(value)
+            if checkpoint is not None:
+                return checkpoint
+    return _find_checkpoint_in_filesystem(run_id=run_id, model_name=model_name)
+
+
+def _checkpoint_hints(*mappings: dict[str, Any]) -> list[str]:
+    hints: list[str] = []
+    for mapping in mappings:
+        for key, value in (mapping or {}).items():
+            text = str(value)
+            key_text = str(key).lower()
+            if any(token in key_text for token in ("checkpoint", "model_path", "weights", "ckpt")):
+                hints.append(text)
+    return hints
+
+
+def _checkpoint_from_hint(value: str) -> Path | None:
+    if not value:
+        return None
+    path = Path(value.replace("file://", ""))
+    if path.exists() and path.suffix.lower() in {".pt", ".pth", ".ckpt"}:
+        return path
+    return None
+
+
+def _find_checkpoint_in_filesystem(*, run_id: str, model_name: str) -> Path | None:
+    roots = [Path("/data/mlsystem/models"), Path("/data/mlsystem/artifacts"), Path("/data/mlsystem/mlflow"), Path("/data/mlsystem/minio")]
+    candidates: list[Path] = []
+    for root in roots:
+        if not root.exists():
+            continue
+        command = f"find {root} -type f \\( -name '*.pt' -o -name '*.pth' -o -name '*.ckpt' \\) 2>/dev/null | head -2000"
+        try:
+            output = subprocess.check_output(command, shell=True, text=True, timeout=120)
+        except Exception:
+            continue
+        candidates.extend(Path(line.strip()) for line in output.splitlines() if line.strip())
+    if not candidates:
+        return None
+    run_id_short = run_id[:12].lower()
+    model_tokens = {token for token in model_name.lower().replace("-", "_").split("_") if token}
+
+    def score(path: Path) -> tuple[int, float, str]:
+        text = str(path).lower()
+        points = 0
+        if run_id.lower() in text or run_id_short in text:
+            points += 100
+        if any(token in text for token in model_tokens):
+            points += 30
+        if "best" in path.name.lower():
+            points += 20
+        if "checkpoint" in path.name.lower() or "ckpt" in path.name.lower():
+            points += 10
+        if "inference-engine" in text:
+            points -= 50
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            mtime = 0.0
+        return (points, mtime, str(path))
+
+    ranked = sorted((path for path in candidates if path.exists()), key=score, reverse=True)
+    return ranked[0] if ranked else None
 
 
 def main() -> None:
