@@ -18,10 +18,6 @@ on:
       - ".github/workflows/inference-engine-service.yml"
   workflow_dispatch:
 
-concurrency:
-  group: mlsystem-ansible-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
   test:
     runs-on: ubuntu-latest

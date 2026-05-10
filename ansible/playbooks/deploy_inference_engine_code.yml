@@ -81,6 +81,10 @@
           inference-engine-triton-worker inference-engine-aggregator inference-engine-block-worker inference-engine-merger
           inference-engine-finalizer
       changed_when: true
+      register: inference_engine_code_up
+      retries: 6
+      delay: 30
+      until: inference_engine_code_up.rc == 0
       when:
         - gpu_platform_compose_stat.stat.exists
         - gpu_platform_env_stat.stat.exists

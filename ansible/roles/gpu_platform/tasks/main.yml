@@ -152,6 +152,10 @@
   ansible.builtin.command:
     cmd: docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}" up -d --remove-orphans minio mlflow-postgres mlflow triton rabbitmq
   changed_when: true
+  register: gpu_platform_core_up
+  retries: 6
+  delay: 30
+  until: gpu_platform_core_up.rc == 0
 
 - name: Build InferenceEngine image
   ansible.builtin.command:
@@ -166,6 +170,10 @@
       inference-engine-api inference-engine-planner inference-engine-preprocess-worker inference-engine-triton-worker
       inference-engine-aggregator inference-engine-block-worker inference-engine-merger inference-engine-finalizer
   changed_when: true
+  register: gpu_platform_inference_engine_up
+  retries: 6
+  delay: 30
+  until: gpu_platform_inference_engine_up.rc == 0
 
 - name: Start MLSystem API service
   ansible.builtin.command:
