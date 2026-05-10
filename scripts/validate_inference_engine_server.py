@@ -355,7 +355,7 @@ fi"""
 
 
 def _ensure_mlsystem_api_deps(compose: str) -> None:
-    shell_script = """python -c "import importlib.util,sys; mods=('mlflow','boto3','torch','rasterio','shapely','tritonclient','onnx'); sys.exit(0 if all(importlib.util.find_spec(m) for m in mods) else 1)" || python -m pip install --user ${_PIP_ADDITIONAL_REQUIREMENTS}"""
+    shell_script = """python -c "import importlib.util,sys; mods=('mlflow','boto3','torch','rasterio','shapely','tritonclient','onnx'); sys.exit(0 if all(importlib.util.find_spec(m) for m in mods) else 1)" || python -m pip install ${_PIP_ADDITIONAL_REQUIREMENTS}"""
     _run_text(f"{compose} exec -T mlsystem-api bash -lc {shlex.quote(shell_script)}", timeout_sec=7200)
 
 

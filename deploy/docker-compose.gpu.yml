@@ -202,7 +202,7 @@ services:
         raise SystemExit(1 if missing else 0)
         PY
         then
-          python -m pip install --user $${_PIP_ADDITIONAL_REQUIREMENTS}
+          python -m pip install $${_PIP_ADDITIONAL_REQUIREMENTS}
         fi
         python -m uvicorn src.api.app:app --host 0.0.0.0 --port 8088
     gpus: all
