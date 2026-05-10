@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Any
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
@@ -30,7 +31,7 @@ def require_token(authorization: str | None = Header(default=None)) -> None:
 
 @app.get("/health")
 def health() -> dict[str, Any]:
-    return {"status": "ok", "service": "inference-engine"}
+    return {"status": "ok", "service": "inference-engine", "commit": os.getenv("MLSYSTEM_COMMIT") or os.getenv("GIT_COMMIT") or "unknown"}
 
 
 @app.get("/ready")

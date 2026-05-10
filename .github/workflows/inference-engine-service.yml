@@ -7,6 +7,8 @@ on:
       - "mlsystem/**"
       - "airflow/**"
       - "tests/**"
+      - "scripts/**"
+      - "docs/**"
       - ".github/workflows/inference-engine-service.yml"
   push:
     branches: [main, master]
@@ -15,6 +17,8 @@ on:
       - "mlsystem/**"
       - "airflow/**"
       - "tests/**"
+      - "scripts/**"
+      - "docs/**"
       - ".github/workflows/inference-engine-service.yml"
   workflow_dispatch:
 
@@ -43,7 +47,7 @@ jobs:
       - name: Run repository unit tests
         run: python -m unittest discover -s tests
       - name: Compile
-        run: python -m compileall -q InferenceEngine mlsystem airflow tests
+        run: python -m compileall -q InferenceEngine mlsystem airflow tests scripts
       - name: Validate queue contracts
         run: python -c "from InferenceEngine.src.inference_engine.queues.messages import validate_queue_contracts; print(validate_queue_contracts())"
       - name: Whitespace check
@@ -132,3 +136,37 @@ jobs:
           $SSH "curl -fsS http://127.0.0.1:8095/metrics"
           TOKEN="$($SSH "awk -F= '/^INFERENCE_ENGINE_API_TOKEN=/{print substr(\$0,index(\$0,\"=\")+1)}' /etc/mlsystem/gpu-platform.env")"
           $SSH "cd /opt/mlsystem/repo && INFERENCE_ENGINE_API_TOKEN='${TOKEN}' timeout 240 python3 scripts/handtest_inference_engine_synthetic.py --api http://127.0.0.1:8095"
+
+  validate-real-server:
+    runs-on: ubuntu-latest
+    needs: validate-service
+    timeout-minutes: 360
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'))
+    env:
+      GPU_SERVER_HOST: ${{ secrets.GPU_SERVER_HOST }}
+      GPU_SERVER_USER: ${{ secrets.GPU_SERVER_USER }}
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          umask 077
+          cat > ~/.ssh/gpu_server_key <<'KEY'
+          ${{ secrets.GPU_SERVER_SSH_KEY }}
+          KEY
+          sed -i 's/^          //' ~/.ssh/gpu_server_key
+          ssh-keyscan -H "$GPU_SERVER_HOST" >> ~/.ssh/known_hosts
+      - name: Run 2-scene and 20-scene server validation
+        run: |
+          SSH="ssh -i ~/.ssh/gpu_server_key -o StrictHostKeyChecking=yes ${GPU_SERVER_USER}@${GPU_SERVER_HOST}"
+          $SSH "cd /opt/mlsystem/repo && timeout 21600 python3 scripts/validate_inference_engine_server.py --api http://127.0.0.1:8095 --mlsystem-api http://127.0.0.1:8088 --triton http://127.0.0.1:8000 --manifest auto --out /tmp/inference_engine_server_validation.json"
+          $SSH "cat /tmp/inference_engine_server_validation.json"
+      - name: Download validation summary
+        if: always()
+        run: |
+          scp -i ~/.ssh/gpu_server_key -o StrictHostKeyChecking=yes "${GPU_SERVER_USER}@${GPU_SERVER_HOST}:/tmp/inference_engine_server_validation.json" inference_engine_server_validation.json || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: inference-engine-server-validation
+          path: inference_engine_server_validation.json
+          if-no-files-found: ignore

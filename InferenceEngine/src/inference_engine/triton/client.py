@@ -13,6 +13,9 @@ class TritonEndpoint:
     model_version: str | None = None
 
 
+_READY_MODELS: set[tuple[str, str, str]] = set()
+
+
 def triton_ready(url: str = "http://triton:8000", timeout_sec: float = 5.0) -> bool:
     import urllib.request
 
@@ -31,6 +34,30 @@ def load_model(endpoint: TritonEndpoint, timeout_sec: float = 60.0) -> None:
     client.load_model(endpoint.model_name)
     if not client.is_model_ready(endpoint.model_name, model_version=endpoint.model_version or ""):
         raise RuntimeError(f"Triton model {endpoint.model_name} was loaded but is not ready")
+
+
+def ensure_model_ready(endpoint: TritonEndpoint, timeout_sec: float = 120.0) -> None:
+    """Ensure the configured model is ready under Triton explicit model control."""
+    import time
+
+    import tritonclient.http as httpclient
+
+    key = (endpoint.url.rstrip("/"), endpoint.model_name, endpoint.model_version or "")
+    if key in _READY_MODELS:
+        return
+    client = httpclient.InferenceServerClient(url=endpoint.url.replace("http://", "").replace("https://", ""))
+    if not client.is_model_ready(endpoint.model_name, model_version=endpoint.model_version or ""):
+        try:
+            client.load_model(endpoint.model_name)
+        except Exception:
+            pass
+    deadline = time.time() + float(timeout_sec)
+    while time.time() < deadline:
+        if client.is_model_ready(endpoint.model_name, model_version=endpoint.model_version or ""):
+            _READY_MODELS.add(key)
+            return
+        time.sleep(1.0)
+    raise RuntimeError(f"Triton model {endpoint.model_name} is not ready at {endpoint.url}")
 
 
 def unload_model(endpoint: TritonEndpoint) -> None:
@@ -61,6 +88,7 @@ def infer_segmentation_batch(endpoint: TritonEndpoint, batch: np.ndarray) -> np.
     payload = np.asarray(batch, dtype=np.float32)
     if payload.ndim != 4:
         raise ValueError(f"Triton segmentation input must be BCHW, got shape={payload.shape}")
+    ensure_model_ready(endpoint)
     client = httpclient.InferenceServerClient(url=endpoint.url.replace("http://", "").replace("https://", ""))
     infer_input = httpclient.InferInput("INPUT__0", payload.shape, "FP32")
     infer_input.set_data_from_numpy(payload)

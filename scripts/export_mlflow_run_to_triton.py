@@ -32,7 +32,10 @@ def export_mlflow_run_to_triton(
         raise RuntimeError(f"No checkpoint artifact found for MLflow run {run_id}. Top-level artifacts: {artifacts}")
     if backend in {"auto", "onnx"}:
         try:
-            from mlsystem.src.inference.triton_export import export_segmentation_checkpoint_to_onnx
+            try:
+                from mlsystem.src.inference.triton_export import export_segmentation_checkpoint_to_onnx
+            except ImportError:
+                from src.inference.triton_export import export_segmentation_checkpoint_to_onnx
 
             return export_segmentation_checkpoint_to_onnx(
                 checkpoint_path=checkpoint,
@@ -79,7 +82,10 @@ def export_python_backend(
 import torch
 import triton_python_backend_utils as pb_utils
 
-from mlsystem.src.real_train import _build_model
+try:
+    from mlsystem.src.real_train import _build_model
+except ImportError:
+    from src.real_train import _build_model
 
 
 class TritonPythonModel:

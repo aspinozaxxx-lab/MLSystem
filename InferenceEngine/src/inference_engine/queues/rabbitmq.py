@@ -65,6 +65,17 @@ class RabbitMQClient:
         )
         self.counters.inc_publish(queue)
 
+    async def queue_metrics(self, queue: str) -> dict[str, int]:
+        if self.channel is None:
+            await self.connect()
+        assert self.channel is not None
+        q = await self.channel.declare_queue(queue, passive=True)
+        result = q.declaration_result
+        return {
+            "messages_ready": int(getattr(result, "message_count", 0) or 0),
+            "consumers": int(getattr(result, "consumer_count", 0) or 0),
+        }
+
     async def consume_forever(self, queue: str, handler: Handler) -> None:
         if self.channel is None:
             await self.connect()

@@ -356,10 +356,33 @@ class RabbitPipeline:
         plan = read_scene_plan(job_dir, scene_id)
         scene_state = SceneStateStore(job_dir, scene_id)
         target = int(request.resource.triton_batch_size) * max(2, int(request.resource.triton_instance_count) * int(request.resource.batches_ahead))
-        max_publish = max(1, min(int(request.resource.max_preprocess_queue), target))
+        high_watermark = max(target, min(int(request.resource.max_preprocess_queue), target * 2))
+        low_watermark = max(1, target)
+        infer_metrics = await self.client.queue_metrics("ie.tile.infer") if hasattr(self.client, "queue_metrics") else {"messages_ready": 0}
+        infer_depth = int(infer_metrics.get("messages_ready") or 0)
         spool_bytes = directory_size_bytes(self.settings.spool_root / job_id)
-        if spool_bytes > int(request.resource.max_spool_bytes):
-            ProgressStore(job_dir).update(lambda payload: payload.update({"preprocess_pauses_total": int(payload.get("preprocess_pauses_total") or 0) + 1, "spool_bytes": spool_bytes}))
+        progress = ProgressStore(job_dir)
+        if infer_depth >= high_watermark or spool_bytes > int(request.resource.max_spool_bytes):
+            def pause(payload: dict[str, Any]) -> None:
+                if not payload.get("preprocess_paused"):
+                    payload["preprocess_pauses_total"] = int(payload.get("preprocess_pauses_total") or 0) + 1
+                payload["preprocess_paused"] = True
+                payload["infer_queue_depth"] = infer_depth
+                payload["spool_bytes"] = spool_bytes
+
+            progress.update(pause)
+            return
+        if infer_depth <= low_watermark:
+            def resume(payload: dict[str, Any]) -> None:
+                if payload.get("preprocess_paused"):
+                    payload["preprocess_resumes_total"] = int(payload.get("preprocess_resumes_total") or 0) + 1
+                payload["preprocess_paused"] = False
+                payload["infer_queue_depth"] = infer_depth
+                payload["spool_bytes"] = spool_bytes
+
+            progress.update(resume)
+        max_publish = max(0, min(int(request.resource.max_preprocess_queue), target - infer_depth))
+        if max_publish <= 0:
             return
         to_publish = []
 

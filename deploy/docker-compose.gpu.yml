@@ -201,6 +201,7 @@ services:
     volumes:
       - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/mlsystem:/opt/mlsystem
       - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/InferenceEngine:/opt/InferenceEngine
+      - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/scripts:/opt/mlsystem-scripts:ro
       - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}:/data/mlsystem
       - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/airflow/status:/opt/airflow/mlsystem_runs
     healthcheck:
@@ -241,6 +242,10 @@ services:
       MLFLOW_S3_ENDPOINT_URL: http://minio:9000
       AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
       AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+      AWS_S3_ENDPOINT: minio:9000
+      AWS_HTTPS: "NO"
+      AWS_VIRTUAL_HOSTING: "FALSE"
     command: ["uvicorn", "inference_engine.api.app:app", "--host", "0.0.0.0", "--port", "8095"]
     ports:
       - "127.0.0.1:${INFERENCE_ENGINE_API_PORT:-8095}:8095"
@@ -270,10 +275,18 @@ services:
       INFERENCE_ENGINE_ARTIFACT_ROOT: ${INFERENCE_ENGINE_ARTIFACT_ROOT:-/data/mlsystem/inference-engine/artifacts}
       INFERENCE_ENGINE_LOGS_ROOT: ${INFERENCE_ENGINE_LOGS_ROOT:-/data/mlsystem/inference-engine/logs}
       INFERENCE_ENGINE_TRITON_URL: ${INFERENCE_ENGINE_TRITON_URL:-http://triton:8000}
+      INFERENCE_ENGINE_DEFAULT_TRITON_BATCH_SIZE: ${INFERENCE_ENGINE_DEFAULT_TRITON_BATCH_SIZE:-8}
+      INFERENCE_ENGINE_MAX_WAIT_MS: ${INFERENCE_ENGINE_MAX_WAIT_MS:-50}
+      INFERENCE_ENGINE_PREPROCESS_CONCURRENCY: ${INFERENCE_ENGINE_PREPROCESS_CONCURRENCY:-4}
+      INFERENCE_ENGINE_BLOCK_CONCURRENCY: ${INFERENCE_ENGINE_BLOCK_CONCURRENCY:-4}
       MLFLOW_TRACKING_URI: http://mlflow:5000
       MLFLOW_S3_ENDPOINT_URL: http://minio:9000
       AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
       AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+      AWS_S3_ENDPOINT: minio:9000
+      AWS_HTTPS: "NO"
+      AWS_VIRTUAL_HOSTING: "FALSE"
     command: ["inference-engine-worker", "worker", "--role", "planner"]
     volumes:
       - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}:/data/mlsystem
@@ -488,7 +501,7 @@ services:
     container_name: mlsystem-gpu-triton
     command: tritonserver --model-repository=/models --strict-model-config=false --model-control-mode=explicit --load-model=identity_python
     environment:
-      PYTHONPATH: /opt/mlsystem
+      PYTHONPATH: /opt/mlsystem:/opt
     gpus: all
     ports:
       - "${TRITON_HTTP_PORT:-8000}:8000"
@@ -497,6 +510,7 @@ services:
     volumes:
       - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/triton/model_repository:/models
       - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/mlsystem:/opt/mlsystem
+      - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/InferenceEngine:/opt/InferenceEngine:ro
     healthcheck:
       test: ["CMD-SHELL", "curl --fail http://localhost:8000/v2/health/ready || exit 1"]
       interval: 20s

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -128,8 +129,18 @@ def _read_or_synthetic_tile(tile: TileDescriptor, scene_plan: ScenePlan, request
         bucket_key = str(path)[5:]
         bucket, _, key = bucket_key.partition("/")
         path = f"/vsis3/{bucket}/{key}"
-    with rasterio.open(str(path)) as ds:
-        return ds.read(request.preprocess.input_bands, window=Window(tile.x, tile.y, tile.patch_size, tile.patch_size), boundless=True, fill_value=0)
+    with rasterio.Env(**_rasterio_env_kwargs()):
+        with rasterio.open(str(path)) as ds:
+            return ds.read(request.preprocess.input_bands, window=Window(tile.x, tile.y, tile.patch_size, tile.patch_size), boundless=True, fill_value=0)
+
+
+def _rasterio_env_kwargs() -> dict[str, str | int]:
+    endpoint = os.getenv("AWS_S3_ENDPOINT") or os.getenv("MLFLOW_S3_ENDPOINT_URL") or os.getenv("AWS_ENDPOINT_URL")
+    kwargs: dict[str, str | int] = {"AWS_HTTPS": "NO", "AWS_VIRTUAL_HOSTING": "FALSE", "GDAL_CACHEMAX": 128}
+    if endpoint:
+        endpoint = endpoint.replace("http://", "").replace("https://", "").rstrip("/")
+        kwargs["AWS_S3_ENDPOINT"] = endpoint
+    return kwargs
 
 
 def _scene_has_synthetic_probability(scene_plan: ScenePlan) -> bool:
