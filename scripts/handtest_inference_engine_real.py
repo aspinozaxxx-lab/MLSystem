@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
 import urllib.request
 from pathlib import Path
@@ -13,6 +14,7 @@ def main() -> None:
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--experiment-id", default="ie_real_2")
     parser.add_argument("--max-scenes", type=int, default=2)
+    parser.add_argument("--token", default=os.getenv("INFERENCE_ENGINE_API_TOKEN"))
     args = parser.parse_args()
     payload = {
         "experiment_id": args.experiment_id,
@@ -27,24 +29,31 @@ def main() -> None:
         "pseudolabel": {"threshold": 0.5, "core_size_px": 4096, "halo_px": 512, "final_min_area": 0, "merge_epsilon": 1.0},
         "resource": {"triton_batch_size": 8, "batches_ahead": 4, "max_scenes_inflight": 1},
     }
-    created = post_json(args.api + "/api/v1/jobs", payload)
+    created = post_json(args.api + "/api/v1/jobs", payload, token=args.token)
     job_id = created["job_id"]
     while True:
-        status = get_json(args.api + f"/api/v1/jobs/{job_id}")
+        status = get_json(args.api + f"/api/v1/jobs/{job_id}", token=args.token)
         print(json.dumps(status, ensure_ascii=False, indent=2))
         if status["status"] in {"success", "failed", "cancelled"}:
             break
         time.sleep(10)
 
 
-def post_json(url: str, payload: dict) -> dict:
-    req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), method="POST", headers={"Content-Type": "application/json"})
+def post_json(url: str, payload: dict, *, token: str | None = None) -> dict:
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), method="POST", headers=headers)
     with urllib.request.urlopen(req, timeout=60) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
-def get_json(url: str) -> dict:
-    with urllib.request.urlopen(url, timeout=60) as response:
+def get_json(url: str, *, token: str | None = None) -> dict:
+    headers = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=60) as response:
         return json.loads(response.read().decode("utf-8"))
 
 

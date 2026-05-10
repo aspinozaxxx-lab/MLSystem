@@ -130,4 +130,4 @@ jobs:
           $SSH "curl -fsS http://127.0.0.1:8095/ready | python3 -m json.tool"
           $SSH "curl -fsS http://127.0.0.1:8095/queues | python3 -m json.tool"
           $SSH "curl -fsS http://127.0.0.1:8095/metrics | python3 -m json.tool"
-          $SSH "cd /opt/mlsystem/repo && timeout 240 python3 scripts/handtest_inference_engine_synthetic.py --api http://127.0.0.1:8095"
+          $SSH "bash -lc 'set -a; . /etc/mlsystem/gpu-platform.env; set +a; cd /opt/mlsystem/repo && timeout 240 python3 scripts/handtest_inference_engine_synthetic.py --api http://127.0.0.1:8095'"

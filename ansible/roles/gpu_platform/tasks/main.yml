@@ -86,6 +86,14 @@
     group: root
     mode: "0755"
 
+- name: Ensure GPU pipeline config file exists
+  ansible.builtin.file:
+    path: "{{ mlsystem_gpu_repo_root }}/mlsystem/configs/pipeline.server.yaml"
+    state: touch
+    owner: root
+    group: root
+    mode: "0644"
+
 - name: Install GPU pipeline config into deployed repo
   ansible.builtin.template:
     src: pipeline.server.yaml.j2
