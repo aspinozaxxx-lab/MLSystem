@@ -351,7 +351,14 @@ print(export_segmentation_checkpoint_to_onnx(
 PY
 fi"""
     cmd = f"{compose} exec -T mlsystem-api bash -lc {shlex.quote(shell_script)}"
-    return _run_text(cmd, timeout_sec=7200)
+    try:
+        return _run_text(cmd, timeout_sec=7200)
+    except RuntimeError:
+        model_path = f"/data/mlsystem/triton/model_repository/{model}/1/model.onnx"
+        existing = _run_text(f"test -f {shlex.quote(model_path)} && echo {shlex.quote(model_path)}", check=False).strip()
+        if existing:
+            return existing
+        raise
 
 
 def _ensure_mlsystem_api_deps(compose: str) -> None:
