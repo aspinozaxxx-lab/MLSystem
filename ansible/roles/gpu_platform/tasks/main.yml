@@ -137,7 +137,10 @@
 
 - name: Pull GPU platform images
   ansible.builtin.command:
-    cmd: docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}" pull
+    cmd: >-
+      docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}"
+      pull minio minio-init rabbitmq mlflow-postgres mlflow airflow-postgres airflow-init
+      mlsystem-api airflow-webserver airflow-scheduler airflow-triggerer triton mlsystem-frontend-proxy
   changed_when: true
 
 - name: Initialize Airflow metadata DB and admin user
@@ -154,7 +157,7 @@
   ansible.builtin.command:
     cmd: >-
       docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}"
-      up -d --remove-orphans
+      up -d --build --remove-orphans
       inference-engine-api inference-engine-planner inference-engine-preprocess-worker inference-engine-triton-worker
       inference-engine-aggregator inference-engine-block-worker inference-engine-merger inference-engine-finalizer
   changed_when: true
