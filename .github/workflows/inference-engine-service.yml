@@ -126,8 +126,9 @@ jobs:
       - name: Validate service endpoints and synthetic job
         run: |
           SSH="ssh -i ~/.ssh/gpu_server_key -o StrictHostKeyChecking=yes ${GPU_SERVER_USER}@${GPU_SERVER_HOST}"
-          $SSH "curl -fsS http://127.0.0.1:8095/health | python3 -m json.tool"
-          $SSH "curl -fsS http://127.0.0.1:8095/ready | python3 -m json.tool"
-          $SSH "curl -fsS http://127.0.0.1:8095/queues | python3 -m json.tool"
-          $SSH "curl -fsS http://127.0.0.1:8095/metrics | python3 -m json.tool"
-          $SSH "bash -lc 'set -a; . /etc/mlsystem/gpu-platform.env; set +a; cd /opt/mlsystem/repo && timeout 240 python3 scripts/handtest_inference_engine_synthetic.py --api http://127.0.0.1:8095'"
+          $SSH "for i in \$(seq 1 60); do curl -fsS http://127.0.0.1:8095/health && exit 0; sleep 5; done; exit 1"
+          $SSH "for i in \$(seq 1 60); do curl -fsS http://127.0.0.1:8095/ready && exit 0; sleep 5; done; exit 1"
+          $SSH "for i in \$(seq 1 60); do curl -fsS http://127.0.0.1:8095/queues && exit 0; sleep 5; done; exit 1"
+          $SSH "curl -fsS http://127.0.0.1:8095/metrics"
+          TOKEN="$($SSH "awk -F= '/^INFERENCE_ENGINE_API_TOKEN=/{print substr(\$0,index(\$0,\"=\")+1)}' /etc/mlsystem/gpu-platform.env")"
+          $SSH "cd /opt/mlsystem/repo && INFERENCE_ENGINE_API_TOKEN='${TOKEN}' timeout 240 python3 scripts/handtest_inference_engine_synthetic.py --api http://127.0.0.1:8095"

@@ -93,38 +93,34 @@ class RabbitMQClient:
         q = await self.channel.get_queue(queue)
         max_batch_size = max(1, int(max_batch_size))
         max_wait_sec = max(0.001, float(max_wait_ms) / 1000.0)
-        while True:
-            first = await q.get(no_ack=False, fail=False, timeout=None)
-            if first is None:
-                await asyncio.sleep(max_wait_sec)
-                continue
-            raw_messages = [first]
-            started = time.monotonic()
-            while len(raw_messages) < max_batch_size:
-                remaining = max(0.001, max_wait_sec - (time.monotonic() - started))
+        async with q.iterator() as queue_iter:
+            while True:
+                first = await queue_iter.__anext__()
+                raw_messages = [first]
+                started = time.monotonic()
+                while len(raw_messages) < max_batch_size:
+                    remaining = max(0.001, max_wait_sec - (time.monotonic() - started))
+                    try:
+                        item = await asyncio.wait_for(queue_iter.__anext__(), timeout=remaining)
+                    except asyncio.TimeoutError:
+                        break
+                    raw_messages.append(item)
+                messages = [QueueMessage.from_json(raw.body) for raw in raw_messages]
                 try:
-                    item = await q.get(no_ack=False, fail=False, timeout=remaining)
-                except TimeoutError:
-                    break
-                if item is None:
-                    break
-                raw_messages.append(item)
-            messages = [QueueMessage.from_json(raw.body) for raw in raw_messages]
-            try:
-                await handler(messages)
-            except Exception:
-                for raw, message in zip(raw_messages, messages, strict=True):
-                    target_queue = retry_target(message, queue, self.max_attempts)
-                    if target_queue != "ie.dead_letter":
-                        await self.publish(target_queue, QueueMessage.from_dict({**message.to_dict(), "attempt": message.attempt + 1}))
-                    else:
-                        await self.publish(target_queue, message)
+                    await handler(messages)
+                except Exception:
+                    for raw, message in zip(raw_messages, messages, strict=True):
+                        target_queue = retry_target(message, queue, self.max_attempts)
+                        if target_queue != "ie.dead_letter":
+                            await self.publish(target_queue, QueueMessage.from_dict({**message.to_dict(), "attempt": message.attempt + 1}))
+                        else:
+                            await self.publish(target_queue, message)
+                        await raw.ack()
+                    continue
+                for raw in raw_messages:
                     await raw.ack()
-                continue
-            for raw in raw_messages:
-                await raw.ack()
-            for _ in raw_messages:
-                self.counters.inc_consume(queue)
+                for _ in raw_messages:
+                    self.counters.inc_consume(queue)
 
 
 async def declare_topology(channel: Any) -> None:
