@@ -50,6 +50,23 @@ jobs:
     needs: syntax
     steps:
       - uses: actions/checkout@v4
+      - name: Prepare compose env file
+        run: |
+          sudo mkdir -p /etc/mlsystem
+          sudo tee /etc/mlsystem/gpu-platform.env >/dev/null <<'EOF'
+          MINIO_ROOT_USER=minio
+          MINIO_ROOT_PASSWORD=miniosecret
+          MLFLOW_DB_PASSWORD=mlflowsecret
+          AIRFLOW_POSTGRES_PASSWORD=airflowsecret
+          AIRFLOW_ADMIN_USER=admin
+          AIRFLOW_ADMIN_PASSWORD=adminsecret
+          AIRFLOW_FERNET_KEY=dummy
+          AIRFLOW_SECRET_KEY=dummy
+          RABBITMQ_DEFAULT_USER=mlsystem
+          RABBITMQ_DEFAULT_PASS=rabbitsecret
+          INFERENCE_ENGINE_API_TOKEN=ietoken
+          INFERENCE_ENGINE_RABBITMQ_URL=amqp://mlsystem:rabbitsecret@rabbitmq:5672/
+          EOF
       - name: Validate compose config
         env:
           MINIO_ROOT_USER: minio
