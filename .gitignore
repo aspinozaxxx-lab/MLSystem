@@ -36,6 +36,8 @@ id_ed25519*
 mlsystem/storage/
 mlsystem/logs/
 storage/
+!InferenceEngine/src/inference_engine/storage/
+!InferenceEngine/src/inference_engine/storage/*.py
 logs/
 mlruns/
 runs/
