@@ -3,13 +3,97 @@
   hosts: gpu_mlserver
   become: true
   tasks:
+    - name: Ensure rsync is installed on target
+      ansible.builtin.apt:
+        name: rsync
+        state: present
+        update_cache: true
+
+    - name: Ensure repo parent exists
+      ansible.builtin.file:
+        path: "{{ mlsystem_gpu_repo_root | dirname }}"
+        state: directory
+        mode: "0755"
+
+    - name: Ensure repo root exists
+      ansible.builtin.file:
+        path: "{{ mlsystem_gpu_repo_root }}"
+        state: directory
+        mode: "0755"
+
+    - name: Rsync checked-out repository from controller
+      ansible.builtin.command: >-
+        rsync -az --delete
+        --exclude .git
+        --exclude __pycache__
+        --exclude .pytest_cache
+        --exclude .tmp_*
+        --exclude results/reports/synthetic_pseudolabel_smoke
+        -e "ssh -o StrictHostKeyChecking=yes{% if ansible_ssh_private_key_file is defined %} -i {{ ansible_ssh_private_key_file }}{% endif %}"
+        "{{ playbook_dir }}/../../"
+        "{{ ansible_user | default('root') }}@{{ ansible_host | default(inventory_hostname) }}:{{ mlsystem_gpu_repo_root }}/"
+      delegate_to: localhost
+      become: false
+      changed_when: true
+
+    - name: Remove Python cache directories from deployed repo
+      ansible.builtin.command:
+        cmd: find "{{ mlsystem_gpu_repo_root }}" -type d -name __pycache__ -prune -exec rm -rf {} +
+      changed_when: false
+
+    - name: Check GPU platform compose file
+      ansible.builtin.stat:
+        path: "{{ mlsystem_gpu_compose_path }}"
+      register: gpu_platform_compose_stat
+
+    - name: Check GPU platform env file
+      ansible.builtin.stat:
+        path: "{{ mlsystem_gpu_env_path }}"
+      register: gpu_platform_env_stat
+
+    - name: Update deployed commit marker
+      ansible.builtin.lineinfile:
+        path: "{{ mlsystem_gpu_env_path }}"
+        regexp: "^MLSYSTEM_COMMIT="
+        line: "MLSYSTEM_COMMIT={{ mlsystem_git_commit | default('unknown') }}"
+        create: false
+        mode: "0600"
+      when: gpu_platform_env_stat.stat.exists
+
     - name: Rebuild and restart InferenceEngine containers
       ansible.builtin.command:
         cmd: >-
-          docker compose --env-file /etc/mlsystem/gpu-platform.env
-          -f /data/mlsystem/platform/docker-compose.yml
+          docker compose --env-file "{{ mlsystem_gpu_env_path }}"
+          -f "{{ mlsystem_gpu_compose_path }}"
           up -d --build --remove-orphans
           inference-engine-api inference-engine-planner inference-engine-preprocess-worker
           inference-engine-triton-worker inference-engine-aggregator inference-engine-block-worker inference-engine-merger
           inference-engine-finalizer
       changed_when: true
+      when:
+        - gpu_platform_compose_stat.stat.exists
+        - gpu_platform_env_stat.stat.exists
+
+    - name: Wait for InferenceEngine health after code deploy
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:8095/health"
+        status_code: 200
+      retries: 60
+      delay: 10
+      register: inference_engine_health
+      until: inference_engine_health.status == 200
+      when:
+        - gpu_platform_compose_stat.stat.exists
+        - gpu_platform_env_stat.stat.exists
+
+    - name: Wait for InferenceEngine readiness after code deploy
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:8095/ready"
+        status_code: 200
+      retries: 60
+      delay: 10
+      register: inference_engine_ready
+      until: inference_engine_ready.status == 200
+      when:
+        - gpu_platform_compose_stat.stat.exists
+        - gpu_platform_env_stat.stat.exists
