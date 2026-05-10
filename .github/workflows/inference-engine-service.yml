@@ -21,6 +21,12 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      INFERENCE_ENGINE_JOB_ROOT: ${{ runner.temp }}/inference-engine/jobs
+      INFERENCE_ENGINE_SPOOL_ROOT: ${{ runner.temp }}/inference-engine/spool
+      INFERENCE_ENGINE_ARTIFACT_ROOT: ${{ runner.temp }}/inference-engine/artifacts
+      INFERENCE_ENGINE_LOGS_ROOT: ${{ runner.temp }}/inference-engine/logs
+      INFERENCE_ENGINE_USE_RABBITMQ: "false"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
