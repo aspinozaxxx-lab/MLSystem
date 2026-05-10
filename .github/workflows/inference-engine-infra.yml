@@ -1,0 +1,99 @@
+name: InferenceEngine infra
+
+on:
+  pull_request:
+    paths:
+      - "ansible/**"
+      - "deploy/**"
+      - "InferenceEngine/Dockerfile"
+      - ".github/workflows/inference-engine-infra.yml"
+  push:
+    branches: [main, master]
+    paths:
+      - "ansible/**"
+      - "deploy/**"
+      - "InferenceEngine/Dockerfile"
+      - ".github/workflows/inference-engine-infra.yml"
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        options: [check, apply]
+        default: check
+      bootstrap:
+        type: boolean
+        default: false
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Ansible and YAML tools
+        run: python -m pip install ansible pyyaml
+      - name: Parse YAML
+        run: |
+          python - <<'PY'
+          import pathlib, yaml
+          for path in list(pathlib.Path("ansible").rglob("*.yml")) + list(pathlib.Path(".github/workflows").glob("inference-engine-*.yml")):
+              yaml.safe_load(path.read_text())
+          PY
+      - name: Ansible syntax check
+        run: |
+          ansible-playbook -i ansible/inventory/gpu.ini --syntax-check ansible/playbooks/deploy_ml_platform.yml
+          ansible-playbook -i ansible/inventory/gpu.ini --syntax-check ansible/playbooks/deploy_triton.yml
+          ansible-playbook -i ansible/inventory/gpu.ini --syntax-check ansible/playbooks/deploy_inference_engine.yml
+          ansible-playbook -i ansible/inventory/gpu.ini --syntax-check ansible/playbooks/deploy_rabbitmq.yml
+
+  plan-or-check:
+    runs-on: ubuntu-latest
+    needs: syntax
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate compose config
+        env:
+          MINIO_ROOT_USER: minio
+          MINIO_ROOT_PASSWORD: miniosecret
+          MLFLOW_DB_PASSWORD: mlflowsecret
+          AIRFLOW_POSTGRES_PASSWORD: airflowsecret
+          RABBITMQ_DEFAULT_USER: mlsystem
+          RABBITMQ_DEFAULT_PASS: rabbitsecret
+          INFERENCE_ENGINE_API_TOKEN: ietoken
+          INFERENCE_ENGINE_RABBITMQ_URL: amqp://mlsystem:rabbitsecret@rabbitmq:5672/
+        run: docker compose -f deploy/docker-compose.gpu.yml config >/tmp/compose.yml
+      - name: Verify RabbitMQ and InferenceEngine service definitions
+        run: |
+          grep -q "rabbitmq:" /tmp/compose.yml
+          grep -q "inference-engine-api:" /tmp/compose.yml
+          grep -q "inference-engine-triton-worker:" /tmp/compose.yml
+          grep -q "inference-engine-merger:" /tmp/compose.yml
+
+  apply-infra:
+    runs-on: ubuntu-latest
+    needs: plan-or-check
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'apply')
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Ansible
+        run: python -m pip install ansible
+      - name: Apply RabbitMQ and InferenceEngine infra
+        run: ansible-playbook -i ansible/inventory/gpu.ini ansible/playbooks/deploy_inference_engine.yml
+
+  validate-infra:
+    runs-on: ubuntu-latest
+    needs: apply-infra
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'apply')
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate deployed infra
+        run: |
+          docker ps
+          curl --fail -u "$RABBITMQ_DEFAULT_USER:$RABBITMQ_DEFAULT_PASS" http://127.0.0.1:15672/api/overview
+          docker exec mlsystem-gpu-rabbitmq rabbitmqctl list_queues name messages_ready messages_unacknowledged consumers
+          curl --fail http://127.0.0.1:8095/health
+          curl --fail http://127.0.0.1:8095/ready
+          curl --fail http://127.0.0.1:8000/v2/health/ready
+          docker exec mlsystem-gpu-airflow-scheduler python - <<'PY'
+          import urllib.request
+          urllib.request.urlopen("http://inference-engine-api:8095/health", timeout=5)
+          PY

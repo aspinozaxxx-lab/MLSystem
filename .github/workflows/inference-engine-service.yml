@@ -1,0 +1,80 @@
+name: InferenceEngine service
+
+on:
+  pull_request:
+    paths:
+      - "InferenceEngine/**"
+      - "mlsystem/**"
+      - "airflow/**"
+      - "tests/**"
+      - ".github/workflows/inference-engine-service.yml"
+  push:
+    branches: [main, master]
+    paths:
+      - "InferenceEngine/**"
+      - "mlsystem/**"
+      - "airflow/**"
+      - "tests/**"
+      - ".github/workflows/inference-engine-service.yml"
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --extra-index-url https://download.pytorch.org/whl/cpu torch torchvision
+          pip install -e InferenceEngine
+          pip install fastapi uvicorn shapely rasterio affine numpy pydantic pika aio-pika tritonclient[http] mlflow boto3 requests
+      - name: Run InferenceEngine unit tests
+        run: python -m unittest discover -s InferenceEngine/tests
+      - name: Run repository unit tests
+        run: python -m unittest discover -s tests
+      - name: Compile
+        run: python -m compileall -q InferenceEngine mlsystem airflow tests
+      - name: Validate queue contracts
+        run: python -c "from InferenceEngine.src.inference_engine.queues.messages import validate_queue_contracts; print(validate_queue_contracts())"
+      - name: Whitespace check
+        run: git diff --check
+
+  build-artifact:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build source artifact
+        run: tar -czf inference-engine-service.tar.gz InferenceEngine mlsystem docs scripts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: inference-engine-service
+          path: inference-engine-service.tar.gz
+
+  deploy-service-code:
+    runs-on: ubuntu-latest
+    needs: build-artifact
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'))
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Ansible
+        run: python -m pip install ansible
+      - name: Deploy InferenceEngine code
+        run: ansible-playbook -i ansible/inventory/gpu.ini ansible/playbooks/deploy_inference_engine_code.yml
+
+  validate-service:
+    runs-on: ubuntu-latest
+    needs: deploy-service-code
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'))
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate service endpoints and synthetic job
+        run: |
+          curl --fail http://127.0.0.1:8095/health
+          curl --fail http://127.0.0.1:8095/ready
+          curl --fail http://127.0.0.1:8095/queues
+          python scripts/handtest_inference_engine_synthetic.py --api http://127.0.0.1:8095

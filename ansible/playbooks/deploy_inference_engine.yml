@@ -1,0 +1,6 @@
+---
+- name: Deploy InferenceEngine services
+  hosts: gpu_mlserver
+  become: true
+  roles:
+    - gpu_platform

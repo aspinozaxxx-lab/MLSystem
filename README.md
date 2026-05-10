@@ -8,6 +8,14 @@ Current execution path:
 Airflow -> mlsystem-api -> persisted API job -> stage registry -> production modules
 ```
 
+Pseudolabel production path:
+
+```text
+Airflow -> mlsystem-api -> InferenceEngine API -> RabbitMQ stage workers -> Triton -> compatibility artifacts
+```
+
+Set `pseudolabel.source=inference_engine` to use the extracted InferenceEngine service. In that mode, `mlsystem` keeps training/MLflow semantics and downstream pseudolabel stages validate artifacts produced by InferenceEngine.
+
 Runtime data, API jobs, Airflow stage status, model artifacts, probability maps, reports, caches and heavy geospatial files are not stored in git. They live on the server under paths such as:
 
 ```text
@@ -23,6 +31,8 @@ GitHub Actions are split by responsibility:
 - `ansible` (`.github/workflows/ansible.yml`) validates and applies infrastructure changes: Ansible roles, compose templates, env generation, Airflow pools and platform services.
 - `frontend-site` (`.github/workflows/frontend-site.yml`) validates frontend code and quickly updates/restarts only the web frontend service.
 - `frontend-ansible` (`.github/workflows/frontend-ansible.yml`) applies frontend Ansible settings when `ansible/**` changes.
+- `inference-engine-service` validates and deploys InferenceEngine service code.
+- `inference-engine-infra` validates and applies RabbitMQ/InferenceEngine infrastructure.
 
 The retired combined workflow must not be restored. Code/service rollout, infrastructure rollout, frontend code rollout and frontend settings rollout must stay separate.
 
@@ -41,6 +51,8 @@ Frontend runtime data is not stored in git:
 Main references:
 
 - [MLSystem API service](docs/mlsystem_api_service.md)
+- [InferenceEngine](docs/inference_engine.md)
+- [InferenceEngine inventory](docs/inference_engine_inventory.md)
 - [Airflow API execution](docs/airflow_api_execution.md)
 - [Airflow stage inventory](docs/airflow_stage_inventory.md)
 - [Airflow deploy validation](docs/airflow_deploy_validation.md)
