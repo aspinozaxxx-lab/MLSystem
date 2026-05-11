@@ -1,19 +1,20 @@
 # InferenceEngine Validation Report
 
-Status: completed on the GPU server through GitHub Actions and Ansible deploy.
+Status: completed on the GPU server through GitHub Actions, Ansible, Docker, curl, Airflow, RabbitMQ, and Triton.
 
-## Commit And Workflow
+## Commit And Workflows
 
-- Validated service commit: `5f490b7` (`Compact InferenceEngine compatibility probability artifacts`).
-- Workflow: `InferenceEngine service`, run `25650559696`.
-- Service jobs: `test`, `build-artifact`, `deploy-service-code`, `validate-service`, and `validate-real-server` succeeded.
-- Validation artifact: `inference-engine-server-validation`, artifact id `6910610629`.
-- Validation generated at: `2026-05-11T04:42:08Z`.
-- Real manifest: auto-discovered `inference_manifest.json`, 996 scenes available.
+- Validated service commit: `a4cbd0ca2ecd3ce509d8a97dab70bb8ce13564fe`.
+- Validation generated at: `2026-05-11T10:40:06Z`.
+- `InferenceEngine service` workflow run `25665009150`: `test`, `build-artifact`, `deploy-service-code`, `validate-service`, and `validate-real-server` succeeded.
+- `ansible` workflow run `25664452452`: syntax, plan/check, apply infra, and validation succeeded.
+- `InferenceEngine infra` workflow run `25664452478`: syntax, plan/check, apply infra, and validation succeeded.
+- `frontend-ansible` workflow run `25664452417`: frontend deploy and validation succeeded.
+- Validation artifact: `inference-engine-server-validation`, artifact id `6916474727`.
 
 ## Deployed Services
 
-The server validation observed these containers up and healthy/reachable:
+Docker validation observed these service containers running:
 
 - `mlsystem-gpu-inference-engine-api`
 - `mlsystem-gpu-inference-engine-planner`
@@ -27,51 +28,151 @@ The server validation observed these containers up and healthy/reachable:
 - `mlsystem-gpu-triton`
 - `mlsystem-gpu-api`
 - Airflow scheduler/webserver/triggerer
-- MinIO and MLflow
+- `mlsystem-gpu-frontend` and `mlsystem-gpu-frontend-proxy`
 
-Triton health was ready. Repository index contained `segformer_b2` version `1` in `READY` state and `identity_python` stayed ready.
+`/health` returned commit `a4cbd0ca2ecd3ce509d8a97dab70bb8ce13564fe`. `/ready` returned `ready` with job, spool, artifact, and log roots available, RabbitMQ management metrics available, 12 queues seen, and Triton ready at `http://triton:8000/v2/health/ready`.
+
+## API Endpoints
+
+OpenAPI exposed:
+
+- `GET /health`
+- `GET /ready`
+- `GET /queues`
+- `GET /metrics`
+- `POST /api/v1/jobs`
+- `GET /api/v1/jobs/{job_id}`
+- `GET /api/v1/jobs/{job_id}/events`
+- `GET /api/v1/jobs/{job_id}/artifacts`
+- `POST /api/v1/jobs/{job_id}/cancel`
+- `GET /openapi.json`
+- `GET /docs`
+- `GET /redoc`
+
+## Airflow And MLSystem API
+
+`mlsystem-api /api/v1/stages` returned one production pseudolabel stage:
+
+```text
+inventory_scenes
+prepare_dataset
+create_mlflow_run
+train_model
+evaluate_pixel_metrics
+predict_validation_scenes
+vectorize_validation_predictions
+compute_f1
+inference_engine_pipeline
+generate_prediction_examples
+log_mlflow_artifacts
+write_codex_api_summary
+finalize_mlflow_run
+```
+
+The Airflow task list for `mlsystem_experiment_pipeline` matched that list and did not include the retired internal stages `prepare_inference_scenes`, `run_pseudolabel_inference`, `validate_probability_maps`, `vectorize_pseudolabel`, `postprocess_pseudolabel`, or `export_pseudolabel_artifacts`.
+
+The 2-scene validation executed `inference_engine_pipeline` through `mlsystem-api`. The stage report recorded:
+
+- `inference_engine_api_url=http://inference-engine-api:8095`
+- `inference_engine_job_id=ie_real_2_1778496009-a8461eb048bb`
+- `inference_engine_status_url=http://inference-engine-api:8095/api/v1/jobs/ie_real_2_1778496009-a8461eb048bb`
+- `request_submitted_via_http=true`
+- `source=inference_engine`
+
+## RabbitMQ UI
+
+- RabbitMQ Management UI URL: `http://31.192.104.147:15672/`.
+- The management API requires authentication; unauthenticated access is rejected.
+- The frontend home page contains the `Очереди RabbitMQ` card, which links to the native RabbitMQ UI and reads compact queue metrics from InferenceEngine `/queues`.
+
+## Triton
+
+Triton `/v2/health/ready` was ready. Repository index contained:
+
+- `segformer_b2`, version `1`, `READY`
+- `identity_python`, version `1`, `READY`
+- `deforest_segformer_b1_t1024`
+
+The validation jobs used MLflow run `a7838f91528a47e1931b685c2ea06686` with Triton model `segformer_b2` and `INPUT__0` / `OUTPUT__0`.
 
 ## 2 Scene Run
 
-- Path: `mlsystem-api` compatibility path, equivalent to Airflow stage execution.
-- Run id: `ie_real_2_1778474528`.
-- InferenceEngine job: `ie_real_2_1778474528-242a3dfd9d7b`.
-- Model: MLflow run `a7838f91528a47e1931b685c2ea06686`, `segformer_b2`, Triton model `segformer_b2`.
-- Config: `patch_size=1024`, `stride=768`, bands `[1,2,3,4]`, `threshold=0.5`, `core_size_px=4096`, `halo_px=512`, `local_min_area=0`, `final_min_area=0`, `merge_epsilon=1.0`, `triton_batch_size=8`, `batches_ahead=4`, `max_scenes_inflight=1`.
+- Path: Airflow-compatible `mlsystem-api` stage `inference_engine_pipeline`.
+- Run id: `ie_real_2_1778496009`.
+- InferenceEngine job id: `ie_real_2_1778496009-a8461eb048bb`.
 - Result: success.
-- Stage results: `run_pseudolabel_inference`, `validate_probability_maps`, `vectorize_pseudolabel`, `postprocess_pseudolabel`, and `export_pseudolabel_artifacts` all succeeded.
-- Metrics: `tiles_done=760/760`, `blocks_done=30/30`, `triton_batches=293`, `triton_batch_fill_ratio=0.324`, mean Triton request `110.5 ms`, `spool_bytes=0`.
-- Streaming proof: `first_block_vectorized_at=2026-05-11T04:42:20.188782Z`; `last_tile_inferred_at=2026-05-11T04:43:18.006213Z`; overlap `57.817 s`.
-- Artifacts present: `<experiment_id>.accepted.geojson`, `accepted.geojson.gz`, `coverage_report.json`, `pseudolabel_summary.json`, `postprocess_summary.json`, `vectorization_summary.json`, `pseudolabel_scene_results_manifest.json`, `probability_maps_index.json`, `inference_results.json`, `pseudolabel_scenes.txt`, `prediction_examples.html`.
+- Metrics: `tiles_done=760/760`, `blocks_done=30/30`, `triton_batches=114`, `triton_batch_fill_ratio=0.833`, mean Triton request `451.79 ms`, `spool_bytes=0`.
+- Streaming proof: `first_block_vectorized_at=1778496032.195401`, `last_tile_inferred_at=1778496050.6956096`, overlap `18.500 s`.
+- GPU sample in job metrics: max `49%`.
+
+Artifacts checked in `/data/mlsystem/airflow/status/ie_real_2_1778496009/`:
+
+- `ie_real_2_1778496009.accepted.geojson`
+- `accepted.geojson.gz`
+- `coverage_report.json`
+- `pseudolabel_summary.json`
+- `postprocess_summary.json`
+- `vectorization_summary.json`
+- `pseudolabel_scene_results_manifest.json`
+- `probability_maps_index.json`
+- `inference_results.json`
+- `inference_timing_report.json`
+- `pseudolabel_scenes.txt`
+- `prediction_examples.html`
 
 ## 20 Scene Run
 
-- Path: direct InferenceEngine API job through RabbitMQ workers.
-- Job id: `ie_real_20-5f171920cdb1`.
-- Config: `max_scenes=20`, `patch_size=1024`, `stride=768`, bands `[1,2,3,4]`, `threshold=0.5`, `core_size_px=4096`, `halo_px=512`, `local_min_area=0`, `final_min_area=0`, `merge_epsilon=1.0`, `triton_batch_size=8`, `batches_ahead=6`, `max_scenes_inflight=2`, `max_blocks_inflight=16`, `max_preprocess_queue=512`, `max_spool_bytes=30 GiB`.
+- Path: direct InferenceEngine API job through RabbitMQ workers after Airflow integration had been validated.
+- Job id: `ie_real_20-147aa0db6e1a`.
 - Result: success.
-- Metrics: `tiles_done=6638/6638`, `blocks_done=272/272`, `triton_batches=1806`, `triton_batch_fill_ratio=0.459`, mean Triton request `159.68 ms`, `spool_bytes=0`, `preprocess_pauses_total=0`, `preprocess_resumes_total=0`.
-- Stage event counts: `scene.plan=20`, `tile.preprocess=6638`, `tile.infer=1806`, `tile.done=6638`, `block.ready=272`, `block.vectorize=272`, `block.done=272`, `scene.merge=20`, `job.finalize=1`.
-- Streaming proof: `first_block_vectorized_at=2026-05-11T04:44:32.803125Z`; `last_tile_inferred_at=2026-05-11T04:53:22.850786Z`; overlap `530.048 s`.
-- RabbitMQ final queue state: all stage queues drained; `ie.dead_letter` had `messages_ready=0`, `messages_unacknowledged=0`; consumers were present on `ie.tile.preprocess`, `ie.tile.infer`, `ie.block.vectorize`, `ie.scene.merge`, and `ie.job.finalize`.
-- Resource summary: RTX 5090 memory held about `15512 MiB`; workflow samples saw GPU utilization up to `100%` during active inference and queue/event metrics showed sustained Triton batching. CPU block workers were active while inference continued, proven by block completion counts increasing before all tiles finished.
+- Metrics: `tiles_done=6638/6638`, `blocks_done=272/272`, `triton_batches=983`, `triton_batch_fill_ratio=0.844`, mean Triton request `453.02 ms`, `spool_bytes=0`.
+- Stage events: `scene.plan=20`, `tile.preprocess=6638`, `tile.infer=983`, `tile.done=6638`, `block.ready=272`, `block.vectorize=272`, `block.done=272`, `scene.merge=20`, `job.finalize=1`.
+- Streaming proof: `first_block_vectorized_at=1778496090.6759727`, `last_tile_inferred_at=1778496464.001578`, overlap `373.326 s`.
+- Queue state at completion: all stage queues drained; `ie.dead_letter` had `messages_ready=0`, `messages_unacknowledged=0`.
 
-## Backpressure And Bottlenecks
+Final queue consumers:
 
-- The successful 20-scene run did not hit spool backpressure: `preprocess_pauses_total=0`, `spool_bytes=0` at completion.
-- Earlier validation exposed stale spool cleanup and full-scene placeholder probability mosaics as bottlenecks. Fixes applied:
-  - tile spool descriptors are deleted after durable probability artifacts are written;
-  - duplicate `tile.infer` messages skip spool reads when probability artifact checksum already exists;
-  - job state JSON writes use atomic replace;
-  - workers ack and skip stale messages for terminal jobs;
-  - final compatibility probability artifacts are compact placeholders because real probabilities are tile-backed.
-- Remaining utilization bottleneck is batch fill, not correctness: final `triton_batch_fill_ratio=0.459`. The selected stable parameters are `triton_batch_size=8`, `batches_ahead=6`, `max_scenes_inflight=2`, `max_blocks_inflight=16`. These produced successful streaming and bounded spool without dead letters.
+- `ie.tile.preprocess`: `8`
+- `ie.tile.infer`: `2`
+- `ie.tile.done`: `1`
+- `ie.block.ready`: `4`
+- `ie.block.vectorize`: `4`
+- `ie.block.done`: `1`
+- `ie.scene.plan`: `1`
+- `ie.scene.merge`: `1`
+- `ie.job.finalize`: `1`
+- `ie.jobs.submit`: `1`
+
+## Resource Use And Tuning
+
+Applied tuning:
+
+- `INFERENCE_ENGINE_PREPROCESS_CONCURRENCY=8`
+- `INFERENCE_ENGINE_TRITON_CONCURRENCY=2`
+- `INFERENCE_ENGINE_BLOCK_CONCURRENCY=4`
+- `INFERENCE_ENGINE_DEFAULT_TRITON_BATCH_SIZE=8`
+- `INFERENCE_ENGINE_MAX_WAIT_MS=75`
+- 20-scene resource config: `batches_ahead=12`, `max_preprocess_queue=1024`, `max_scenes_inflight=4`, `max_blocks_inflight=32`, `max_spool_bytes=30 GiB`.
+
+The tuning replaced serialized async consumers with real per-role worker threads. During the green 20-scene run, preprocess used up to `501%` CPU, Triton worker up to `109%` CPU, and block worker memory/CPU increased while inference was still running. Batch fill improved to `0.844`.
+
+GPU utilization is bursty because raster read/preprocess and final block work still create short CPU/IO-bound intervals. The immediately preceding tuning validation on the same code path sampled `gpu_utilization_max=100%` and a final active sample of `89%`; the final green artifact sampled lower external GPU points, with InferenceEngine job metrics showing mid-run internal samples up to `76%` and final metrics retaining `26%`. The selected configuration is stable, keeps spool bounded, drains all queues, and gives proven CPU/GPU overlap without dead letters.
+
+## Cleanup
+
+- Production Airflow now exposes only `inference_engine_pipeline` for pseudolabels.
+- Old internal pseudolabel stage modules for run/validate/vectorize/postprocess/export were removed from production registration.
+- `mlsystem/src/pipeline/airflow_tasks.py` no longer contains the old direct pseudolabel dispatcher path.
+- Thin `mlsystem` wrappers remain only for backwards-compatible imports; source of truth for pseudolabel inference, vectorization, postprocessing, and export is `InferenceEngine/src/inference_engine`.
+- No runtime artifacts, probability tiles, accepted GeoJSON outputs, env files, or secrets are committed.
 
 ## Acceptance
 
-- RabbitMQ was used by every production stage queue.
-- Triton performed inference with `INPUT__0` / `OUTPUT__0` compatible `segformer_b2`.
-- CPU block vectorization/postprocessing started before all tile inference completed.
-- Airflow compatibility path via `mlsystem-api` produced all required artifacts.
-- `ie.dead_letter` stayed empty at completion.
-- No runtime artifacts, probability maps, GeoJSON outputs, env files, or secrets are stored in git.
+- InferenceEngine is deployed as a separate service with dedicated worker containers.
+- Airflow and `mlsystem-api` call InferenceEngine through HTTP.
+- RabbitMQ stage queues are used by all pipeline steps.
+- Triton performs inference with `segformer_b2`.
+- Block/core/halo postprocessing starts before all tile inference completes.
+- 2-scene and 20-scene real runs completed successfully.
+- Compatibility artifacts are present.
+- `ie.dead_letter` stayed empty.

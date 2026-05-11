@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+"""Production Airflow pseudolabel stage.
+
+This stage is intentionally orchestration-only: it submits an HTTP job to
+InferenceEngine, polls the job, and validates compatibility artifacts.
+"""
+
 import os
 from typing import Any
 

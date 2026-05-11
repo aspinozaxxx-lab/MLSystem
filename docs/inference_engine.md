@@ -54,6 +54,7 @@ Production uses separate RabbitMQ consumers:
 
 Ack happens after durable state/artifact writes. Retry republishes with incremented attempt count; exhausted messages go to `ie.dead_letter`.
 Workers check terminal job state before heavy work, so cancelled or already-failed jobs ack stale descriptors without continuing raster reads, Triton requests, or vectorization.
+Worker role concurrency is real parallelism: each configured consumer runs in its own worker thread with an independent asyncio loop, so blocking rasterio, NumPy, Shapely, and Triton HTTP calls do not serialize a role inside one event loop.
 
 ## Backpressure
 
@@ -72,6 +73,16 @@ Target ready tiles:
 `triton_batch_size * max(2, triton_instance_count * batches_ahead)`
 
 Publishing pauses when infer queue depth exceeds the configured high watermark or spool bytes exceed `max_spool_bytes`.
+
+Current tuned server defaults:
+
+- `INFERENCE_ENGINE_DEFAULT_TRITON_BATCH_SIZE=8`
+- `INFERENCE_ENGINE_MAX_WAIT_MS=75`
+- `INFERENCE_ENGINE_PREPROCESS_CONCURRENCY=8`
+- `INFERENCE_ENGINE_TRITON_CONCURRENCY=2`
+- `INFERENCE_ENGINE_BLOCK_CONCURRENCY=4`
+
+The 20-scene validation job uses `batches_ahead=12`, `max_preprocess_queue=1024`, `max_scenes_inflight=4`, and `max_blocks_inflight=32`.
 
 Tile spool files are deleted after probability tile artifacts and checksums are durable. Duplicate `tile.infer` messages are idempotent: if the probability artifact checksum is already valid, the worker skips the spool read and publishes `tile.done`.
 
