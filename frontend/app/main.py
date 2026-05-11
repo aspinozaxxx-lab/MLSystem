@@ -260,8 +260,8 @@ def create_app(config: FrontendConfig | None = None) -> FastAPI:
         return {
             "status": "ok",
             "services": {
-                "airflow": _url_status("http://airflow-webserver:8080/api/v1/health"),
-                "mlflow": _url_status("http://mlflow:5000/health"),
+                "airflow": _url_status("http://airflow-webserver:8080/airflow/api/v1/health"),
+                "mlflow": _url_status("http://mlflow:5000/mlflow/health"),
                 "minio": _url_status(config.s3_endpoint_url.rstrip("/") + "/minio/health/live"),
                 "inference_engine": _service_status_from_payload(_get_inference_engine_json(config, "/health", timeout=5)),
                 "rabbitmq": {

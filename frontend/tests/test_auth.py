@@ -157,8 +157,8 @@ class FrontendAuthTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             payload = response.json()
             self.assertEqual(payload["services"]["rabbitmq"]["ready"], 1)
-            self.assertIn("http://airflow-webserver:8080/api/v1/health", seen)
-            self.assertIn("http://mlflow:5000/health", seen)
+            self.assertIn("http://airflow-webserver:8080/airflow/api/v1/health", seen)
+            self.assertIn("http://mlflow:5000/mlflow/health", seen)
 
 
 if __name__ == "__main__":

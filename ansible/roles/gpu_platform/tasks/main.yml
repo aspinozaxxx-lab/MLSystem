@@ -240,7 +240,7 @@
 
 - name: Wait for MLflow health
   ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ mlsystem_gpu_mlflow_port }}/health"
+    url: "http://127.0.0.1:{{ mlsystem_gpu_mlflow_port }}/mlflow/health"
     status_code: 200
   retries: 30
   delay: 5
@@ -285,7 +285,7 @@
 
 - name: Wait for Airflow health
   ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ mlsystem_gpu_airflow_port }}/api/v1/health"
+    url: "http://127.0.0.1:{{ mlsystem_gpu_airflow_port }}/airflow/api/v1/health"
     status_code: 200
   retries: 40
   delay: 5
