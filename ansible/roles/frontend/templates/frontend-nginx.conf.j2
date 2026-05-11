@@ -3,6 +3,7 @@ server {
     server_name {{ mlsystem_gpu_public_host | default('31.192.104.147') }} _;
 
     client_max_body_size {{ mlsystem_gpu_frontend_max_upload_mb | default(100) + 28 }}m;
+    resolver 127.0.0.11 ipv6=off valid=10s;
 
     proxy_intercept_errors on;
     error_page 401 = @frontend_login;
@@ -27,8 +28,10 @@ server {
     location /airflow/ {
         auth_request /auth/proxy-check;
         auth_request_set $auth_user $upstream_http_x_remote_user;
+        set $airflow_upstream airflow-webserver:8080;
+        rewrite ^/airflow/?(.*)$ /$1 break;
 
-        proxy_pass http://airflow-webserver:8080/;
+        proxy_pass http://$airflow_upstream;
         proxy_http_version 1.1;
         proxy_redirect http://airflow-webserver:8080/ /airflow/;
 
@@ -51,8 +54,10 @@ server {
     location /mlflow/ {
         auth_request /auth/proxy-check;
         auth_request_set $auth_user $upstream_http_x_remote_user;
+        set $mlflow_upstream mlflow:5000;
+        rewrite ^/mlflow/?(.*)$ /$1 break;
 
-        proxy_pass http://mlflow:5000/;
+        proxy_pass http://$mlflow_upstream;
         proxy_http_version 1.1;
         proxy_redirect / /mlflow/;
 
@@ -73,8 +78,9 @@ server {
     location /rabbitmq/ {
         auth_request /auth/proxy-check;
         auth_request_set $auth_user $upstream_http_x_remote_user;
+        set $rabbitmq_upstream rabbitmq:15672;
 
-        proxy_pass http://rabbitmq:15672/rabbitmq/;
+        proxy_pass http://$rabbitmq_upstream;
         proxy_http_version 1.1;
         proxy_redirect /rabbitmq/ /rabbitmq/;
 
@@ -98,8 +104,9 @@ server {
     location /minio-browser/ {
         auth_request /auth/proxy-check;
         auth_request_set $auth_user $upstream_http_x_remote_user;
+        set $frontend_upstream mlsystem-frontend:{{ mlsystem_gpu_frontend_port | default(8090) }};
 
-        proxy_pass http://mlsystem-frontend:{{ mlsystem_gpu_frontend_port | default(8090) }};
+        proxy_pass http://$frontend_upstream;
         proxy_http_version 1.1;
 
         proxy_set_header Host $host;
