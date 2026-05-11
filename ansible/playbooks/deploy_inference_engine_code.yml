@@ -41,6 +41,22 @@
         cmd: find "{{ mlsystem_gpu_repo_root }}" -type d -name __pycache__ -prune -exec rm -rf {} +
       changed_when: false
 
+    - name: Ensure deployed MLSystem config directory exists
+      ansible.builtin.file:
+        path: "{{ mlsystem_gpu_repo_root }}/mlsystem/configs"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Install GPU pipeline config into deployed repo
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../roles/gpu_platform/templates/pipeline.server.yaml.j2"
+        dest: "{{ mlsystem_gpu_repo_root }}/mlsystem/configs/pipeline.server.yaml"
+        owner: root
+        group: root
+        mode: "0644"
+
     - name: Check GPU platform compose file
       ansible.builtin.stat:
         path: "{{ mlsystem_gpu_compose_path }}"
@@ -59,6 +75,46 @@
         create: false
         mode: "0600"
       when: gpu_platform_env_stat.stat.exists
+
+    - name: Recreate MLSystem API and Airflow containers after shared code sync
+      ansible.builtin.command:
+        cmd: >-
+          docker compose --env-file "{{ mlsystem_gpu_env_path }}"
+          -f "{{ mlsystem_gpu_compose_path }}"
+          up -d --force-recreate --no-deps
+          mlsystem-api airflow-webserver airflow-scheduler airflow-triggerer
+      changed_when: true
+      register: mlsystem_airflow_code_up
+      retries: 6
+      delay: 30
+      until: mlsystem_airflow_code_up.rc == 0
+      when:
+        - gpu_platform_compose_stat.stat.exists
+        - gpu_platform_env_stat.stat.exists
+
+    - name: Wait for MLSystem API health after shared code sync
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ mlsystem_gpu_api_port }}/health"
+        status_code: 200
+      retries: 60
+      delay: 10
+      register: mlsystem_api_health_after_ie_deploy
+      until: mlsystem_api_health_after_ie_deploy.status == 200
+      when:
+        - gpu_platform_compose_stat.stat.exists
+        - gpu_platform_env_stat.stat.exists
+
+    - name: Wait for MLSystem API readiness after shared code sync
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ mlsystem_gpu_api_port }}/ready"
+        status_code: 200
+      retries: 60
+      delay: 10
+      register: mlsystem_api_ready_after_ie_deploy
+      until: mlsystem_api_ready_after_ie_deploy.status == 200
+      when:
+        - gpu_platform_compose_stat.stat.exists
+        - gpu_platform_env_stat.stat.exists
 
     - name: Build InferenceEngine image
       ansible.builtin.command:
