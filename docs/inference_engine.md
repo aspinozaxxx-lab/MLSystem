@@ -111,6 +111,8 @@ The finalizer writes the old Airflow artifact names into `run_dir`. Real probabi
 
 Airflow does not model internal InferenceEngine stages. The only Airflow pseudolabel task is `inference_engine_pipeline`; it calls `POST /api/v1/jobs`, polls `GET /api/v1/jobs/{job_id}`, reads `GET /api/v1/jobs/{job_id}/artifacts`, and validates the final artifacts in the Airflow run directory.
 
+For production DAG runs, `mlsystem-api` passes the shared status directory `/data/mlsystem/airflow/status/<run_id>` as `run_dir`, so InferenceEngine writes compatibility artifacts directly where Airflow validators and summary stages expect them.
+
 The InferenceEngine job itself fans out through RabbitMQ queues and worker containers. Stage transitions are visible through job events and queue metrics, not as Airflow tasks.
 
 ## Testing
