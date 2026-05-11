@@ -309,8 +309,11 @@ class TuningController:
         tried = list(dict.fromkeys([*(state.get("tried_config_hashes") or []), trial["config_hash"]]))
         trials_completed = int(state.get("trials_completed") or 0) + 1
         best_f1 = state.get("best_f1")
+        if _is_invalid_objective(best_f1):
+            best_f1 = None
+            state["best_run_id"] = None
         current_f1 = ((result.get("metrics") or {}).get("best_val_pixel_f1") if result.get("status") == "succeeded" else None)
-        if current_f1 is not None and (best_f1 is None or float(current_f1) > float(best_f1)):
+        if current_f1 is not None and not _is_invalid_objective(current_f1) and (best_f1 is None or float(current_f1) > float(best_f1)):
             best_f1 = current_f1
             state["best_run_id"] = result.get("mlflow_run_id")
         state.update(
@@ -632,6 +635,14 @@ def current_git_sha(repo: Path | None = None) -> str:
 def compact_config(config: dict[str, Any]) -> str:
     keys = ["model_name", "patch_size", "stride", "batch_size", "learning_rate", "weight_decay", "loss", "epochs"]
     return ",".join(f"{key}={config.get(key)}" for key in keys)
+
+
+def _is_invalid_objective(value: Any) -> bool:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return False
+    return numeric < 0.0 or numeric >= 1.0
 
 
 def utc_now() -> str:

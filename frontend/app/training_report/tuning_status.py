@@ -28,7 +28,7 @@ def read_tuning_status(root: Path) -> dict[str, Any]:
                 "stop_path": str(stop_path),
                 "current_trial_id": payload.get("current_trial_id"),
                 "last_run_id": payload.get("last_run_id"),
-                "best_f1": payload.get("best_f1"),
+                "best_f1": _trusted_f1(payload.get("best_f1")),
                 "last_update_at": payload.get("last_update_at"),
             }
         )
@@ -47,3 +47,13 @@ def _read_json(path: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError):
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _trusted_f1(value: Any) -> float | None:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if numeric < 0.0 or numeric >= 1.0:
+        return None
+    return numeric

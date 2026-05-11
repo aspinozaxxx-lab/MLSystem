@@ -142,6 +142,8 @@ def normalize_run(run: dict[str, Any]) -> dict[str, Any]:
     )
     best_epoch = _first_float((metrics, params), "best_epoch", "best_val_epoch", "object_safe_scene_group/epoch", "epoch")
     epochs_planned = _first_float((params, metrics), "train.epochs", "train.epochs_planned", "epochs", "max_epochs")
+    if best_epoch is None:
+        best_epoch = epochs_completed
     return {
         "run_id": info.get("run_id") or run.get("run_id"),
         "experiment_id": str(info.get("experiment_id") or ""),
