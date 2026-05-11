@@ -196,6 +196,11 @@ def finalize_job_artifacts(
 def _write_placeholder_probability_mosaic(path: Path, plan: ScenePlan) -> None:
     import numpy as np
 
-    prob = np.zeros((max(1, plan.height), max(1, plan.width)), dtype=np.uint8)
+    # InferenceEngine keeps the real probability surface in per-tile artifacts.
+    # The legacy manifest still needs a scene-level npz path, but downstream
+    # stages are validate-only for source=inference_engine. Keep this artifact
+    # compact so finalization does not write multi-GB zero mosaics for large
+    # production scenes.
+    prob = np.zeros((1, 1), dtype=np.uint8)
     path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez(path, prob_uint8=prob)
+    np.savez_compressed(path, prob_uint8=prob, placeholder=np.array([1], dtype=np.uint8), source_width=np.array([plan.width]), source_height=np.array([plan.height]))
