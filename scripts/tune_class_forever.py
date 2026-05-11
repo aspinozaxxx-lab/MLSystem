@@ -42,6 +42,7 @@ BASELINE_CHECKPOINT = Path(
 CLASS_SCENE_MATCHING_PREFIXES = {
     "lakes": ["images/kanopus/wave_2_Upload_01/"],
     "abrasion": ["images/kanopus/Olhonskij/"],
+    "wind_erosion": ["images/kanopus/irkutsk/", "images/kanopus/Olhonskij/"],
 }
 
 
