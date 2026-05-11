@@ -29,6 +29,8 @@ jobs:
           SSH="ssh -i ~/.ssh/gpu_server_key -o StrictHostKeyChecking=yes ${GPU_SERVER_USER}@${GPU_SERVER_HOST}"
           $SSH 'bash -lc "
           set +e
+          echo ==== diagnostic time ====
+          date -Is
           echo ==== docker ps ====
           docker ps --format \"table {{.Names}}\t{{.Status}}\t{{.Ports}}\"
           echo ==== inference-engine health ====
