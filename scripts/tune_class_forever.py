@@ -488,14 +488,24 @@ def extract_mlflow_run_id(status: dict[str, Any]) -> str | None:
 
 def extract_metrics(summary: dict[str, Any], run_dir: Path) -> dict[str, Any]:
     payload = summary.get("training_result") or read_json(run_dir / "training_result.json", default={}) or {}
-    candidates: list[float] = []
-    for key, value in walk_scalars(payload):
-        key_l = key.lower().replace("_", "/")
-        if "pixel/f1" in key_l or key_l.endswith("/f1") or "dice" in key_l:
-            with contextlib.suppress(TypeError, ValueError):
-                candidates.append(float(value))
+    pixel_f1 = first_float(
+        payload,
+        [
+            "best_val_pixel_f1",
+            "val/pixel_f1_best_threshold",
+            "last_epoch_metrics/val/pixel_f1_best_threshold",
+            "val/pixel_f1",
+            "last_epoch_metrics/val/pixel_f1",
+            "val/class_pixel_f1",
+            "last_epoch_metrics/val/class_pixel_f1",
+            "val/pixel_dice",
+            "last_epoch_metrics/val/pixel_dice",
+            "val/dice",
+            "last_epoch_metrics/val/dice",
+        ],
+    )
     result = {
-        "best_val_pixel_f1": max(candidates) if candidates else None,
+        "best_val_pixel_f1": pixel_f1,
         "epochs_completed": payload.get("epochs_completed"),
         "best_epoch": payload.get("best_epoch") or payload.get("best_val_epoch"),
     }
@@ -523,6 +533,16 @@ def find_scalar(payload: Any, wanted: str) -> Any:
     for key, value in walk_scalars(payload):
         if key.lower().endswith(wanted_l):
             return value
+    return None
+
+
+def first_float(payload: Any, wanted_keys: list[str]) -> float | None:
+    for wanted in wanted_keys:
+        value = find_scalar(payload, wanted)
+        if value is None:
+            continue
+        with contextlib.suppress(TypeError, ValueError):
+            return float(value)
     return None
 
 
