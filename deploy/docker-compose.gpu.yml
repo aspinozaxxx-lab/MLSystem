@@ -82,7 +82,7 @@ services:
       - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/monitoring/prometheus/rules:/etc/prometheus/rules:ro
       - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/prometheus:/prometheus
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/prometheus/-/ready >/dev/null || exit 1"]
+      test: ["CMD-SHELL", "/bin/promtool query instant http://localhost:9090/prometheus 'up' >/dev/null 2>&1 || exit 1"]
       interval: 20s
       timeout: 10s
       retries: 10
