@@ -15,6 +15,7 @@ Airflow -> mlsystem-api -> InferenceEngine API -> RabbitMQ stage workers -> Trit
 ```
 
 Set `pseudolabel.source=inference_engine` to use the extracted InferenceEngine service. In that mode, `mlsystem` keeps training/MLflow semantics and downstream pseudolabel stages validate artifacts produced by InferenceEngine.
+The production path is validated on the GPU server with RabbitMQ stage queues, Triton `segformer_b2`, a 2-scene mlsystem-api compatibility run, and a 20-scene InferenceEngine run; see [InferenceEngine validation report](docs/inference_engine_validation_report.md).
 
 Runtime data, API jobs, Airflow stage status, model artifacts, probability maps, reports, caches and heavy geospatial files are not stored in git. They live on the server under paths such as:
 

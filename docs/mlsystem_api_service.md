@@ -14,7 +14,7 @@
 | `GET /api/v1/runs/{run_id}/summary` | Прочитать summary текущего run из status artifacts. |
 | `POST /api/v1/debug/run-stage-sync` | Короткий debug endpoint для tests/handtests, не для долгих production stages. |
 
-Текущий production inference идет через direct Triton path.
+Production pseudolabel inference now uses InferenceEngine when `pseudolabel.source=inference_engine`; legacy/direct Triton code paths remain only for compatibility and tests.
 
 ## Job storage
 
@@ -56,4 +56,4 @@ Required env:
 - `INFERENCE_ENGINE_SPOOL_ROOT`
 - `INFERENCE_ENGINE_TRITON_URL`
 
-The downstream pseudolabel stages are compatibility validators in this mode.
+The downstream pseudolabel stages are compatibility validators in this mode. They do not run heavy pseudolabel domain logic or rebuild scene-level probability mosaics; they validate InferenceEngine summaries, accepted vectors, coverage, and artifact presence.

@@ -53,6 +53,7 @@ Production uses separate RabbitMQ consumers:
 - `inference-engine-worker finalizer`: consumes `ie.job.finalize`, writes compatibility artifacts and marks the job successful.
 
 Ack happens after durable state/artifact writes. Retry republishes with incremented attempt count; exhausted messages go to `ie.dead_letter`.
+Workers check terminal job state before heavy work, so cancelled or already-failed jobs ack stale descriptors without continuing raster reads, Triton requests, or vectorization.
 
 ## Backpressure
 
@@ -71,6 +72,12 @@ Target ready tiles:
 `triton_batch_size * max(2, triton_instance_count * batches_ahead)`
 
 Publishing pauses when infer queue depth exceeds the configured high watermark or spool bytes exceed `max_spool_bytes`.
+
+Tile spool files are deleted after probability tile artifacts and checksums are durable. Duplicate `tile.infer` messages are idempotent: if the probability artifact checksum is already valid, the worker skips the spool read and publishes `tile.done`.
+
+## Compatibility Artifacts
+
+The finalizer writes the old Airflow artifact names into `run_dir`. Real probability data remains tile-backed under the InferenceEngine job tree; the legacy per-scene `npz_path` entries are compact placeholder files because downstream stages are validate-only for `pseudolabel.source=inference_engine`. This keeps validators compatible without writing multi-GB zero mosaics during 20-scene finalization.
 
 ## API
 

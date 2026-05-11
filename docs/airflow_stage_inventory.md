@@ -61,10 +61,11 @@ finalize_mlflow_run
 
 When DAG config sets `pseudolabel.source=inference_engine`, Airflow keeps the same stage list but changes pseudolabel stage responsibilities:
 
-- `run_pseudolabel_inference` calls `INFERENCE_ENGINE_API_URL`, submits `/api/v1/jobs`, polls until terminal status, and expects compatibility artifacts in `/data/mlsystem/airflow/status/<run_id>/<experiment_id>/`.
+- `run_pseudolabel_inference` calls `INFERENCE_ENGINE_API_URL`, submits `/api/v1/jobs`, polls until terminal status, and expects compatibility artifacts in `/data/mlsystem/airflow/status/<run_id>/`.
 - `validate_probability_maps` validates `coverage_report.json` and `probability_maps_index.json`.
 - `vectorize_pseudolabel` is validate-only and skips mlsystem CPU vectorization.
 - `postprocess_pseudolabel` is validate-only and reads `postprocess_summary.json`.
 - `export_pseudolabel_artifacts` keeps the old artifact presence checks.
 
 Training, MLflow run lifecycle, validation predictions, metrics, and final MLflow logging remain in `mlsystem`.
+This path was server-validated with `run_pseudolabel_inference` plus all downstream validate-only stages succeeding for a 2-scene real run.

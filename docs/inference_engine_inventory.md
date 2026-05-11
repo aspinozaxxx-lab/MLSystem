@@ -48,6 +48,7 @@ InferenceEngine finalizer writes artifacts expected by the old Airflow pipeline 
 - `prediction_examples.html`
 
 Runtime arrays and intermediate queue artifacts stay under `/data/mlsystem/inference-engine/...` and are not committed.
+Probability tile artifacts remain tile-backed in the InferenceEngine job directory. The scene-level `npz_path` entries kept for legacy validators are compact placeholders in `source=inference_engine` mode; mlsystem downstream stages validate summaries and accepted vectors instead of rebuilding probability mosaics.
 
 ## Validate-Only Stages
 

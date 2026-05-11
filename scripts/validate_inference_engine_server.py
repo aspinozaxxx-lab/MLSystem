@@ -60,10 +60,13 @@ def main() -> None:
     dead_letter_purge_output = ""
     if _queue_message_total(dead_letter_before):
         dead_letter_purge_output = _purge_rabbitmq_queue("ie.dead_letter")
+    health = _safe_get_json(args.api.rstrip("/") + "/health", token=ie_token)
+    health_commit = health.get("commit") if isinstance(health, dict) else None
 
     summary: dict[str, Any] = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "commit": _run_text("git -C /opt/mlsystem/repo rev-parse HEAD", check=False).strip(),
+        "commit": health_commit or _run_text("git -C /opt/mlsystem/repo rev-parse HEAD", check=False).strip(),
+        "health": health,
         "manifest": str(manifest),
         "manifest_scenes": manifest_scenes,
         "stale_validation_cleanup": stale_validation_cleanup,
