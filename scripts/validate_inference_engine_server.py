@@ -123,6 +123,7 @@ def _run_two_scene_via_mlsystem_api(
     run_dir = STATUS_ROOT / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(manifest, run_dir / "inference_manifest.json")
+    _make_tree_container_writable(run_dir)
     config = _mlsystem_config(experiment_id, max_scenes=2)
     stage_results = []
     for stage in [
@@ -425,6 +426,15 @@ def _check_run_dir_artifacts(run_dir: Path, experiment_id: str) -> dict[str, Any
     if missing:
         raise RuntimeError(f"Missing compatibility artifacts in {run_dir}: {missing}")
     return {"present": present, "missing": missing}
+
+
+def _make_tree_container_writable(root: Path) -> None:
+    for path in [root, *root.rglob("*")]:
+        try:
+            mode = path.stat().st_mode
+            path.chmod(mode | 0o777 if path.is_dir() else mode | 0o666)
+        except OSError:
+            continue
 
 
 def _stage_event_counts(events_payload: Any) -> dict[str, int]:
