@@ -39,6 +39,11 @@ BASELINE_CHECKPOINT = Path(
     "segformer_b2.best.pt"
 )
 
+CLASS_SCENE_MATCHING_PREFIXES = {
+    "lakes": ["images/kanopus/wave_2_Upload_01/"],
+    "abrasion": ["images/kanopus/Olhonskij/"],
+}
+
 
 class ApiClient:
     def __init__(self, base_url: str, token: str | None) -> None:
@@ -242,6 +247,8 @@ class TuningController:
                 "target_val_fraction": config["target_val_fraction"],
                 "split_seed": config["split_seed"],
                 "include_negative_scenes": True,
+                "allow_inferred_annotation_crs": True,
+                "scene_matching_prefer_prefixes": CLASS_SCENE_MATCHING_PREFIXES.get(self.class_slug, []),
                 "allow_train_val_sample_fallback": True,
                 "max_train_tiles": config.get("max_train_tiles"),
                 "max_val_tiles": config.get("max_val_tiles"),
