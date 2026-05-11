@@ -511,6 +511,18 @@ class AirflowTasksTests(unittest.TestCase):
             self.assertIn("Compatibility placeholder", result["summary"])
             self.assertEqual(result["counters"]["validation_scenes_processed"], 0)
 
+    def test_inference_engine_only_dag_skips_training_validation_stages(self) -> None:
+        conf = {"experiment_id": "unit_ie_only", "train": {"enabled": False}, "predict": {"enabled": False}}
+        with tempfile.TemporaryDirectory() as tmp:
+            train = run_stage("train_model", conf, "manual__unit", Path(tmp))
+            predict = run_stage("predict_validation_scenes", conf, "manual__unit", Path(tmp))
+            f1 = run_stage("compute_f1", conf, "manual__unit", Path(tmp))
+        self.assertEqual(train["status"], "skipped")
+        self.assertEqual(predict["status"], "skipped")
+        self.assertEqual(f1["status"], "skipped")
+        self.assertIn("InferenceEngine-only", predict["summary"])
+        self.assertIn("InferenceEngine-only", f1["summary"])
+
 
 if __name__ == "__main__":
     unittest.main()

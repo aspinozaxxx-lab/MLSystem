@@ -25,6 +25,7 @@ class JobSpec(BaseModel):
     data: dict[str, Any] = Field(default_factory=dict)
     preprocess: dict[str, Any] = Field(default_factory=dict)
     train: dict[str, Any] = Field(default_factory=dict)
+    evaluate: dict[str, Any] = Field(default_factory=dict)
     predict: dict[str, Any] = Field(default_factory=dict)
     postprocess: dict[str, Any] = Field(default_factory=dict)
     resources: JobResourceConfig = Field(default_factory=JobResourceConfig)

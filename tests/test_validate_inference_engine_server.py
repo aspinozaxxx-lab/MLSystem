@@ -27,6 +27,13 @@ class InferenceEngineServerValidationTests(unittest.TestCase):
         self.assertIn("--conf", command)
         self.assertIn(json.dumps(config, ensure_ascii=False, separators=(",", ":")), command)
 
+    def test_airflow_validation_config_is_inference_engine_only(self) -> None:
+        config = validate._mlsystem_config("ie_airflow_real_2_unit", max_scenes=2)
+        self.assertEqual(config["train"], {"enabled": False})
+        self.assertEqual(config["predict"], {"enabled": False})
+        self.assertEqual(config["pseudolabel"]["source"], "inference_engine")
+        self.assertEqual(config["pseudolabel"]["max_scenes"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

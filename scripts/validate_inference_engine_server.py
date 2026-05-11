@@ -366,6 +366,8 @@ def _mlsystem_config(experiment_id: str, *, max_scenes: int) -> dict[str, Any]:
         "images_uri": "s3://mlsystems/images/",
         "layout_uri": "s3://mlsystems/layouts/deforest/",
         "model": {"mlflow_run_id": DEFAULT_RUN_ID, "model_name": DEFAULT_MODEL, "architecture": DEFAULT_MODEL},
+        "train": {"enabled": False},
+        "predict": {"enabled": False},
         "preprocess": {"patch_size": 1024, "stride": 768, "input_bands": [1, 2, 3, 4]},
         "inference": {"triton_model_name": DEFAULT_MODEL, "triton_batch_size": 8, "batches_ahead": 8, "max_scenes_inflight": 2},
         "pseudolabel": {

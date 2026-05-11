@@ -12,6 +12,7 @@ class JobSchemaTests(unittest.TestCase):
         job = JobSpec.model_validate({"job_id": "exp_001", "task": "train"})
         self.assertEqual(job.schema_version, 1)
         self.assertEqual(job.params, {})
+        self.assertEqual(job.evaluate, {})
         self.assertFalse(job.resources.requires_gpu)
 
     def test_invalid_job_id_rejected(self) -> None:

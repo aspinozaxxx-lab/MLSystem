@@ -174,6 +174,7 @@ class AirflowExperimentConfig(BaseModel):
     model: dict[str, Any] = Field(default_factory=dict)
     preprocess: dict[str, Any] = Field(default_factory=dict)
     train: dict[str, Any] = Field(default_factory=dict)
+    evaluate: dict[str, Any] = Field(default_factory=dict)
     pseudolabel: dict[str, Any] = Field(default_factory=dict)
     postprocess: dict[str, Any] = Field(default_factory=dict)
     inference: dict[str, Any] = Field(default_factory=dict)
@@ -692,6 +693,7 @@ def _build_airflow_job(conf: AirflowExperimentConfig) -> JobSpec:
         },
         preprocess=preprocess_cfg,
         train=train_cfg,
+        evaluate=conf.evaluate or {},
         predict=predict_cfg,
         postprocess=conf.postprocess or {},
         resources={"requires_gpu": bool(train_cfg.get("require_gpu", True))},
@@ -863,6 +865,10 @@ def _manifest_scene_count(manifest: dict[str, Any], split: str) -> int:
             return 0
     scenes = manifest.get(scenes_key) or []
     return len(scenes) if isinstance(scenes, list) else 0
+
+
+def _section_enabled(section: dict[str, Any] | None, default: bool = True) -> bool:
+    return bool((section or {}).get("enabled", default))
 
 
 def _extract_pixel_metrics(training_result: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, str]], list[str]]:
@@ -1362,7 +1368,41 @@ def _run_dispatcher_stage(stage: str, conf_payload: dict[str, Any], airflow_run_
     elif stage == "predict_validation_scenes":
         training_result = _read_training_result(store)
         configured_checkpoint = (conf.pseudolabel or {}).get("checkpoint_path") or (conf.predict or {}).get("checkpoint_path") or (conf.params or {}).get("checkpoint_path")
-        if not training_result.get("checkpoint_path") and not configured_checkpoint:
+        if not _section_enabled(conf.train) or not _section_enabled(conf.predict):
+            manifest = _dataset_manifest(store)
+            validation_input_scenes = _manifest_scene_count(manifest, "val")
+            prediction_summary = {
+                "input_validation_scenes": validation_input_scenes,
+                "processed_scenes": 0,
+                "skipped_scenes": validation_input_scenes,
+                "failed_scenes": 0,
+                "predicted_tiles": 0,
+                "predicted_windows": 0,
+                "status": "skipped",
+                "reason": "validation prediction disabled; InferenceEngine pipeline uses the configured MLflow/Triton model.",
+            }
+            json_path = store.run_dir / "validation_prediction_summary.json"
+            txt_path = store.run_dir / "validation_prediction_summary.txt"
+            write_json(json_path, prediction_summary)
+            _write_simple_key_value_report(txt_path, "Validation prediction", {"summary": prediction_summary})
+            result = _stage_result(
+                "skipped",
+                summary="Validation prediction skipped because train/predict is disabled for this InferenceEngine-only DAG run.",
+                skip_reason=prediction_summary["reason"],
+                counters={
+                    "validation_input_scenes": validation_input_scenes,
+                    "validation_scenes_processed": 0,
+                    "validation_scenes_skipped": validation_input_scenes,
+                    "validation_scenes_failed": 0,
+                    "validation_prediction_tiles": 0,
+                    "validation_prediction_windows": 0,
+                },
+                artifacts={
+                    "validation_prediction_summary.json": str(json_path),
+                    "validation_prediction_summary.txt": str(txt_path),
+                },
+            )
+        elif not training_result.get("checkpoint_path") and not configured_checkpoint:
             result = _stage_result("failed", error="Training checkpoint is missing; validation prediction cannot start.")
         else:
             manifest = _dataset_manifest(store)
@@ -1484,52 +1524,89 @@ def _run_dispatcher_stage(stage: str, conf_payload: dict[str, Any], airflow_run_
                 threshold_used=metrics.get("threshold_used"),
             )
     elif stage == "compute_f1":
-        training_result = _read_training_result(store)
-        pixel_metrics, pixel_counters, aliases, pixel_warnings = _extract_pixel_metrics(training_result)
-        object_metrics, object_counters, object_warnings = _object_metric_summary(training_result)
-        summary_payload = {
-            "pixel_metrics": pixel_metrics,
-            "pixel_counters": pixel_counters,
-            "object_metrics": object_metrics,
-            "object_counters": object_counters,
-            "aliases": aliases,
-            "warnings": pixel_warnings + object_warnings,
-        }
-        json_path = store.run_dir / "f1_summary.json"
-        txt_path = store.run_dir / "f1_summary.txt"
-        object_matching_json = store.run_dir / "object_matching_report.json"
-        object_matching_txt = store.run_dir / "object_matching_report.txt"
-        write_json(json_path, summary_payload)
-        _write_simple_key_value_report(
-            txt_path,
-            "F1 summary",
-            {"pixel_metrics": pixel_metrics, "pixel_counts": pixel_counters, "object_metrics": object_metrics, "object_counts": object_counters},
-        )
-        write_json(object_matching_json, {"status": "not_available" if object_metrics.get("object_f1") is None else "available", "source": str(store.run_dir / "training_result.json"), "object_counters": object_counters})
-        _write_simple_key_value_report(object_matching_txt, "Object matching", {"object_counts": object_counters, "object_metrics": object_metrics})
-        all_metrics = {**pixel_metrics, **object_metrics}
-        all_counters = {**pixel_counters, **object_counters}
-        mlflow_warnings = _log_mlflow_metrics_if_available(store, all_metrics, all_counters)
-        compute_status = "success_with_warning" if object_metrics.get("object_f1") is None else "success"
-        compute_summary = (
-            "Pixel metrics summarized; object metrics are not available because validation vectorization is not implemented as a distinct stage yet."
-            if object_metrics.get("object_f1") is None
-            else "F1 metrics summarized from available pixel and object artifacts."
-        )
-        result = _stage_result(
-            compute_status,
-            summary=compute_summary,
-            metrics=all_metrics,
-            counters=all_counters,
-            warnings=pixel_warnings + object_warnings + mlflow_warnings,
-            artifacts={
-                "f1_summary.json": str(json_path),
-                "f1_summary.txt": str(txt_path),
-                "object_matching_report.json": str(object_matching_json),
-                "object_matching_report.txt": str(object_matching_txt),
-            },
-            details=summary_payload,
-        )
+        if not _section_enabled(conf.train):
+            summary_payload = {
+                "status": "skipped",
+                "reason": "training and validation metrics are disabled for this InferenceEngine-only DAG run.",
+                "pixel_metrics": {},
+                "object_metrics": {},
+            }
+            json_path = store.run_dir / "f1_summary.json"
+            txt_path = store.run_dir / "f1_summary.txt"
+            object_matching_json = store.run_dir / "object_matching_report.json"
+            object_matching_txt = store.run_dir / "object_matching_report.txt"
+            write_json(json_path, summary_payload)
+            _write_simple_key_value_report(txt_path, "F1 summary", {"summary": summary_payload})
+            write_json(object_matching_json, {"status": "skipped", "reason": summary_payload["reason"]})
+            _write_simple_key_value_report(object_matching_txt, "Object matching", {"summary": summary_payload})
+            result = _stage_result(
+                "skipped",
+                summary="F1 computation skipped because training is disabled for this InferenceEngine-only DAG run.",
+                skip_reason=summary_payload["reason"],
+                counters={
+                    "reference_objects": 0,
+                    "predicted_objects": 0,
+                    "tp_objects": 0,
+                    "fp_objects": 0,
+                    "fn_objects": 0,
+                    "reference_scenes": 0,
+                    "prediction_scenes": 0,
+                },
+                artifacts={
+                    "f1_summary.json": str(json_path),
+                    "f1_summary.txt": str(txt_path),
+                    "object_matching_report.json": str(object_matching_json),
+                    "object_matching_report.txt": str(object_matching_txt),
+                },
+                details=summary_payload,
+            )
+        else:
+            training_result = _read_training_result(store)
+            pixel_metrics, pixel_counters, aliases, pixel_warnings = _extract_pixel_metrics(training_result)
+            object_metrics, object_counters, object_warnings = _object_metric_summary(training_result)
+            summary_payload = {
+                "pixel_metrics": pixel_metrics,
+                "pixel_counters": pixel_counters,
+                "object_metrics": object_metrics,
+                "object_counters": object_counters,
+                "aliases": aliases,
+                "warnings": pixel_warnings + object_warnings,
+            }
+            json_path = store.run_dir / "f1_summary.json"
+            txt_path = store.run_dir / "f1_summary.txt"
+            object_matching_json = store.run_dir / "object_matching_report.json"
+            object_matching_txt = store.run_dir / "object_matching_report.txt"
+            write_json(json_path, summary_payload)
+            _write_simple_key_value_report(
+                txt_path,
+                "F1 summary",
+                {"pixel_metrics": pixel_metrics, "pixel_counts": pixel_counters, "object_metrics": object_metrics, "object_counts": object_counters},
+            )
+            write_json(object_matching_json, {"status": "not_available" if object_metrics.get("object_f1") is None else "available", "source": str(store.run_dir / "training_result.json"), "object_counters": object_counters})
+            _write_simple_key_value_report(object_matching_txt, "Object matching", {"object_counts": object_counters, "object_metrics": object_metrics})
+            all_metrics = {**pixel_metrics, **object_metrics}
+            all_counters = {**pixel_counters, **object_counters}
+            mlflow_warnings = _log_mlflow_metrics_if_available(store, all_metrics, all_counters)
+            compute_status = "success_with_warning" if object_metrics.get("object_f1") is None else "success"
+            compute_summary = (
+                "Pixel metrics summarized; object metrics are not available because validation vectorization is not implemented as a distinct stage yet."
+                if object_metrics.get("object_f1") is None
+                else "F1 metrics summarized from available pixel and object artifacts."
+            )
+            result = _stage_result(
+                compute_status,
+                summary=compute_summary,
+                metrics=all_metrics,
+                counters=all_counters,
+                warnings=pixel_warnings + object_warnings + mlflow_warnings,
+                artifacts={
+                    "f1_summary.json": str(json_path),
+                    "f1_summary.txt": str(txt_path),
+                    "object_matching_report.json": str(object_matching_json),
+                    "object_matching_report.txt": str(object_matching_txt),
+                },
+                details=summary_payload,
+            )
     elif stage == "generate_prediction_examples":
         examples = store.run_dir / "prediction_examples.html"
         if not examples.exists():
