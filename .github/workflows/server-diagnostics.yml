@@ -45,7 +45,7 @@ jobs:
           echo ==== rabbitmq dead letter payload ====
           RABBIT_USER=\$(awk -F= '\''/^RABBITMQ_DEFAULT_USER=/{print substr(\$0,index(\$0,\"=\")+1)}'\'' /etc/mlsystem/gpu-platform.env)
           RABBIT_PASS=\$(awk -F= '\''/^RABBITMQ_DEFAULT_PASS=/{print substr(\$0,index(\$0,\"=\")+1)}'\'' /etc/mlsystem/gpu-platform.env)
-          curl -fsS -u \"\$RABBIT_USER:\$RABBIT_PASS\" -H \"content-type: application/json\" -d '\''{\"count\":5,\"ackmode\":\"ack_requeue_true\",\"encoding\":\"auto\",\"truncate\":10000}'\'' http://127.0.0.1:15672/api/queues/%2F/ie.dead_letter/get; echo
+          curl -fsS -u \"\$RABBIT_USER:\$RABBIT_PASS\" -H \"content-type: application/json\" -d '\''{\"count\":5,\"ackmode\":\"ack_requeue_true\",\"encoding\":\"auto\",\"truncate\":10000}'\'' http://127.0.0.1:15672/rabbitmq/api/queues/%2F/ie.dead_letter/get; echo
           echo ==== triton ====
           curl -fsS http://127.0.0.1:8000/v2/health/ready; echo
           curl -fsS -X POST -H \"content-type: application/json\" -d \"{}\" http://127.0.0.1:8000/v2/repository/index; echo
