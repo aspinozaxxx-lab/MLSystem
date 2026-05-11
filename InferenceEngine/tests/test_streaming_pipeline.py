@@ -98,6 +98,16 @@ class StreamingPipelineTests(unittest.TestCase):
             plan = build_job_plan("job", request, Path(tmp) / "jobs")[0]
             self.assertEqual(plan.source["image_uri"], "s3://real-bucket/real/prefix/scene.tif")
 
+    def test_images_uri_prefix_is_not_duplicated(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            request = JobRequest(
+                experiment_id="inline",
+                images_uri="s3://mlsystems/images/",
+                scenes=[SceneInput(name="scene.tif", key="images/kanopus/scene.tif", width=32, height=32)],
+            )
+            plan = build_job_plan("job", request, Path(tmp) / "jobs")[0]
+            self.assertEqual(plan.source["image_uri"], "s3://mlsystems/images/kanopus/scene.tif")
+
 
 def _request() -> JobRequest:
     return JobRequest(

@@ -353,4 +353,11 @@ def _image_uri_for_key(images_uri: str | None, key: Any) -> str | None:
     key_text = str(key).lstrip("/")
     if not images_uri:
         return key_text
-    return images_uri.rstrip("/") + "/" + key_text
+    base = images_uri.rstrip("/")
+    if base.startswith("s3://"):
+        bucket_key = base[5:]
+        bucket, _, prefix = bucket_key.partition("/")
+        prefix = prefix.strip("/")
+        if prefix and (key_text == prefix or key_text.startswith(prefix + "/")):
+            return f"s3://{bucket}/{key_text}"
+    return base + "/" + key_text
