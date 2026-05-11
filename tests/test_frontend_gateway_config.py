@@ -11,7 +11,8 @@ class FrontendGatewayConfigTests(unittest.TestCase):
             self.assertIn(location, text)
         self.assertGreaterEqual(text.count("auth_request /auth/proxy-check;"), 4)
         self.assertIn('proxy_set_header Authorization "Basic {{ frontend_rabbitmq_proxy_basic_auth }}"', text)
-        self.assertIn("proxy_set_header X-Forwarded-Prefix /airflow", text)
+        self.assertIn("proxy_set_header X-Forwarded-Prefix /mlflow", text)
+        self.assertIn("proxy_set_header X-Forwarded-Prefix /rabbitmq", text)
 
     def test_compose_binds_admin_raw_ports_to_localhost(self) -> None:
         text = Path("deploy/docker-compose.gpu.yml").read_text(encoding="utf-8")
