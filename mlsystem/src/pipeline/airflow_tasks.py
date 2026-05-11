@@ -733,6 +733,7 @@ def _run_training_pipeline(conf: AirflowExperimentConfig, store: AirflowRunStore
             "dag_conf": store.conf,
         },
     )
+    extra_tags, extra_params = _mlflow_tuning_metadata(conf.params)
     prepared_manifest = store.run_dir / "dataset_manifest.json"
     if prepared_manifest.exists():
         job.preprocess.setdefault("prepared_dataset_manifest", str(prepared_manifest))
@@ -746,6 +747,7 @@ def _run_training_pipeline(conf: AirflowExperimentConfig, store: AirflowRunStore
         "task": conf.task,
         "class_name": conf.class_name or "",
         "mlsystem.class_name": conf.class_name or "",
+        **extra_tags,
     }
     params = {
         "experiment_id": conf.experiment_id,
@@ -755,6 +757,7 @@ def _run_training_pipeline(conf: AirflowExperimentConfig, store: AirflowRunStore
         "preprocess.max_scenes": conf.preprocess.get("max_scenes"),
         "train.epochs": job.train.get("epochs"),
         "train.time_limit_sec": job.train.get("time_limit_sec"),
+        **extra_params,
     }
     with MLflowJobRun(
         pipeline_config,
@@ -1105,6 +1108,24 @@ def _get_or_create_mlflow_experiment_id(client: Any, experiment_name: str, *, at
     raise RuntimeError(f"MLflow experiment was not created: {experiment_name}")
 
 
+def _mlflow_tuning_metadata(params: dict[str, Any] | None) -> tuple[dict[str, str], dict[str, str]]:
+    params = params or {}
+    prefixes = ("tuning.", "dataset.", "validation.")
+    tags: dict[str, str] = {}
+    mlflow_params: dict[str, str] = {}
+    for key, value in params.items():
+        key_str = str(key)
+        if not key_str.startswith(prefixes):
+            continue
+        if isinstance(value, (dict, list, tuple, set)):
+            value_str = json.dumps(value, ensure_ascii=False, sort_keys=True)
+        else:
+            value_str = "" if value is None else str(value)
+        tags[key_str] = value_str[:5000]
+        mlflow_params[key_str] = value_str[:500]
+    return tags, mlflow_params
+
+
 def _create_mlflow_run(conf: AirflowExperimentConfig, store: AirflowRunStore) -> dict[str, Any]:
     try:
         import mlflow
@@ -1114,6 +1135,7 @@ def _create_mlflow_run(conf: AirflowExperimentConfig, store: AirflowRunStore) ->
         experiment_name = conf.mlflow.get("experiment") or pipeline_config.mlflow_default_experiment
         client = mlflow.tracking.MlflowClient()
         experiment_id = _get_or_create_mlflow_experiment_id(client, experiment_name)
+        extra_tags, extra_params = _mlflow_tuning_metadata(conf.params)
         tag_warnings: list[str] = []
         if conf.class_name:
             for key, value in (
@@ -1135,6 +1157,7 @@ def _create_mlflow_run(conf: AirflowExperimentConfig, store: AirflowRunStore) ->
                     "task": conf.task,
                     "class_name": conf.class_name or "",
                     "mlsystem.class_name": conf.class_name or "",
+                    **extra_tags,
                 }
             )
             mlflow.log_params(
@@ -1147,6 +1170,7 @@ def _create_mlflow_run(conf: AirflowExperimentConfig, store: AirflowRunStore) ->
                     "preprocess.tile_size": conf.preprocess.get("tile_size"),
                     "preprocess.stride": conf.preprocess.get("stride"),
                     "smoke": conf.smoke,
+                    **extra_params,
                 }
             )
             run_id = run.info.run_id
