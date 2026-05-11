@@ -24,27 +24,6 @@ jobs:
           KEY
           sed -i 's/^          //' ~/.ssh/gpu_server_key
           ssh-keyscan -H "$GPU_SERVER_HOST" >> ~/.ssh/known_hosts
-      - name: Cancel stale InferenceEngine validation jobs
-        run: |
-          SSH="ssh -i ~/.ssh/gpu_server_key -o StrictHostKeyChecking=yes ${GPU_SERVER_USER}@${GPU_SERVER_HOST}"
-          $SSH 'bash -s' <<'REMOTE'
-          set +e
-          TOKEN=$(awk -F= '/^INFERENCE_ENGINE_API_TOKEN=/{print substr($0,index($0,"=")+1)}' /etc/mlsystem/gpu-platform.env)
-          find /data/mlsystem/inference-engine/jobs -maxdepth 2 -name state.json -print 2>/dev/null | while read -r state_path; do
-            job_id=$(basename "$(dirname "$state_path")")
-            status=$(python3 -c 'import json,sys; print((json.load(open(sys.argv[1])).get("status") or ""))' "$state_path" 2>/dev/null)
-            case "${job_id}:${status}" in
-              ie_real_*:queued|ie_real_*:running|ie_real_2_*:queued|ie_real_2_*:running)
-                echo "Cancelling stale validation job ${job_id} status=${status}"
-                curl -fsS -X POST -H "Authorization: Bearer ${TOKEN}" "http://127.0.0.1:8095/api/v1/jobs/${job_id}/cancel" >/dev/null || true
-                ;;
-            esac
-          done
-          for queue in ie.jobs.submit ie.scene.plan ie.tile.preprocess ie.tile.infer ie.tile.done ie.block.ready ie.block.vectorize ie.block.done ie.scene.merge ie.job.finalize ie.dead_letter; do
-            docker exec mlsystem-gpu-rabbitmq rabbitmqctl purge_queue "$queue" || true
-          done
-          find /data/mlsystem/inference-engine/spool -mindepth 1 -type f -delete 2>/dev/null || true
-          REMOTE
       - name: Read server state
         run: |
           SSH="ssh -i ~/.ssh/gpu_server_key -o StrictHostKeyChecking=yes ${GPU_SERVER_USER}@${GPU_SERVER_HOST}"
