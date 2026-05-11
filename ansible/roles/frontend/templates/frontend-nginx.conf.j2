@@ -29,7 +29,6 @@ server {
         auth_request /auth/proxy-check;
         auth_request_set $auth_user $upstream_http_x_remote_user;
         set $airflow_upstream airflow-webserver:8080;
-        rewrite ^/airflow/?(.*)$ /$1 break;
 
         proxy_pass http://$airflow_upstream;
         proxy_http_version 1.1;
@@ -55,7 +54,6 @@ server {
         auth_request /auth/proxy-check;
         auth_request_set $auth_user $upstream_http_x_remote_user;
         set $mlflow_upstream mlflow:5000;
-        rewrite ^/mlflow/?(.*)$ /$1 break;
 
         proxy_pass http://$mlflow_upstream;
         proxy_http_version 1.1;
