@@ -62,12 +62,17 @@ jobs:
           find /data/mlsystem/inference-engine/jobs -maxdepth 2 -name progress.json -printf \"%T@ %p\n\" 2>/dev/null | sort -nr | head -5 | cut -d\" \" -f2- | while read -r path; do echo ---- \"\$path\"; cat \"\$path\"; echo; done
           echo ==== mlsystem-api logs ====
           docker logs --tail 200 mlsystem-gpu-api
+          echo ==== inference-engine api logs ====
+          docker logs --tail 300 mlsystem-gpu-inference-engine-api
           echo ==== ie triton worker logs ====
           docker logs --tail 200 mlsystem-gpu-inference-engine-triton-worker
           echo ==== ie aggregator logs ====
           docker logs --tail 200 mlsystem-gpu-inference-engine-aggregator
           echo ==== ie planner logs ====
           docker logs --tail 200 mlsystem-gpu-inference-engine-planner
+          echo ==== inference-engine disk usage ====
+          du -sh /data/mlsystem/inference-engine/jobs /data/mlsystem/inference-engine/spool /data/mlsystem/inference-engine/artifacts 2>/dev/null || true
+          find /data/mlsystem/inference-engine/spool -mindepth 1 -maxdepth 2 -type d -printf "%p " -exec du -sh {} \; 2>/dev/null | tail -50 || true
           echo ==== nvidia-smi ====
           nvidia-smi || true
           "'
