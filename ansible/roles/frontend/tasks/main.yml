@@ -30,11 +30,14 @@
 
 - name: Ensure frontend upload directory exists
   ansible.builtin.file:
-    path: "{{ mlsystem_gpu_data_root }}/frontend/uploads"
+    path: "{{ item }}"
     state: directory
     owner: root
     group: root
     mode: "0775"
+  loop:
+    - "{{ mlsystem_gpu_data_root }}/frontend/uploads"
+    - "{{ mlsystem_gpu_data_root }}/frontend/training_report"
 
 - name: Check UFW status for frontend proxy
   ansible.builtin.command:
@@ -81,7 +84,9 @@
     - { key: "MLSYSTEM_FRONTEND_SESSION_COOKIE_NAME", value: "mlsystem_session" }
     - { key: "MLSYSTEM_FRONTEND_SESSION_TTL_SECONDS", value: "28800" }
     - { key: "MLSYSTEM_FRONTEND_UPLOAD_ROOT", value: "/data/mlsystem/frontend/uploads" }
+    - { key: "MLSYSTEM_FRONTEND_TRAINING_REPORT_ROOT", value: "/data/mlsystem/frontend/training_report" }
     - { key: "MLSYSTEM_AIRFLOW_STATUS_ROOT", value: "/data/mlsystem/airflow/status" }
+    - { key: "MLSYSTEM_MLMARKUP_REPO_PATH", value: "/data/MLMarkup" }
     - { key: "MLSYSTEM_API_BASE_URL", value: "http://mlsystem-api:8088" }
     - { key: "MLSYSTEM_FRONTEND_DEFAULT_IMAGES_URI", value: "{{ mlsystem_gpu_frontend_default_images_uri }}" }
     - { key: "MLSYSTEM_FRONTEND_DEFAULT_LAYOUT_URI", value: "{{ mlsystem_gpu_frontend_default_layout_uri }}" }

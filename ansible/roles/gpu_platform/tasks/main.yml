@@ -57,6 +57,7 @@
     - "{{ mlsystem_gpu_data_root }}/inference-engine/artifacts"
     - "{{ mlsystem_gpu_data_root }}/inference-engine/logs"
     - "{{ mlsystem_gpu_data_root }}/frontend/uploads"
+    - "{{ mlsystem_gpu_data_root }}/frontend/training_report"
     - "{{ mlsystem_gpu_data_root }}/airflow/postgres"
     - "{{ mlsystem_gpu_data_root }}/triton/model_repository/identity_python/1"
     - "{{ mlsystem_gpu_data_root }}/models"

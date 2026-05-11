@@ -551,6 +551,8 @@ services:
       MLSYSTEM_API_BASE_URL: http://mlsystem-api:8088
       MLSYSTEM_AIRFLOW_STATUS_ROOT: /data/mlsystem/airflow/status
       MLSYSTEM_FRONTEND_UPLOAD_ROOT: /data/mlsystem/frontend/uploads
+      MLSYSTEM_FRONTEND_TRAINING_REPORT_ROOT: /data/mlsystem/frontend/training_report
+      MLSYSTEM_MLMARKUP_REPO_PATH: /data/MLMarkup
       FRONTEND_GRAFANA_URL: ${FRONTEND_GRAFANA_URL:-/grafana/}
       FRONTEND_PROMETHEUS_URL: ${FRONTEND_PROMETHEUS_URL:-/prometheus/}
       FRONTEND_GRAFANA_MAIN_DASHBOARD_URL: ${FRONTEND_GRAFANA_MAIN_DASHBOARD_URL:-/grafana/d/mlsystem-overview/mlsystem-overview?orgId=1&kiosk}
@@ -567,7 +569,9 @@ services:
       - "127.0.0.1:${MLSYSTEM_FRONTEND_PORT:-8090}:8090"
     volumes:
       - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/frontend/uploads:/data/mlsystem/frontend/uploads
+      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/frontend/training_report:/data/mlsystem/frontend/training_report
       - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/airflow/status:/data/mlsystem/airflow/status:ro
+      - ${MLSYSTEM_MLMARKUP_REPO_PATH:-/data/MLMarkup}:/data/MLMarkup:ro
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8090/health', timeout=5)\" || exit 1"]
       interval: 20s
