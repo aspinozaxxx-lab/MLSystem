@@ -20,12 +20,18 @@ def run(ctx: StageContext) -> StageReport:
         report = StageReport(ctx.stage_id, "failed", [StageCheck("coverage_report", "failed", "coverage_report.json is missing")], errors=["coverage_report.json is missing"])
         raise StageFailure("coverage_report.json is missing", report)
     probability_index_path = ctx.store.run_dir / "probability_maps_index.json"
-    write_json(probability_index_path, manifest)
+    source = str(pseudolabel_cfg.get("source") or pseudolabel_cfg.get("engine") or "").strip().lower().replace("-", "_")
+    if source == "inference_engine" and probability_index_path.exists():
+        mode = "inference_engine_validate_only"
+    else:
+        write_json(probability_index_path, manifest)
+        mode = "mlsystem_validate"
     return StageReport(
         ctx.stage_id,
         "success",
         [StageCheck("probability maps", "ok", "Probability map coverage/index validated")],
         counters={
+            "probability_map_mode": mode,
             "mean_coverage_fraction": coverage.get("mean_coverage_fraction"),
             "min_coverage_fraction": coverage.get("min_coverage_fraction"),
             "total_expected_windows": coverage.get("total_expected_windows"),
