@@ -72,6 +72,8 @@ class FrontendAuthTests(unittest.TestCase):
             self.assertIn("MinIO artifacts", response.text)
             self.assertIn("Очереди RabbitMQ", response.text)
             self.assertIn("Мониторинг MLSystem", response.text)
+            self.assertIn("Отчет об обучении", response.text)
+            self.assertIn("Лучшие модели по классам и история экспериментов", response.text)
             self.assertIn("Grafana", response.text)
             self.assertIn("Prometheus", response.text)
             self.assertIn('/airflow/"', response.text)

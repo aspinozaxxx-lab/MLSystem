@@ -7,6 +7,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,8 @@ from .auth import current_user, is_authenticated, login_session, logout_session,
 from .config import FrontendConfig, get_config
 from .mlsystem_api import MLSystemApiClient
 from .report_builder import build_annotation_report
+from .training_report.collector import TrainingReportService
+from .training_report.tuning_status import read_tuning_status
 from .upload_store import UploadValidationError, store_uploads, uploads_diagnostics
 
 
@@ -31,7 +34,17 @@ logger = logging.getLogger("mlsystem.frontend")
 
 def create_app(config: FrontendConfig | None = None) -> FastAPI:
     config = config or get_config()
-    app = FastAPI(title="MLSystem Frontend")
+    training_report_service = TrainingReportService(config)
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        training_report_service.start_background()
+        try:
+            yield
+        finally:
+            training_report_service.stop_background()
+
+    app = FastAPI(title="MLSystem Frontend", lifespan=lifespan)
     app.state.config = config
     app.add_middleware(
         SessionMiddleware,
@@ -42,6 +55,7 @@ def create_app(config: FrontendConfig | None = None) -> FastAPI:
         https_only=config.secure_cookies,
     )
     app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+    app.state.training_report_service = training_report_service
 
     @app.get("/health")
     def health() -> dict[str, Any]:
@@ -131,6 +145,29 @@ def create_app(config: FrontendConfig | None = None) -> FastAPI:
         path = Path(__file__).resolve().parents[2] / "docs" / "frontend.md"
         text = path.read_text(encoding="utf-8") if path.exists() else "docs/frontend.md is not available in this container."
         return templates.TemplateResponse(request, "docs.html", {"title": "Frontend", "text": text})
+
+    @app.get("/training-report", response_class=HTMLResponse)
+    def training_report_page(request: Request) -> HTMLResponse:
+        redirect = redirect_if_unauthorized(request)
+        if redirect:
+            return redirect
+        return templates.TemplateResponse(request, "training_report.html", {})
+
+    @app.get("/api/training-report")
+    def training_report_api(_user: str = Depends(require_user)) -> dict[str, Any]:
+        return training_report_service.get_report()
+
+    @app.post("/api/training-report/refresh")
+    def training_report_refresh(_user: str = Depends(require_user)) -> dict[str, Any]:
+        return training_report_service.refresh_now(reason="manual_api")
+
+    @app.get("/api/training-report/status")
+    def training_report_status(_user: str = Depends(require_user)) -> dict[str, Any]:
+        return training_report_service.status()
+
+    @app.get("/api/training-tuning/status")
+    def training_tuning_status(_user: str = Depends(require_user)) -> dict[str, Any]:
+        return read_tuning_status(config.training_tuning_root)
 
     @app.get("/minio-browser/", response_class=HTMLResponse)
     def minio_browser(request: Request, bucket: str = "", prefix: str = "", _user: str = Depends(require_user)) -> HTMLResponse:

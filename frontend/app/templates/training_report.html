@@ -1,0 +1,205 @@
+{% extends "base.html" %}
+{% block title %}Отчет об обучении · MLSystem{% endblock %}
+{% block content %}
+<section class="hero compact-hero">
+  <h1>Отчет об обучении</h1>
+  <p>Лучшие модели по классам и история экспериментов</p>
+</section>
+
+<section class="panel training-report-panel">
+  <div class="report-toolbar">
+    <div>
+      <span class="muted">Последнее обновление:</span>
+      <b id="training-report-updated">...</b>
+      <span id="training-report-status" class="badge neutral">loading</span>
+    </div>
+    <button type="button" class="primary" id="training-report-refresh">Обновить сейчас</button>
+  </div>
+  <div id="training-report-loading" class="report-loading">Загрузка...</div>
+  <div id="training-report-error" class="error hidden"></div>
+  <div class="table-wrap training-table-wrap">
+    <table id="training-report-table" class="training-report-table" aria-label="Отчет об обучении">
+      <thead>
+        <tr>
+          <th>Название класса</th>
+          <th>Лучший pixel F1</th>
+          <th>Дата датасета</th>
+          <th>Объекты</th>
+          <th>Сцены</th>
+          <th>MLflow run</th>
+          <th>Дата обучения</th>
+        </tr>
+      </thead>
+      <tbody id="training-report-body">
+        <tr><td colspan="7">Загрузка...</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel tuning-status-panel">
+  <h2>Тюнинг</h2>
+  <div class="status-strip tuning-status-strip" id="training-tuning-status">
+    <span>lakes: <b>...</b></span>
+    <span>abrasion: <b>...</b></span>
+    <span>stop: <code>/data/mlsystem/tuning/STOP_ALL</code></span>
+  </div>
+</section>
+
+<template id="training-report-supported-classes">Озера Абразия</template>
+
+<script>
+  (function () {
+    const body = document.getElementById("training-report-body");
+    const loading = document.getElementById("training-report-loading");
+    const errorBox = document.getElementById("training-report-error");
+    const updated = document.getElementById("training-report-updated");
+    const statusBadge = document.getElementById("training-report-status");
+    const refreshButton = document.getElementById("training-report-refresh");
+    const tuningRoot = document.getElementById("training-tuning-status");
+
+    function text(value) {
+      return value === null || value === undefined || value === "" ? "n/a" : String(value);
+    }
+
+    function f1(value) {
+      const numeric = Number(value);
+      return Number.isFinite(numeric) ? numeric.toFixed(4) : "n/a";
+    }
+
+    function escapeHtml(value) {
+      return text(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;");
+    }
+
+    function mlflowLink(runUrl, label) {
+      if (!runUrl) return "n/a";
+      return `<a class="secondary-link compact-link" href="${escapeHtml(runUrl)}">MLflow</a>`;
+    }
+
+    function badge(value) {
+      if (!value) return "";
+      const cls = value === "no runs" ? "neutral" : "warning";
+      return `<span class="badge ${cls}">${escapeHtml(value)}</span>`;
+    }
+
+    function renderReport(data) {
+      loading.classList.add("hidden");
+      errorBox.classList.add("hidden");
+      updated.textContent = text(data.updated_at);
+      statusBadge.textContent = data.status || "ok";
+      statusBadge.className = "badge " + (data.status === "stale" ? "warning" : "ok");
+      const rows = data.classes || [];
+      if (!rows.length) {
+        body.innerHTML = '<tr><td colspan="7">Нет данных</td></tr>';
+        return;
+      }
+      body.innerHTML = rows.map((item) => {
+        const slug = escapeHtml(item.class_slug);
+        const warning = item.warning ? badge(item.warning) : "";
+        const mainRow = `
+          <tr class="training-main-row training-report-expandable" data-slug="${slug}">
+            <td>
+              <button type="button" class="row-toggle" data-slug="${slug}" aria-expanded="false">+</button>
+              <b>${escapeHtml(item.class_name)}</b> ${warning}
+            </td>
+            <td>${f1(item.best_pixel_f1)}</td>
+            <td>${escapeHtml(item.dataset_date)}</td>
+            <td>${escapeHtml(item.dataset_objects)}</td>
+            <td>${escapeHtml(item.dataset_scenes)}</td>
+            <td>${mlflowLink(item.best_run_url, item.best_run_id)}</td>
+            <td>${escapeHtml(item.best_train_date)}</td>
+          </tr>`;
+        const topRows = (item.top_runs || []).map((run) => `
+          <tr>
+            <td>${f1(run.pixel_f1)}</td>
+            <td>${escapeHtml(run.dataset_date)}</td>
+            <td>${escapeHtml(run.dataset_objects)}</td>
+            <td>${escapeHtml(run.dataset_scenes)}</td>
+            <td>${escapeHtml(run.train_date)}</td>
+            <td>${mlflowLink(run.run_url, run.run_id)}</td>
+            <td><code>${escapeHtml(run.run_id)}</code></td>
+            <td>${escapeHtml(run.split_strategy)}</td>
+            <td>${escapeHtml(run.params_summary || run.model_name)}</td>
+          </tr>`).join("");
+        const empty = '<tr><td colspan="9">Нет run\u2019ов</td></tr>';
+        const detailRow = `
+          <tr class="training-detail-row hidden" data-detail-for="${slug}">
+            <td colspan="7">
+              <div class="subtable-title">Лучшие 10 экспериментов</div>
+              <div class="table-wrap subtable-wrap">
+                <table class="training-subtable">
+                  <thead>
+                    <tr>
+                      <th>pixel F1</th>
+                      <th>Дата датасета</th>
+                      <th>Объекты</th>
+                      <th>Сцены</th>
+                      <th>Дата обучения</th>
+                      <th>MLflow run</th>
+                      <th>Run id</th>
+                      <th>Split strategy</th>
+                      <th>Model/config</th>
+                    </tr>
+                  </thead>
+                  <tbody>${topRows || empty}</tbody>
+                </table>
+              </div>
+            </td>
+          </tr>`;
+        return mainRow + detailRow;
+      }).join("");
+      for (const button of body.querySelectorAll(".row-toggle")) {
+        button.addEventListener("click", () => {
+          const slug = button.getAttribute("data-slug");
+          const detail = body.querySelector(`[data-detail-for="${slug}"]`);
+          if (!detail) return;
+          const expanded = !detail.classList.contains("hidden");
+          detail.classList.toggle("hidden", expanded);
+          button.textContent = expanded ? "+" : "-";
+          button.setAttribute("aria-expanded", expanded ? "false" : "true");
+        });
+      }
+    }
+
+    function loadReport() {
+      loading.classList.remove("hidden");
+      return fetch("/api/training-report", { credentials: "same-origin" })
+        .then((response) => response.ok ? response.json() : Promise.reject(new Error(String(response.status))))
+        .then(renderReport)
+        .catch((error) => {
+          loading.classList.add("hidden");
+          errorBox.textContent = "Не удалось загрузить отчет: " + error.message;
+          errorBox.classList.remove("hidden");
+        });
+    }
+
+    function loadTuningStatus() {
+      fetch("/api/training-tuning/status", { credentials: "same-origin" })
+        .then((response) => response.ok ? response.json() : Promise.reject(new Error(String(response.status))))
+        .then((data) => {
+          const classes = data.classes || [];
+          tuningRoot.innerHTML = classes.map((item) => {
+            const value = text(item.status) + (item.best_f1 ? ` best=${f1(item.best_f1)}` : "");
+            return `<span>${escapeHtml(item.class_slug)}: <b>${escapeHtml(value)}</b></span>`;
+          }).join("") + `<span>stop: <code>${escapeHtml(data.stop_all_path)}</code></span>`;
+        })
+        .catch(() => {});
+    }
+
+    refreshButton.addEventListener("click", () => {
+      refreshButton.disabled = true;
+      fetch("/api/training-report/refresh", { method: "POST", credentials: "same-origin" })
+        .then((response) => response.ok ? response.json() : Promise.reject(new Error(String(response.status))))
+        .then(loadReport)
+        .finally(() => { refreshButton.disabled = false; });
+    });
+
+    loadReport();
+    loadTuningStatus();
+  })();
+</script>
+{% endblock %}
