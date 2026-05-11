@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 from ..api.app import app as fastapi_app
 from ..config.settings import InferenceEngineSettings
@@ -41,7 +42,18 @@ async def _run_role(settings: InferenceEngineSettings, role: str, concurrency: i
     if concurrency == 1:
         await RabbitPipeline(settings).run_role(role)
         return
-    await asyncio.gather(*(RabbitPipeline(settings).run_role(role) for _ in range(concurrency)))
+    loop = asyncio.get_running_loop()
+    with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix=f"ie-{role}") as executor:
+        await asyncio.gather(
+            *(
+                loop.run_in_executor(executor, _run_role_sync, settings, role)
+                for _ in range(concurrency)
+            )
+        )
+
+
+def _run_role_sync(settings: InferenceEngineSettings, role: str) -> None:
+    asyncio.run(RabbitPipeline(settings).run_role(role))
 
 
 def _role_concurrency(role: str, default: int) -> int:

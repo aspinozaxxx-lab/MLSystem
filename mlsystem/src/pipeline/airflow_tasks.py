@@ -21,7 +21,6 @@ from ..job_schema import JobSpec
 from ..mlflow_adapter import MLFLOW_EXCLUDED_ARTIFACT_NAMES, MLflowJobRun
 from ..pipeline_config import load_config
 from ..storage.local_io import read_json, write_json
-from .prediction_pipeline import PredictionPipeline
 from .training_pipeline import TrainingPipeline
 
 
@@ -755,95 +754,6 @@ def _run_training_pipeline(conf: AirflowExperimentConfig, store: AirflowRunStore
     write_json(store.run_dir / "training_result.json", result)
     store.update_summary(training_result=result, mlflow=result.get("mlflow") or mlflow_info)
     return result
-
-
-def _checkpoint_path_for_pseudolabel(conf: AirflowExperimentConfig, store: AirflowRunStore, training_result: dict[str, Any]) -> Path:
-    configured_checkpoint = (conf.pseudolabel or {}).get("checkpoint_path") or (conf.predict or {}).get("checkpoint_path") or (conf.params or {}).get("checkpoint_path")
-    if configured_checkpoint:
-        path = Path(str(configured_checkpoint))
-        if path.exists():
-            return path
-    checkpoint_path = training_result.get("checkpoint_path")
-    if checkpoint_path:
-        path = Path(str(checkpoint_path))
-        if path.exists():
-            return path
-    model_name = str(conf.model.get("name") or training_result.get("model_name") or "tiny_unet_4ch")
-    fallback = store.run_dir / f"{model_name}.pt"
-    if fallback.exists():
-        return fallback
-    raise RuntimeError(f"Training checkpoint is missing: {checkpoint_path or fallback}")
-
-
-def _run_pseudolabel_pipeline(conf: AirflowExperimentConfig, store: AirflowRunStore, *, stage_mode: str = "full") -> dict[str, Any]:
-    training_result = _read_training_result(store)
-    checkpoint_path = _checkpoint_path_for_pseudolabel(conf, store, training_result)
-    summary = store.read_summary()
-    mlflow_info = summary.get("mlflow") or training_result.get("mlflow") or {}
-    run_id = mlflow_info.get("run_id")
-    pipeline_config = load_config()
-    experiment_name = conf.mlflow.get("experiment") or pipeline_config.mlflow_default_experiment
-    job = _build_airflow_job(conf)
-    pseudolabel_cfg = dict(job.predict.get("pseudolabel") or {})
-    pseudolabel_cfg.setdefault("enabled", True)
-    pseudolabel_cfg["checkpoint_path"] = str(checkpoint_path)
-    pseudolabel_cfg["preserve_train_scenes"] = True
-    pseudolabel_cfg["_airflow_stage_mode"] = stage_mode
-    job.predict["pseudolabel"] = pseudolabel_cfg
-    job.predict["checkpoint_path"] = str(checkpoint_path)
-    job.predict["preserve_train_scenes"] = True
-    job.params["pseudolabel"] = pseudolabel_cfg
-    job.params["checkpoint_path"] = str(checkpoint_path)
-    job_log = store.run_dir / "airflow_pseudolabel.log"
-    tags = {
-        "job_id": conf.experiment_id,
-        "airflow_run_id": store.airflow_run_id,
-        "orchestrator": "airflow",
-        "execution_path": "airflow_api",
-        "task": conf.task,
-        "class_name": conf.class_name or "",
-        "mlsystem.class_name": conf.class_name or "",
-    }
-    with MLflowJobRun(
-        pipeline_config,
-        experiment_name=experiment_name,
-        run_name=conf.experiment_id,
-        params={"pseudolabel.checkpoint_path": str(checkpoint_path)},
-        tags=tags,
-        run_id=run_id,
-    ) as mlflow_run:
-        prediction_result = PredictionPipeline().run_debug_pseudolabel(
-            pipeline_config,
-            job,
-            store.run_dir,
-            mlflow_run,
-            job_log,
-            _append_log,
-        )
-        prediction_result["mlflow"] = mlflow_run.result()
-        status_tag = "pseudolabel_inference_completed" if stage_mode in {"inference", "infer"} else "pseudolabel_completed"
-        mlflow_run.set_tags({"job_status": status_tag, "airflow_pseudolabel_status": "success", "airflow_pseudolabel_stage_mode": stage_mode})
-
-    merged = dict(training_result)
-    merged["pseudolabel_result"] = prediction_result
-    for key in [
-        "postprocess_metrics",
-        "pseudolabel",
-        "matched_scenes_count",
-        "total_matched_scenes_count",
-        "missing_scenes",
-        "ambiguous_scenes",
-        "warnings",
-    ]:
-        if key in prediction_result:
-            merged[key] = prediction_result[key]
-    timing = dict(merged.get("timing") or {})
-    timing.update({key: value for key, value in (prediction_result.get("timing") or {}).items() if key.endswith("pseudolabel_duration_sec") or key.endswith("postprocess_duration_sec")})
-    merged["timing"] = timing
-    merged["mlflow"] = prediction_result.get("mlflow") or mlflow_info
-    write_json(store.run_dir / "training_result.json", merged)
-    store.update_summary(training_result=merged, mlflow=merged.get("mlflow") or mlflow_info)
-    return prediction_result
 
 
 def _write_run_summaries(conf: AirflowExperimentConfig, store: AirflowRunStore) -> tuple[Path, Path]:

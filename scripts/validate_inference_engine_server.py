@@ -112,7 +112,13 @@ def main() -> None:
         max_scenes=20,
         timeout_sec=args.twenty_scene_timeout_sec,
         sample_every_sec=20,
-        resource={"triton_batch_size": 8, "batches_ahead": 6, "max_scenes_inflight": 2, "max_blocks_inflight": 16},
+        resource={
+            "triton_batch_size": 8,
+            "batches_ahead": 12,
+            "max_preprocess_queue": 1024,
+            "max_scenes_inflight": 4,
+            "max_blocks_inflight": 32,
+        },
     )
     summary["twenty_scene"] = twenty_scene
     summary["final_queues"] = _safe_get_json(args.api.rstrip("/") + "/queues", token=ie_token)
@@ -276,7 +282,7 @@ def _mlsystem_config(experiment_id: str, *, max_scenes: int) -> dict[str, Any]:
         "layout_uri": "s3://mlsystems/layouts/deforest/",
         "model": {"mlflow_run_id": DEFAULT_RUN_ID, "model_name": DEFAULT_MODEL, "architecture": DEFAULT_MODEL},
         "preprocess": {"patch_size": 1024, "stride": 768, "input_bands": [1, 2, 3, 4]},
-        "inference": {"triton_model_name": DEFAULT_MODEL, "triton_batch_size": 8, "batches_ahead": 4, "max_scenes_inflight": 1},
+        "inference": {"triton_model_name": DEFAULT_MODEL, "triton_batch_size": 8, "batches_ahead": 8, "max_scenes_inflight": 2},
         "pseudolabel": {
             "enabled": True,
             "source": "inference_engine",
@@ -301,11 +307,11 @@ def _ie_payload(experiment_id: str, manifest: Path, *, max_scenes: int, resource
         "pseudolabel": {"threshold": 0.5, "core_size_px": 4096, "halo_px": 512, "local_min_area": 0, "final_min_area": 0, "merge_epsilon": 1.0},
         "resource": {
             "triton_batch_size": resource.get("triton_batch_size", 8),
-            "batches_ahead": resource.get("batches_ahead", 6),
-            "max_preprocess_queue": resource.get("max_preprocess_queue", 512),
+            "batches_ahead": resource.get("batches_ahead", 12),
+            "max_preprocess_queue": resource.get("max_preprocess_queue", 1024),
             "max_spool_bytes": resource.get("max_spool_bytes", 30 * 1024 * 1024 * 1024),
-            "max_scenes_inflight": resource.get("max_scenes_inflight", 2),
-            "max_blocks_inflight": resource.get("max_blocks_inflight", 16),
+            "max_scenes_inflight": resource.get("max_scenes_inflight", 4),
+            "max_blocks_inflight": resource.get("max_blocks_inflight", 32),
         },
     }
 
