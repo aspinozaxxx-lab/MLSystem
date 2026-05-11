@@ -1,0 +1,63 @@
+name: Server diagnostics
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - ".github/workflows/server-diagnostics.yml"
+  workflow_dispatch:
+
+jobs:
+  diagnostics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GPU_SERVER_HOST: ${{ secrets.GPU_SERVER_HOST }}
+      GPU_SERVER_USER: ${{ secrets.GPU_SERVER_USER }}
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          umask 077
+          cat > ~/.ssh/gpu_server_key <<'KEY'
+          ${{ secrets.GPU_SERVER_SSH_KEY }}
+          KEY
+          sed -i 's/^          //' ~/.ssh/gpu_server_key
+          ssh-keyscan -H "$GPU_SERVER_HOST" >> ~/.ssh/known_hosts
+      - name: Read server state
+        run: |
+          SSH="ssh -i ~/.ssh/gpu_server_key -o StrictHostKeyChecking=yes ${GPU_SERVER_USER}@${GPU_SERVER_HOST}"
+          $SSH 'bash -lc "
+          set +e
+          echo ==== docker ps ====
+          docker ps --format \"table {{.Names}}\t{{.Status}}\t{{.Ports}}\"
+          echo ==== inference-engine health ====
+          curl -fsS http://127.0.0.1:8095/health; echo
+          curl -fsS http://127.0.0.1:8095/ready; echo
+          echo ==== inference-engine queues ====
+          curl -fsS http://127.0.0.1:8095/queues; echo
+          echo ==== inference-engine metrics ====
+          curl -fsS http://127.0.0.1:8095/metrics; echo
+          echo ==== rabbitmq queues ====
+          docker exec mlsystem-gpu-rabbitmq rabbitmqctl list_queues name messages_ready messages_unacknowledged consumers
+          echo ==== triton ====
+          curl -fsS http://127.0.0.1:8000/v2/health/ready; echo
+          curl -fsS http://127.0.0.1:8000/v2/repository/index; echo
+          curl -fsS http://127.0.0.1:8000/v2/models/segformer_b2/ready; echo
+          echo ==== latest mlsystem api jobs ====
+          find /data/mlsystem/api/jobs -maxdepth 2 -name job.json -printf \"%T@ %p\n\" 2>/dev/null | sort -nr | head -10 | while read -r _ path; do echo ---- $path; cat \"$path\"; echo; done
+          echo ==== latest inference-engine states ====
+          find /data/mlsystem/inference-engine/jobs -maxdepth 2 -name state.json -printf \"%T@ %p\n\" 2>/dev/null | sort -nr | head -10 | while read -r _ path; do echo ---- $path; cat \"$path\"; echo; done
+          echo ==== latest inference-engine progress ====
+          find /data/mlsystem/inference-engine/jobs -maxdepth 2 -name progress.json -printf \"%T@ %p\n\" 2>/dev/null | sort -nr | head -5 | while read -r _ path; do echo ---- $path; cat \"$path\"; echo; done
+          echo ==== mlsystem-api logs ====
+          docker logs --tail 200 mlsystem-gpu-api
+          echo ==== ie triton worker logs ====
+          docker logs --tail 200 mlsystem-gpu-inference-engine-triton-worker
+          echo ==== ie aggregator logs ====
+          docker logs --tail 200 mlsystem-gpu-inference-engine-aggregator
+          echo ==== ie planner logs ====
+          docker logs --tail 200 mlsystem-gpu-inference-engine-planner
+          echo ==== nvidia-smi ====
+          nvidia-smi || true
+          "'
