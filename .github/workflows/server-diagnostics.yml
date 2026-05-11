@@ -40,16 +40,24 @@ jobs:
           curl -fsS http://127.0.0.1:8095/metrics; echo
           echo ==== rabbitmq queues ====
           docker exec mlsystem-gpu-rabbitmq rabbitmqctl list_queues name messages_ready messages_unacknowledged consumers
+          echo ==== rabbitmq dead letter payload ====
+          RABBIT_USER=\$(awk -F= '\''/^RABBITMQ_DEFAULT_USER=/{print substr(\$0,index(\$0,\"=\")+1)}'\'' /etc/mlsystem/gpu-platform.env)
+          RABBIT_PASS=\$(awk -F= '\''/^RABBITMQ_DEFAULT_PASS=/{print substr(\$0,index(\$0,\"=\")+1)}'\'' /etc/mlsystem/gpu-platform.env)
+          curl -fsS -u \"\$RABBIT_USER:\$RABBIT_PASS\" -H \"content-type: application/json\" -d '\''{\"count\":5,\"ackmode\":\"ack_requeue_true\",\"encoding\":\"auto\",\"truncate\":10000}'\'' http://127.0.0.1:15672/api/queues/%2F/ie.dead_letter/get; echo
           echo ==== triton ====
           curl -fsS http://127.0.0.1:8000/v2/health/ready; echo
           curl -fsS http://127.0.0.1:8000/v2/repository/index; echo
           curl -fsS http://127.0.0.1:8000/v2/models/segformer_b2/ready; echo
           echo ==== latest mlsystem api jobs ====
-          find /data/mlsystem/api/jobs -maxdepth 2 -name job.json -printf \"%T@ %p\n\" 2>/dev/null | sort -nr | head -10 | while read -r _ path; do echo ---- $path; cat \"$path\"; echo; done
+          find /data/mlsystem/api/jobs -maxdepth 2 -name job.json -printf \"%T@ %p\n\" 2>/dev/null | sort -nr | head -10 | cut -d\" \" -f2- | while read -r path; do echo ---- \"\$path\"; cat \"\$path\"; echo; done
           echo ==== latest inference-engine states ====
-          find /data/mlsystem/inference-engine/jobs -maxdepth 2 -name state.json -printf \"%T@ %p\n\" 2>/dev/null | sort -nr | head -10 | while read -r _ path; do echo ---- $path; cat \"$path\"; echo; done
+          find /data/mlsystem/inference-engine/jobs -maxdepth 2 -name state.json -printf \"%T@ %p\n\" 2>/dev/null | sort -nr | head -10 | cut -d\" \" -f2- | while read -r path; do echo ---- \"\$path\"; cat \"\$path\"; echo; done
+          echo ==== latest inference-engine requests ====
+          find /data/mlsystem/inference-engine/jobs -maxdepth 2 -name request.json -printf \"%T@ %p\n\" 2>/dev/null | sort -nr | head -5 | cut -d\" \" -f2- | while read -r path; do echo ---- \"\$path\"; cat \"\$path\"; echo; done
+          echo ==== latest inference-engine events tail ====
+          find /data/mlsystem/inference-engine/jobs -maxdepth 2 -name events.jsonl -printf \"%T@ %p\n\" 2>/dev/null | sort -nr | head -5 | cut -d\" \" -f2- | while read -r path; do echo ---- \"\$path\"; tail -50 \"\$path\"; echo; done
           echo ==== latest inference-engine progress ====
-          find /data/mlsystem/inference-engine/jobs -maxdepth 2 -name progress.json -printf \"%T@ %p\n\" 2>/dev/null | sort -nr | head -5 | while read -r _ path; do echo ---- $path; cat \"$path\"; echo; done
+          find /data/mlsystem/inference-engine/jobs -maxdepth 2 -name progress.json -printf \"%T@ %p\n\" 2>/dev/null | sort -nr | head -5 | cut -d\" \" -f2- | while read -r path; do echo ---- \"\$path\"; cat \"\$path\"; echo; done
           echo ==== mlsystem-api logs ====
           docker logs --tail 200 mlsystem-gpu-api
           echo ==== ie triton worker logs ====
