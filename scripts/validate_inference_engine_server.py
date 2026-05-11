@@ -51,6 +51,7 @@ def main() -> None:
     if not mlsystem_token:
         raise RuntimeError("Missing MLSYSTEM_API_TOKEN")
 
+    stale_validation_cleanup = _cancel_stale_validation_jobs(args.api.rstrip("/"), ie_token)
     manifest = _resolve_manifest(args.manifest)
     manifest_scenes = _manifest_scene_count(manifest)
     if manifest_scenes < 20:
@@ -65,6 +66,7 @@ def main() -> None:
         "commit": _run_text("git -C /opt/mlsystem/repo rev-parse HEAD", check=False).strip(),
         "manifest": str(manifest),
         "manifest_scenes": manifest_scenes,
+        "stale_validation_cleanup": stale_validation_cleanup,
         "dead_letter_before": dead_letter_before,
         "dead_letter_purge_output": dead_letter_purge_output,
         "dead_letter_after_purge": _rabbitmq_queue_counts().get("ie.dead_letter", {}),
@@ -211,6 +213,28 @@ def _run_direct_ie_job(
         "stage_events": _stage_event_counts(events),
         "samples": _compact_samples(samples),
     }
+
+
+def _cancel_stale_validation_jobs(api: str, token: str) -> dict[str, Any]:
+    metrics = _safe_get_json(api + "/metrics", token=token)
+    jobs = metrics.get("jobs") if isinstance(metrics, dict) else {}
+    cancelled: list[dict[str, Any]] = []
+    for job_id, row in (jobs or {}).items():
+        status = str((row or {}).get("status") or "")
+        if status not in {"queued", "running"}:
+            continue
+        if not (str(job_id).startswith("ie_real_20-") or str(job_id).startswith("ie_real_2_")):
+            continue
+        cancelled.append(
+            {
+                "job_id": job_id,
+                "status": status,
+                "result": _safe_post_json(api + f"/api/v1/jobs/{job_id}/cancel", {}, token=token),
+            }
+        )
+    if cancelled:
+        time.sleep(2)
+    return {"jobs_seen": len(jobs or {}), "cancelled": cancelled}
 
 
 def _run_mlsystem_stage(*, mlsystem_api: str, token: str, run_id: str, stage: str, config: dict[str, Any], timeout_sec: int) -> dict[str, Any]:
@@ -529,6 +553,12 @@ def _get_json(url: str, *, token: str | None = None) -> dict[str, Any]:
         try:
             with urllib.request.urlopen(req, timeout=60) as response:
                 return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            if 500 <= exc.code < 600:
+                last_exc = exc
+                time.sleep(min(30, 2**attempt))
+                continue
+            raise
         except (ConnectionError, TimeoutError, urllib.error.URLError) as exc:
             last_exc = exc
             time.sleep(min(30, 2**attempt))
@@ -560,6 +590,10 @@ def _post_json(url: str, payload: dict[str, Any], *, token: str | None = None, t
                 text = response.read().decode("utf-8")
                 return json.loads(text) if text else {}
         except urllib.error.HTTPError as exc:
+            if 500 <= exc.code < 600:
+                last_exc = exc
+                time.sleep(min(30, 2**attempt))
+                continue
             if tolerate_http_error:
                 return {"http_error": exc.code, "message": exc.read().decode("utf-8", errors="replace")}
             raise

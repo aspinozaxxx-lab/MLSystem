@@ -10,7 +10,7 @@ from ..config.settings import InferenceEngineSettings
 from ..planning.planner import build_scene_plan, read_scene_plan, resolve_scene_inputs, write_scene_plan
 from ..queues.messages import QueueMessage, make_message
 from ..queues.rabbitmq import RabbitMQClient
-from ..storage.job_store import JobStore
+from ..storage.job_store import JobStore, TERMINAL_STATUSES
 from ..telemetry.metrics import directory_size_bytes, gpu_util_snapshot
 from ..triton.client import TritonEndpoint
 from .block_worker import materialize_expanded_block, vectorize_expanded_block
@@ -84,6 +84,8 @@ class RabbitPipeline:
 
     async def handle_submit(self, message: QueueMessage) -> None:
         job_id = message.job_id
+        if self._job_is_terminal(job_id):
+            return
         request = JobRequest.model_validate(self.store.read_request(job_id))
         job_dir = self.store.job_dir(job_id)
         scenes = resolve_scene_inputs(request)
@@ -96,6 +98,8 @@ class RabbitPipeline:
 
     async def handle_scene_plan(self, message: QueueMessage) -> None:
         job_id = message.job_id
+        if self._job_is_terminal(job_id):
+            return
         job_dir = self.store.job_dir(job_id)
         request = JobRequest.model_validate(self.store.read_request(job_id))
         scene_index = int(message.payload["scene_index"])
@@ -120,6 +124,8 @@ class RabbitPipeline:
 
     async def handle_tile_preprocess(self, message: QueueMessage) -> None:
         job_id = message.job_id
+        if self._job_is_terminal(job_id):
+            return
         scene_id = str(message.payload["scene_id"])
         tile_id = str(message.payload["tile_id"])
         job_dir = self.store.job_dir(job_id)
@@ -132,6 +138,15 @@ class RabbitPipeline:
         await self.client.publish("ie.tile.infer", make_message(job_id=job_id, stage="tile.infer", scene_id=scene_id, tile_id=tile_id, payload={"scene_id": scene_id, **descriptor}))
 
     async def handle_tile_infer_batch(self, messages: list[QueueMessage]) -> None:
+        if not messages:
+            return
+        terminal_cache: dict[str, bool] = {}
+        active_messages = []
+        for message in messages:
+            terminal_cache.setdefault(message.job_id, self._job_is_terminal(message.job_id))
+            if not terminal_cache[message.job_id]:
+                active_messages.append(message)
+        messages = active_messages
         if not messages:
             return
         by_scene: dict[tuple[str, str], list[QueueMessage]] = {}
@@ -168,6 +183,8 @@ class RabbitPipeline:
 
     async def handle_tile_done(self, message: QueueMessage) -> None:
         job_id = message.job_id
+        if self._job_is_terminal(job_id):
+            return
         scene_id = str(message.payload["scene_id"])
         tile_id = str(message.payload["tile_id"])
         job_dir = self.store.job_dir(job_id)
@@ -213,6 +230,8 @@ class RabbitPipeline:
 
     async def handle_block_ready(self, message: QueueMessage) -> None:
         job_id = message.job_id
+        if self._job_is_terminal(job_id):
+            return
         scene_id = str(message.payload["scene_id"])
         block_id = str(message.payload["block_id"])
         job_dir = self.store.job_dir(job_id)
@@ -224,6 +243,8 @@ class RabbitPipeline:
 
     async def handle_block_vectorize(self, message: QueueMessage) -> None:
         job_id = message.job_id
+        if self._job_is_terminal(job_id):
+            return
         scene_id = str(message.payload["scene_id"])
         block_id = str(message.payload["block_id"])
         job_dir = self.store.job_dir(job_id)
@@ -244,6 +265,8 @@ class RabbitPipeline:
 
     async def handle_block_done(self, message: QueueMessage) -> None:
         job_id = message.job_id
+        if self._job_is_terminal(job_id):
+            return
         scene_id = str(message.payload["scene_id"])
         block_id = str(message.payload["block_id"])
         job_dir = self.store.job_dir(job_id)
@@ -273,6 +296,8 @@ class RabbitPipeline:
 
     async def handle_scene_merge(self, message: QueueMessage) -> None:
         job_id = message.job_id
+        if self._job_is_terminal(job_id):
+            return
         scene_id = str(message.payload["scene_id"])
         job_dir = self.store.job_dir(job_id)
         request = JobRequest.model_validate(self.store.read_request(job_id))
@@ -305,6 +330,8 @@ class RabbitPipeline:
 
     async def handle_job_finalize(self, message: QueueMessage) -> None:
         job_id = message.job_id
+        if self._job_is_terminal(job_id):
+            return
         job_dir = self.store.job_dir(job_id)
         request = JobRequest.model_validate(self.store.read_request(job_id))
         progress = ProgressStore(job_dir).read()
@@ -431,6 +458,12 @@ class RabbitPipeline:
 
     def _default_batch_size(self) -> int:
         return int(self.settings.default_triton_batch_size)
+
+    def _job_is_terminal(self, job_id: str) -> bool:
+        try:
+            return str(self.store.read(job_id).get("status")) in TERMINAL_STATUSES
+        except Exception:
+            return False
 
 
 def _tile_by_id(plan, tile_id: str):
