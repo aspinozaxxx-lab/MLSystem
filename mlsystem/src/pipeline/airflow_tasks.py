@@ -603,6 +603,7 @@ def _cleanup_runtime_intermediates(conf: AirflowExperimentConfig, store: Airflow
     deleted_dirs: list[dict[str, Any]] = []
     deleted_bytes = 0
     deleted_files = 0
+    cleanup_errors: list[str] = []
     run_root = store.run_dir.resolve()
     for name in sorted(allowed_names):
         target = (store.run_dir / name).resolve()
@@ -619,7 +620,19 @@ def _cleanup_runtime_intermediates(conf: AirflowExperimentConfig, store: Airflow
                     file_count += 1
                 except FileNotFoundError:
                     pass
-        shutil.rmtree(target)
+        def _chmod_and_retry(function: Any, path: str, _exc_info: Any) -> None:
+            try:
+                path_obj = Path(path)
+                path_obj.chmod(0o777 if path_obj.is_dir() else 0o666)
+                function(path)
+            except Exception as exc:  # noqa: BLE001 - cleanup is best effort.
+                cleanup_errors.append(f"{_safe_rel(Path(path), store.run_dir)}: {type(exc).__name__}: {exc}")
+
+        try:
+            shutil.rmtree(target, onerror=_chmod_and_retry)
+        except Exception as exc:  # noqa: BLE001 - cleanup must not fail the run finalizer.
+            cleanup_errors.append(f"{_safe_rel(target, store.run_dir)}: {type(exc).__name__}: {exc}")
+            continue
         deleted_files += file_count
         deleted_bytes += total_size
         deleted_dirs.append({"path": _safe_rel(target, store.run_dir), "files": file_count, "bytes": total_size})
@@ -629,6 +642,7 @@ def _cleanup_runtime_intermediates(conf: AirflowExperimentConfig, store: Airflow
         "deleted_files": deleted_files,
         "deleted_bytes": deleted_bytes,
         "deleted_gb": round(deleted_bytes / 1024**3, 3),
+        "errors": cleanup_errors,
     }
 
 

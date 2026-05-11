@@ -15,7 +15,9 @@ from mlsystem.src.pipeline.airflow_tasks import (
     MAIN_DAG_STAGES,
     STAGE_POOLS,
     AirflowExperimentConfig,
+    AirflowRunStore,
     _build_airflow_job,
+    _cleanup_runtime_intermediates,
     _extract_pixel_metrics,
     _get_or_create_mlflow_experiment_id,
     _safe_set_mlflow_experiment_tag,
@@ -522,6 +524,19 @@ class AirflowTasksTests(unittest.TestCase):
         self.assertEqual(f1["status"], "skipped")
         self.assertIn("InferenceEngine-only", predict["summary"])
         self.assertIn("InferenceEngine-only", f1["summary"])
+
+    def test_runtime_cleanup_permission_error_is_nonfatal(self) -> None:
+        conf = AirflowExperimentConfig.model_validate({"experiment_id": "unit_cleanup", "pseudolabel": {"cleanup_intermediates": True}})
+        with tempfile.TemporaryDirectory() as tmp:
+            store = AirflowRunStore(Path(tmp), "manual__unit", {"experiment_id": "unit_cleanup"})
+            target = store.run_dir / "pseudolabel_scene_results"
+            target.mkdir(parents=True)
+            (target / "scene.json").write_text("{}", encoding="utf-8")
+            with patch("mlsystem.src.pipeline.airflow_tasks.shutil.rmtree", side_effect=PermissionError("blocked")):
+                cleanup = _cleanup_runtime_intermediates(conf, store)
+        self.assertTrue(cleanup["enabled"])
+        self.assertEqual(cleanup["deleted_dirs"], [])
+        self.assertTrue(cleanup["errors"])
 
 
 if __name__ == "__main__":
