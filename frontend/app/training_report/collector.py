@@ -94,7 +94,11 @@ class TrainingReportCollector:
         rows: list[dict[str, Any]] = []
         for spec in SUPPORTED_CLASSES:
             inventory = inventories.get(spec.class_slug) or {}
-            class_runs = [_enrich_run(run, inventory) for run in runs_by_class.get(spec.class_slug, [])]
+            class_runs = [
+                run
+                for run in (_enrich_run(run, inventory) for run in runs_by_class.get(spec.class_slug, []))
+                if not _is_perfect_pixel_f1(run.get("pixel_f1"))
+            ]
             class_runs.sort(key=lambda item: (_sort_f1(item.get("pixel_f1")), item.get("train_date") or ""))
             top_runs = []
             for index, run in enumerate(class_runs[:10], start=1):
@@ -411,3 +415,8 @@ def _validation_kind_from_inventory(scene_count: int) -> str:
 def _sort_f1(value: Any) -> float:
     numeric = _float_or_none(value)
     return float("inf") if numeric is None else -numeric
+
+
+def _is_perfect_pixel_f1(value: Any) -> bool:
+    numeric = _float_or_none(value)
+    return numeric is not None and abs(numeric - 1.0) <= 1e-12

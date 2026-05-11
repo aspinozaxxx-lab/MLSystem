@@ -45,7 +45,19 @@ class TrainingReportMLflowReaderTests(unittest.TestCase):
         self.assertEqual(lakes["top_runs"][0]["run_id"], "high")
         self.assertEqual(lakes["best_pixel_f1"], 0.9)
 
+    def test_perfect_pixel_f1_runs_are_excluded(self) -> None:
+        collector = object.__new__(TrainingReportCollector)
+        rows = collector._build_class_rows(  # pylint: disable=protected-access
+            {"lakes": {"objects_count": 2, "scenes_count": 3, "dataset_date": "2026-05-10"}},
+            [
+                {"run_id": "perfect", "class_name": "РћР·РµСЂР°", "class_slug": "lakes", "pixel_f1": 1.0, "run_url": "/mlflow/#/experiments/1/runs/perfect"},
+                {"run_id": "real", "class_name": "РћР·РµСЂР°", "class_slug": "lakes", "pixel_f1": 0.42, "run_url": "/mlflow/#/experiments/1/runs/real"},
+            ],
+        )
+        lakes = next(item for item in rows if item["class_slug"] == "lakes")
+        self.assertEqual([run["run_id"] for run in lakes["top_runs"]], ["real"])
+        self.assertEqual(lakes["best_pixel_f1"], 0.42)
+
 
 if __name__ == "__main__":
     unittest.main()
-
