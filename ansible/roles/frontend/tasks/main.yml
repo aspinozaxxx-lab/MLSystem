@@ -78,6 +78,7 @@
     - { key: "MLSYSTEM_FRONTEND_USER", value: "{{ frontend_user_resolved }}" }
     - { key: "MLSYSTEM_FRONTEND_PASSWORD", value: "{{ frontend_password_resolved }}" }
     - { key: "MLSYSTEM_FRONTEND_SESSION_SECRET", value: "{{ frontend_session_secret_resolved }}" }
+    - { key: "MLSYSTEM_FRONTEND_SESSION_COOKIE_NAME", value: "mlsystem_session" }
     - { key: "MLSYSTEM_FRONTEND_SESSION_TTL_SECONDS", value: "28800" }
     - { key: "MLSYSTEM_FRONTEND_UPLOAD_ROOT", value: "/data/mlsystem/frontend/uploads" }
     - { key: "MLSYSTEM_AIRFLOW_STATUS_ROOT", value: "/data/mlsystem/airflow/status" }

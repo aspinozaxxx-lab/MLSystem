@@ -36,6 +36,7 @@ def create_app(config: FrontendConfig | None = None) -> FastAPI:
     app.add_middleware(
         SessionMiddleware,
         secret_key=config.session_secret,
+        session_cookie=config.session_cookie_name,
         max_age=config.session_ttl_seconds,
         same_site="lax",
         https_only=config.secure_cookies,

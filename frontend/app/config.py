@@ -19,6 +19,7 @@ class FrontendConfig:
     username: str = os.getenv("MLSYSTEM_FRONTEND_USER", "mluser")
     password: str = os.getenv("MLSYSTEM_FRONTEND_PASSWORD", "qazwsxedc")
     session_secret: str = os.getenv("MLSYSTEM_FRONTEND_SESSION_SECRET", "dev-only-change-me")
+    session_cookie_name: str = os.getenv("MLSYSTEM_FRONTEND_SESSION_COOKIE_NAME", "mlsystem_session")
     session_ttl_seconds: int = int(os.getenv("MLSYSTEM_FRONTEND_SESSION_TTL_SECONDS", "28800"))
     secure_cookies: bool = _bool_env(
         "MLSYSTEM_FRONTEND_COOKIE_SECURE",
