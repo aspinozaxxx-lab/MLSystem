@@ -16,8 +16,10 @@ Admin UI routes are exposed through the same frontend session:
 - `http://31.192.104.147/mlflow/`
 - `http://31.192.104.147/rabbitmq/`
 - `http://31.192.104.147/minio-browser/`
+- `http://31.192.104.147/grafana/`
+- `http://31.192.104.147/prometheus/`
 
-The raw admin UI ports are not the primary public entrypoints. Airflow, MLflow, RabbitMQ Management, and MinIO Console bind to localhost/internal addresses where possible and are reached through the frontend reverse proxy.
+The raw admin UI ports are not the primary public entrypoints. Airflow, MLflow, RabbitMQ Management, MinIO Console, Grafana, and Prometheus bind to localhost/internal addresses where possible and are reached through the frontend reverse proxy.
 
 ## Gateway Auth
 
@@ -55,6 +57,8 @@ Airflow is configured for reverse-proxy operation under `/airflow/` and uses rem
 
 RabbitMQ Management is served under `/rabbitmq/`. Nginx injects the RabbitMQ Basic Authorization header server-side from `/etc/mlsystem/gpu-platform.env`; credentials are not rendered into HTML, JavaScript, docs, or URLs.
 
+Grafana is served under `/grafana/` with auth-proxy mode. Nginx passes `X-MLSystem-User` after validating the frontend session, so the user does not see a second Grafana login. Prometheus is available under `/prometheus/` and is protected by the same frontend session.
+
 ## MinIO
 
 Native MinIO Console SSO is not enabled because the current frontend login is a simple session and not an OIDC/LDAP identity provider. The system therefore exposes a safe alternative:
@@ -73,8 +77,16 @@ The home page includes active cards:
 - `MLflow`
 - `MinIO artifacts`
 - `Очереди RabbitMQ`
+- `Grafana`
+- `Prometheus`
 - `Проверка разметок`
 - `Документация`
+
+The top monitoring section embeds:
+
+```text
+/grafana/d/mlsystem-overview/mlsystem-overview?orgId=1&kiosk
+```
 
 Compact service status comes from:
 
@@ -122,6 +134,9 @@ Uploaded runtime data is outside git:
 - `FRONTEND_MLFLOW_UI_URL=/mlflow/`
 - `FRONTEND_MINIO_UI_URL=/minio-browser/`
 - `FRONTEND_RABBITMQ_MANAGEMENT_URL=/rabbitmq/`
+- `FRONTEND_GRAFANA_URL=/grafana/`
+- `FRONTEND_PROMETHEUS_URL=/prometheus/`
+- `FRONTEND_GRAFANA_MAIN_DASHBOARD_URL=/grafana/d/mlsystem-overview/mlsystem-overview?orgId=1&kiosk`
 - `RABBITMQ_MANAGEMENT_PROXY_AUTH`
 
 Secrets stay in server/container env and are not sent to the browser.

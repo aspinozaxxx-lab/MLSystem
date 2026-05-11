@@ -32,6 +32,7 @@
     mlsystem_gpu_frontend_user_resolved: "{{ lookup('env', 'MLSYSTEM_FRONTEND_USER') | default('', true) or (gpu_existing_env | default({})).get('MLSYSTEM_FRONTEND_USER', mlsystem_gpu_frontend_user) }}"
     mlsystem_gpu_frontend_password_resolved: "{{ lookup('env', 'MLSYSTEM_FRONTEND_PASSWORD') | default('', true) or (gpu_existing_env | default({})).get('MLSYSTEM_FRONTEND_PASSWORD', mlsystem_gpu_frontend_default_password) }}"
     mlsystem_gpu_frontend_session_secret_resolved: "{{ lookup('env', 'MLSYSTEM_FRONTEND_SESSION_SECRET') | default('', true) or (gpu_existing_env | default({})).get('MLSYSTEM_FRONTEND_SESSION_SECRET', lookup('password', '/dev/null length=48 chars=ascii_letters,digits')) }}"
+    mlsystem_gpu_grafana_secret_key_resolved: "{{ lookup('env', 'GF_SECURITY_SECRET_KEY') | default('', true) or (gpu_existing_env | default({})).get('GF_SECURITY_SECRET_KEY', lookup('password', '/dev/null length=48 chars=ascii_letters,digits')) }}"
 
 - name: Ensure GPU platform directories exist
   ansible.builtin.file:
@@ -48,6 +49,9 @@
     - "{{ mlsystem_gpu_data_root }}/airflow/status"
     - "{{ mlsystem_gpu_data_root }}/api/jobs"
     - "{{ mlsystem_gpu_data_root }}/rabbitmq"
+    - "{{ mlsystem_gpu_data_root }}/prometheus"
+    - "{{ mlsystem_gpu_data_root }}/grafana"
+    - "{{ mlsystem_gpu_data_root }}/monitoring"
     - "{{ mlsystem_gpu_data_root }}/inference-engine/jobs"
     - "{{ mlsystem_gpu_data_root }}/inference-engine/spool"
     - "{{ mlsystem_gpu_data_root }}/inference-engine/artifacts"
@@ -84,9 +88,12 @@
     cmd: "ufw --force delete allow {{ item }}/tcp"
   loop:
     - "{{ mlsystem_gpu_rabbitmq_management_port }}"
+    - "{{ mlsystem_gpu_rabbitmq_prometheus_port }}"
     - "{{ mlsystem_gpu_airflow_port }}"
     - "{{ mlsystem_gpu_mlflow_port }}"
     - "{{ mlsystem_gpu_minio_console_port }}"
+    - "{{ mlsystem_gpu_prometheus_port }}"
+    - "{{ mlsystem_gpu_grafana_port }}"
   register: admin_ui_ufw_delete
   changed_when: "'Rule deleted' in (admin_ui_ufw_delete.stdout | default(''))"
   failed_when: false
@@ -118,6 +125,16 @@
     mode: "0644"
     content: |
       management.path_prefix = /rabbitmq
+      prometheus.tcp.port = 15692
+
+- name: Enable RabbitMQ management and Prometheus plugins
+  ansible.builtin.copy:
+    dest: "{{ mlsystem_gpu_platform_root }}/rabbitmq-enabled-plugins"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [rabbitmq_management,rabbitmq_prometheus].
 
 - name: Ensure deployed MLSystem config directory exists
   ansible.builtin.file:
@@ -190,6 +207,7 @@
       docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}"
       pull minio minio-init rabbitmq mlflow-postgres mlflow airflow-postgres airflow-init
       mlsystem-api airflow-webserver airflow-scheduler airflow-triggerer triton mlsystem-frontend-proxy
+      prometheus grafana node-exporter cadvisor dcgm-exporter statsd-exporter
   changed_when: true
 
 - name: Initialize Airflow metadata DB and admin user
@@ -205,6 +223,17 @@
   retries: 6
   delay: 30
   until: gpu_platform_core_up.rc == 0
+
+- name: Start base monitoring exporters
+  ansible.builtin.command:
+    cmd: >-
+      docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}"
+      up -d --remove-orphans node-exporter cadvisor dcgm-exporter statsd-exporter
+  changed_when: true
+  register: gpu_platform_exporters_up
+  retries: 4
+  delay: 15
+  until: gpu_platform_exporters_up.rc == 0
 
 - name: Build InferenceEngine image
   ansible.builtin.command:
@@ -292,6 +321,49 @@
   register: airflow_health
   until: airflow_health.status == 200
 
+- name: Build MLSystem monitoring exporter image
+  ansible.builtin.command:
+    cmd: docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}" build mlsystem-monitor-exporter
+  changed_when: true
+
+- name: Start Prometheus, Grafana and MLSystem monitoring exporter
+  ansible.builtin.command:
+    cmd: >-
+      docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}"
+      up -d --remove-orphans mlsystem-monitor-exporter prometheus grafana
+  changed_when: true
+  register: gpu_platform_monitoring_up
+  retries: 6
+  delay: 20
+  until: gpu_platform_monitoring_up.rc == 0
+
+- name: Wait for Prometheus readiness
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ mlsystem_gpu_prometheus_port }}/prometheus/-/ready"
+    status_code: 200
+  retries: 30
+  delay: 5
+  register: prometheus_ready
+  until: prometheus_ready.status == 200
+
+- name: Wait for Grafana health
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ mlsystem_gpu_grafana_port }}/api/health"
+    status_code: 200
+  retries: 30
+  delay: 5
+  register: grafana_health
+  until: grafana_health.status == 200
+
+- name: Wait for MLSystem monitoring exporter health
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ mlsystem_gpu_monitor_exporter_port }}/health"
+    status_code: 200
+  retries: 30
+  delay: 5
+  register: monitor_exporter_health
+  until: monitor_exporter_health.status == 200
+
 - name: Ensure Airflow resource pools
   ansible.builtin.command:
     cmd: >-
@@ -340,6 +412,8 @@
       mlflow: "{{ mlsystem_gpu_frontend_public_url }}/mlflow/"
       minio_artifacts: "{{ mlsystem_gpu_frontend_public_url }}/minio-browser/"
       rabbitmq: "{{ mlsystem_gpu_frontend_public_url }}/rabbitmq/"
+      grafana: "{{ mlsystem_gpu_frontend_public_url }}/grafana/"
+      prometheus: "{{ mlsystem_gpu_frontend_public_url }}/prometheus/"
       triton_ready: "http://{{ mlsystem_gpu_public_host }}:{{ mlsystem_gpu_triton_http_port }}/v2/health/ready"
       mlsystem_api: "ssh tunnel/local only: http://127.0.0.1:{{ mlsystem_gpu_api_port }}"
       airflow_orchestration_import: "{{ airflow_orchestration_import_check.stdout_lines }}"

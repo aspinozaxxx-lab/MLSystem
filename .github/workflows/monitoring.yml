@@ -1,0 +1,232 @@
+name: monitoring
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: "Deploy monitoring stack to the GPU server"
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+  pull_request:
+    paths:
+      - "monitoring/**"
+      - "ansible/**"
+      - "deploy/**"
+      - "frontend/**"
+      - "InferenceEngine/**"
+      - "tests/**"
+      - ".github/workflows/monitoring.yml"
+  push:
+    branches: [main, master]
+    paths:
+      - "monitoring/**"
+      - "ansible/**"
+      - "deploy/**"
+      - "frontend/**"
+      - "InferenceEngine/**"
+      - "tests/**"
+      - ".github/workflows/monitoring.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: monitoring-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Parse YAML and Grafana dashboards
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install PyYAML
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          import yaml
+          for root in [".github/workflows", "ansible", "deploy", "monitoring"]:
+              if not Path(root).exists():
+                  continue
+              for path in list(Path(root).rglob("*.yml")) + list(Path(root).rglob("*.yaml")):
+                  yaml.safe_load(path.read_text(encoding="utf-8"))
+                  print("ok yaml", path)
+              for path in Path(root).rglob("*.json"):
+                  json.loads(path.read_text(encoding="utf-8"))
+                  print("ok json", path)
+          PY
+
+      - name: Validate Prometheus config with promtool
+        run: |
+          docker run --rm -v "$PWD/monitoring/prometheus:/etc/prometheus:ro" prom/prometheus:v2.55.1 \
+            promtool check config /etc/prometheus/prometheus.yml
+
+      - name: Validate GPU compose config
+        run: |
+          cat > /tmp/gpu-platform.env <<'EOF'
+          MINIO_ROOT_USER=mlsystem
+          MINIO_ROOT_PASSWORD=mlsystem-password
+          MLFLOW_DB_PASSWORD=mlflow-password
+          AIRFLOW_POSTGRES_PASSWORD=airflow-password
+          AIRFLOW_ADMIN_USER=admin
+          AIRFLOW_ADMIN_PASSWORD=airflow-admin-password
+          AIRFLOW_FERNET_KEY=00000000000000000000000000000000000000000000
+          AIRFLOW_SECRET_KEY=airflow-secret
+          RABBITMQ_DEFAULT_USER=mlsystem
+          RABBITMQ_DEFAULT_PASS=rabbit-password
+          INFERENCE_ENGINE_API_TOKEN=ie-token
+          MLSYSTEM_API_TOKEN=api-token
+          MLSYSTEM_REPO_ROOT=${{ github.workspace }}
+          MLSYSTEM_DATA_ROOT=/tmp/mlsystem
+          MLSYSTEM_PLATFORM_ROOT=/tmp/mlsystem/platform
+          MLSYSTEM_FRONTEND_PUBLIC_BASE_URL=http://127.0.0.1
+          GF_SECURITY_SECRET_KEY=grafana-secret
+          EOF
+          docker compose --env-file /tmp/gpu-platform.env -f deploy/docker-compose.gpu.yml config >/tmp/gpu-compose.yml
+          grep -q "mlsystem-gpu-prometheus" /tmp/gpu-compose.yml
+          grep -q "mlsystem-gpu-grafana" /tmp/gpu-compose.yml
+
+  tests:
+    runs-on: ubuntu-latest
+    needs: syntax
+    env:
+      INFERENCE_ENGINE_JOB_ROOT: /tmp/inference-engine/jobs
+      INFERENCE_ENGINE_SPOOL_ROOT: /tmp/inference-engine/spool
+      INFERENCE_ENGINE_ARTIFACT_ROOT: /tmp/inference-engine/artifacts
+      INFERENCE_ENGINE_LOGS_ROOT: /tmp/inference-engine/logs
+      INFERENCE_ENGINE_USE_RABBITMQ: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r frontend/requirements.txt
+          python -m pip install -e InferenceEngine
+          python -m pip install PyYAML httpx shapely affine numpy pydantic
+      - name: Run monitoring and frontend tests
+        run: |
+          python -m unittest discover -s monitoring/tests
+          python -m unittest discover -s frontend/tests
+          python -m unittest tests.test_monitoring_configs tests.test_frontend_gateway_config
+          python -m unittest InferenceEngine.tests.test_api
+      - name: Compile changed Python packages
+        run: python -m compileall -q InferenceEngine frontend tests monitoring
+      - name: Whitespace check
+        run: git diff --check
+
+  deploy-monitoring:
+    runs-on: ubuntu-latest
+    needs: tests
+    if: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')) || (github.event_name == 'workflow_dispatch' && inputs.deploy == 'true') }}
+    env:
+      GPU_SERVER_HOST: ${{ secrets.GPU_SERVER_HOST }}
+      GPU_SERVER_USER: ${{ secrets.GPU_SERVER_USER }}
+      MINIO_ROOT_USER: ${{ secrets.MINIO_ROOT_USER }}
+      MINIO_ROOT_PASSWORD: ${{ secrets.MINIO_ROOT_PASSWORD }}
+      MLFLOW_DB_PASSWORD: ${{ secrets.MLFLOW_DB_PASSWORD }}
+      AIRFLOW_ADMIN_USER: ${{ secrets.AIRFLOW_ADMIN_USER }}
+      AIRFLOW_ADMIN_PASSWORD: ${{ secrets.AIRFLOW_ADMIN_PASSWORD }}
+      AIRFLOW_POSTGRES_PASSWORD: ${{ secrets.AIRFLOW_POSTGRES_PASSWORD }}
+      AIRFLOW_FERNET_KEY: ${{ secrets.AIRFLOW_FERNET_KEY }}
+      AIRFLOW_SECRET_KEY: ${{ secrets.AIRFLOW_SECRET_KEY }}
+      MLSYSTEM_API_TOKEN: ${{ secrets.MLSYSTEM_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check required deployment secrets
+        run: |
+          missing=0
+          for name in GPU_SERVER_HOST GPU_SERVER_USER MINIO_ROOT_USER MINIO_ROOT_PASSWORD MLFLOW_DB_PASSWORD AIRFLOW_ADMIN_USER AIRFLOW_ADMIN_PASSWORD AIRFLOW_POSTGRES_PASSWORD AIRFLOW_FERNET_KEY AIRFLOW_SECRET_KEY; do
+            if [ -z "${!name:-}" ]; then
+              echo "Missing GitHub secret: ${name}" >&2
+              missing=1
+            fi
+          done
+          if [ -z "${{ secrets.GPU_SERVER_SSH_KEY }}" ]; then
+            echo "Missing GitHub secret: GPU_SERVER_SSH_KEY" >&2
+            missing=1
+          fi
+          exit "$missing"
+      - name: Install Ansible
+        run: |
+          python3 -m pip install --user ansible-core PyYAML
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Configure SSH inventory
+        run: |
+          mkdir -p ~/.ssh
+          umask 077
+          cat > ~/.ssh/gpu_server_key <<'KEY'
+          ${{ secrets.GPU_SERVER_SSH_KEY }}
+          KEY
+          sed -i 's/^          //' ~/.ssh/gpu_server_key
+          ssh-keyscan -H "$GPU_SERVER_HOST" >> ~/.ssh/known_hosts
+          cat > ansible/inventory/gpu-ci.ini <<EOF
+          [gpu_mlserver]
+          gpu-mlserver ansible_host=${GPU_SERVER_HOST} ansible_user=${GPU_SERVER_USER} ansible_ssh_private_key_file=$HOME/.ssh/gpu_server_key ansible_python_interpreter=/usr/bin/python3
+          EOF
+      - name: Deploy monitoring stack through GPU platform playbook
+        run: ansible-playbook -i ansible/inventory/gpu-ci.ini ansible/playbooks/deploy_ml_platform.yml -e "mlsystem_git_commit=${GITHUB_SHA}"
+
+  validate-monitoring:
+    runs-on: ubuntu-latest
+    needs: deploy-monitoring
+    if: ${{ needs.deploy-monitoring.result == 'success' }}
+    env:
+      GPU_SERVER_HOST: ${{ secrets.GPU_SERVER_HOST }}
+      GPU_SERVER_USER: ${{ secrets.GPU_SERVER_USER }}
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          umask 077
+          cat > ~/.ssh/gpu_server_key <<'KEY'
+          ${{ secrets.GPU_SERVER_SSH_KEY }}
+          KEY
+          sed -i 's/^          //' ~/.ssh/gpu_server_key
+          ssh-keyscan -H "$GPU_SERVER_HOST" >> ~/.ssh/known_hosts
+      - name: Validate Prometheus, Grafana and metrics targets
+        run: |
+          SSH="ssh -i ~/.ssh/gpu_server_key -o StrictHostKeyChecking=yes ${GPU_SERVER_USER}@${GPU_SERVER_HOST}"
+          $SSH "docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | grep -E 'prometheus|grafana|node-exporter|cadvisor|dcgm|statsd|monitor-exporter'"
+          $SSH "curl -fsS http://127.0.0.1:9090/prometheus/-/ready"
+          $SSH "curl -fsS http://127.0.0.1:3000/api/health | python3 -m json.tool"
+          $SSH "curl -fsS http://127.0.0.1:9100/metrics | head"
+          $SSH "curl -fsS http://127.0.0.1:8080/metrics | head"
+          $SSH "curl -fsS http://127.0.0.1:9400/metrics | head || true"
+          $SSH "curl -fsS http://127.0.0.1:9102/metrics | head"
+          $SSH "curl -fsS http://127.0.0.1:9200/metrics | head"
+          $SSH "curl -fsS http://127.0.0.1:8095/metrics/prometheus | head"
+          $SSH "curl -fsS http://127.0.0.1:8002/metrics | head"
+          $SSH "curl -fsS -H 'X-MLSystem-User: mluser' http://127.0.0.1:3000/api/datasources | python3 -m json.tool"
+          $SSH "curl -fsS -H 'X-MLSystem-User: mluser' http://127.0.0.1:3000/api/dashboards/uid/mlsystem-overview | python3 -m json.tool >/tmp/grafana-overview.json"
+          $SSH "curl -fsS 'http://127.0.0.1:9090/prometheus/api/v1/targets' | python3 -m json.tool >/tmp/prom-targets.json"
+          $SSH "python3 - <<'PY'
+          import json
+          from pathlib import Path
+          targets = json.loads(Path('/tmp/prom-targets.json').read_text())['data']['activeTargets']
+          required = {'node-exporter', 'cadvisor', 'rabbitmq', 'triton', 'airflow-statsd', 'inference-engine', 'mlsystem-monitor-exporter'}
+          up = {t['labels'].get('job') for t in targets if t.get('health') == 'up'}
+          print('targets up', sorted(up))
+          missing = required - up
+          if missing:
+              raise SystemExit(f'missing up targets: {sorted(missing)}')
+          PY"
+          $SSH "set -e; USER=\$(awk -F= '/^MLSYSTEM_FRONTEND_USER=/{print substr(\$0,index(\$0,\"=\")+1)}' /etc/mlsystem/gpu-platform.env); PASS=\$(awk -F= '/^MLSYSTEM_FRONTEND_PASSWORD=/{print substr(\$0,index(\$0,\"=\")+1)}' /etc/mlsystem/gpu-platform.env); rm -f /tmp/mlsystem-frontend-cookie; curl -fsS -c /tmp/mlsystem-frontend-cookie -d \"username=\$USER&password=\$PASS\" http://127.0.0.1/login >/dev/null; curl -fsS -b /tmp/mlsystem-frontend-cookie http://127.0.0.1/ | grep 'Мониторинг MLSystem'; curl -fsSI -b /tmp/mlsystem-frontend-cookie http://127.0.0.1/grafana/ | head -20; curl -fsSI -b /tmp/mlsystem-frontend-cookie http://127.0.0.1/prometheus/ | head -20"
+      - name: Move metrics with a synthetic InferenceEngine job
+        run: |
+          SSH="ssh -i ~/.ssh/gpu_server_key -o StrictHostKeyChecking=yes ${GPU_SERVER_USER}@${GPU_SERVER_HOST}"
+          TOKEN="$($SSH "awk -F= '/^INFERENCE_ENGINE_API_TOKEN=/{print substr(\$0,index(\$0,\"=\")+1)}' /etc/mlsystem/gpu-platform.env")"
+          $SSH "cd /opt/mlsystem/repo && INFERENCE_ENGINE_API_TOKEN='${TOKEN}' timeout 240 python3 scripts/handtest_inference_engine_synthetic.py --api http://127.0.0.1:8095"
+          $SSH "curl -fsS 'http://127.0.0.1:9090/prometheus/api/v1/query?query=inference_engine_tiles_done' | python3 -m json.tool"

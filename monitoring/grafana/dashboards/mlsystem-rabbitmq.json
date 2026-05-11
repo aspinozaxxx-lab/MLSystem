@@ -1,0 +1,18 @@
+{
+  "uid": "mlsystem-rabbitmq",
+  "title": "MLSystem RabbitMQ",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "tags": ["mlsystem", "rabbitmq"],
+  "time": {"from": "now-1h", "to": "now"},
+  "panels": [
+    {"id": 1, "type": "stat", "title": "Dead Letter", "gridPos": {"x": 0, "y": 0, "w": 4, "h": 4}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "inference_engine_dead_letter_messages", "refId": "A"}]},
+    {"id": 2, "type": "stat", "title": "Total Ready", "gridPos": {"x": 4, "y": 0, "w": 4, "h": 4}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "sum(inference_engine_queue_ready)", "refId": "A"}]},
+    {"id": 3, "type": "stat", "title": "Total Unacked", "gridPos": {"x": 8, "y": 0, "w": 4, "h": 4}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "sum(inference_engine_queue_unacked)", "refId": "A"}]},
+    {"id": 10, "type": "timeseries", "title": "InferenceEngine Queues", "gridPos": {"x": 0, "y": 4, "w": 24, "h": 8}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "inference_engine_queue_ready", "legendFormat": "{{queue}} ready", "refId": "A"}, {"expr": "inference_engine_queue_unacked", "legendFormat": "{{queue}} unacked", "refId": "B"}]},
+    {"id": 11, "type": "timeseries", "title": "RabbitMQ Native Publish/Ack Rates", "gridPos": {"x": 0, "y": 12, "w": 24, "h": 8}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "rate(rabbitmq_global_messages_published_total[5m])", "legendFormat": "published", "refId": "A"}, {"expr": "rate(rabbitmq_global_messages_acknowledged_total[5m])", "legendFormat": "acked", "refId": "B"}]},
+    {"id": 12, "type": "table", "title": "Queue Consumers", "gridPos": {"x": 0, "y": 20, "w": 24, "h": 7}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "inference_engine_queue_consumers", "format": "table", "instant": true, "refId": "A"}]}
+  ]
+}

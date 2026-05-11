@@ -96,6 +96,7 @@ The finalizer writes the old Airflow artifact names into `run_dir`. Real probabi
 - `GET /ready`
 - `GET /queues`
 - `GET /metrics`
+- `GET /metrics/prometheus`
 - `POST /api/v1/jobs`
 - `GET /api/v1/jobs/{job_id}`
 - `GET /api/v1/jobs/{job_id}/events`
@@ -105,7 +106,9 @@ The finalizer writes the old Airflow artifact names into `run_dir`. Real probabi
 - `GET /docs`
 - `GET /redoc`
 
-`/health` reports the deployed commit through `MLSYSTEM_COMMIT` or `GIT_COMMIT`. `/ready` checks job/spool/artifact/log roots, RabbitMQ configuration, and Triton health.
+`/health` reports the deployed commit through `MLSYSTEM_COMMIT` or `GIT_COMMIT`. `/ready` checks job/spool/artifact/log roots, RabbitMQ configuration, and Triton health. `/metrics` remains JSON for existing validation/frontend consumers; `/metrics/prometheus` exposes Prometheus text format for the monitoring stack.
+
+Prometheus metrics include job status counters, active jobs, tiles/blocks done, Triton batch totals and latency, streaming overlap, spool bytes, preprocess pause/resume counters, per-queue ready/unacked/consumer counts, and dead-letter depth.
 
 ## Airflow Integration
 

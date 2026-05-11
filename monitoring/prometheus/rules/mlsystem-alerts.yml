@@ -1,0 +1,82 @@
+groups:
+  - name: mlsystem
+    rules:
+      - alert: MLSystemServiceDown
+        expr: mlsystem_service_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "MLSystem service {{ $labels.service }} is down"
+
+      - alert: PrometheusTargetDown
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Prometheus target {{ $labels.job }} is down"
+
+      - alert: GPUHighUtilizationLong
+        expr: DCGM_FI_DEV_GPU_UTIL > 95
+        for: 20m
+        labels:
+          severity: info
+        annotations:
+          summary: "GPU utilization is high for a sustained period"
+
+      - alert: GPUMemoryHigh
+        expr: DCGM_FI_DEV_FB_USED / (DCGM_FI_DEV_FB_USED + DCGM_FI_DEV_FB_FREE) > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "GPU memory usage is above 90%"
+
+      - alert: DiskDataAlmostFull
+        expr: node_filesystem_avail_bytes{mountpoint=~"/|/data.*"} / node_filesystem_size_bytes{mountpoint=~"/|/data.*"} < 0.1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Filesystem {{ $labels.mountpoint }} has less than 10% free space"
+
+      - alert: RabbitMQDeadLetterNotEmpty
+        expr: inference_engine_dead_letter_messages > 0 or rabbitmq_queue_messages_ready{queue="ie.dead_letter"} > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "InferenceEngine dead-letter queue is not empty"
+
+      - alert: RabbitMQQueueBacklogHigh
+        expr: inference_engine_queue_ready > 2000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "InferenceEngine queue {{ $labels.queue }} backlog is high"
+
+      - alert: AirflowDagFailed
+        expr: airflow_dag_run_state{state="failed"} > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Recent Airflow DAG run failed"
+
+      - alert: InferenceEngineJobFailed
+        expr: inference_engine_jobs_total{status="failed"} > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "InferenceEngine has failed jobs"
+
+      - alert: TritonUnavailable
+        expr: mlsystem_service_up{service="triton"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Triton is unavailable"

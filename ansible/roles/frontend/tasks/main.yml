@@ -92,6 +92,9 @@
     - { key: "FRONTEND_MLFLOW_UI_URL", value: "/mlflow/" }
     - { key: "FRONTEND_MINIO_UI_URL", value: "/minio-browser/" }
     - { key: "FRONTEND_RABBITMQ_MANAGEMENT_URL", value: "/rabbitmq/" }
+    - { key: "FRONTEND_GRAFANA_URL", value: "/grafana/" }
+    - { key: "FRONTEND_PROMETHEUS_URL", value: "/prometheus/" }
+    - { key: "FRONTEND_GRAFANA_MAIN_DASHBOARD_URL", value: "/grafana/d/mlsystem-overview/mlsystem-overview?orgId=1&kiosk" }
     - { key: "RABBITMQ_MANAGEMENT_PUBLIC_URL", value: "/rabbitmq/" }
   when: frontend_env_stat.stat.exists
   no_log: true

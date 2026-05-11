@@ -71,10 +71,16 @@ class FrontendAuthTests(unittest.TestCase):
             self.assertIn("MLflow", response.text)
             self.assertIn("MinIO artifacts", response.text)
             self.assertIn("Очереди RabbitMQ", response.text)
+            self.assertIn("Мониторинг MLSystem", response.text)
+            self.assertIn("Grafana", response.text)
+            self.assertIn("Prometheus", response.text)
             self.assertIn('/airflow/"', response.text)
             self.assertIn('/mlflow/"', response.text)
             self.assertIn('/minio-browser/"', response.text)
             self.assertIn('/rabbitmq/"', response.text)
+            self.assertIn('/grafana/"', response.text)
+            self.assertIn('/prometheus/"', response.text)
+            self.assertIn('/grafana/d/mlsystem-overview/mlsystem-overview?orgId=1&amp;kiosk', response.text)
 
     def test_queue_metrics_proxy_uses_inference_engine_api(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -159,6 +165,8 @@ class FrontendAuthTests(unittest.TestCase):
             self.assertEqual(payload["services"]["rabbitmq"]["ready"], 1)
             self.assertIn("http://airflow-webserver:8080/airflow/api/v1/health", seen)
             self.assertIn("http://mlflow:5000/mlflow/health", seen)
+            self.assertIn("http://grafana:3000/api/health", seen)
+            self.assertIn("http://prometheus:9090/prometheus/-/ready", seen)
 
 
 if __name__ == "__main__":

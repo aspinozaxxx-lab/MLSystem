@@ -67,6 +67,15 @@ def queues() -> dict[str, Any]:
 
 @app.get("/metrics")
 def metrics() -> dict[str, Any]:
+    return _collect_metrics()
+
+
+@app.get("/metrics/prometheus")
+def prometheus_metrics() -> Response:
+    return Response(_render_prometheus_metrics(_collect_metrics()), media_type="text/plain; version=0.0.4; charset=utf-8")
+
+
+def _collect_metrics() -> dict[str, Any]:
     aggregate: dict[str, float] = {}
     jobs: dict[str, Any] = {}
     for state_path in settings.job_root.glob("*/state.json"):
@@ -79,7 +88,95 @@ def metrics() -> dict[str, Any]:
         for key, value in job_metrics.items():
             if isinstance(value, (int, float)):
                 aggregate[key] = float(aggregate.get(key, 0.0)) + float(value)
-    return {"status": "ok", "queues": QUEUE_NAMES, "aggregate": aggregate, "jobs": jobs}
+    return {"status": "ok", "queues": QUEUE_NAMES, "queue_metrics": rabbitmq_queue_metrics(), "aggregate": aggregate, "jobs": jobs}
+
+
+def _render_prometheus_metrics(payload: dict[str, Any]) -> str:
+    lines: list[str] = [
+        "# HELP inference_engine_jobs_total InferenceEngine jobs by status.",
+        "# TYPE inference_engine_jobs_total gauge",
+    ]
+    jobs = payload.get("jobs") or {}
+    status_counts: dict[str, int] = {}
+    active_jobs = 0
+    for job in jobs.values():
+        status = str((job or {}).get("status") or "unknown")
+        status_counts[status] = status_counts.get(status, 0) + 1
+        if status in {"queued", "running"}:
+            active_jobs += 1
+    for status, count in sorted(status_counts.items()):
+        lines.append(f'inference_engine_jobs_total{{status="{_label(status)}"}} {count}')
+    lines.extend(
+        [
+            "# HELP inference_engine_active_jobs InferenceEngine queued or running jobs.",
+            "# TYPE inference_engine_active_jobs gauge",
+            f"inference_engine_active_jobs {active_jobs}",
+        ]
+    )
+    aggregate = payload.get("aggregate") or {}
+    metric_map = {
+        "tiles_total": "inference_engine_tiles_total",
+        "tiles_done": "inference_engine_tiles_done",
+        "blocks_total": "inference_engine_blocks_total",
+        "blocks_done": "inference_engine_blocks_done",
+        "triton_batches": "inference_engine_triton_batches_total",
+        "triton_batch_fill_ratio": "inference_engine_triton_batch_fill_ratio",
+        "triton_request_duration_ms": "inference_engine_triton_request_duration_ms",
+        "streaming_overlap_sec": "inference_engine_streaming_overlap_seconds",
+        "spool_bytes": "inference_engine_spool_bytes",
+        "preprocess_pauses_total": "inference_engine_preprocess_pauses_total",
+        "preprocess_resumes_total": "inference_engine_preprocess_resumes_total",
+    }
+    for source, name in metric_map.items():
+        value = _number(aggregate.get(source))
+        lines.append(f"# TYPE {name} gauge")
+        lines.append(f"{name} {value}")
+    for job_id, job in sorted(jobs.items()):
+        metrics = (job or {}).get("metrics") or {}
+        status = str((job or {}).get("status") or "unknown")
+        for source, name in metric_map.items():
+            if source in metrics:
+                lines.append(f'{name}{{job_id="{_label(job_id)}",status="{_label(status)}"}} {_number(metrics.get(source))}')
+    lines.extend(
+        [
+            "# HELP inference_engine_queue_ready RabbitMQ ready messages per InferenceEngine queue.",
+            "# TYPE inference_engine_queue_ready gauge",
+            "# HELP inference_engine_queue_unacked RabbitMQ unacked messages per InferenceEngine queue.",
+            "# TYPE inference_engine_queue_unacked gauge",
+            "# HELP inference_engine_queue_consumers RabbitMQ consumers per InferenceEngine queue.",
+            "# TYPE inference_engine_queue_consumers gauge",
+        ]
+    )
+    dead_letter = 0.0
+    for item in payload.get("queue_metrics") or []:
+        queue = str(item.get("name") or "")
+        ready = _number(item.get("messages_ready"))
+        unacked = _number(item.get("messages_unacked"))
+        consumers = _number(item.get("consumers"))
+        lines.append(f'inference_engine_queue_ready{{queue="{_label(queue)}"}} {ready}')
+        lines.append(f'inference_engine_queue_unacked{{queue="{_label(queue)}"}} {unacked}')
+        lines.append(f'inference_engine_queue_consumers{{queue="{_label(queue)}"}} {consumers}')
+        if queue == "ie.dead_letter":
+            dead_letter = ready + unacked
+    lines.extend(
+        [
+            "# HELP inference_engine_dead_letter_messages InferenceEngine dead-letter messages.",
+            "# TYPE inference_engine_dead_letter_messages gauge",
+            f"inference_engine_dead_letter_messages {dead_letter}",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _number(value: Any) -> float:
+    if isinstance(value, (int, float)):
+        return float(value)
+    return 0.0
+
+
+def _label(value: Any) -> str:
+    return str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
 
 
 @app.post("/api/v1/jobs", response_model=JobCreated, dependencies=[Depends(require_token)])

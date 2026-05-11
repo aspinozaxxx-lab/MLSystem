@@ -6,18 +6,49 @@
   <p>Панель запуска и мониторинга ML pipeline</p>
 </section>
 
+<section class="monitor-hero" aria-label="Мониторинг MLSystem">
+  <div class="monitor-heading">
+    <div>
+      <h2>Мониторинг MLSystem</h2>
+      <p>Ресурсы машины, GPU, очереди RabbitMQ, InferenceEngine, Airflow, storage и состояние сервисов в одном Grafana dashboard.</p>
+    </div>
+    <div class="monitor-actions">
+      <a class="primary-link" href="{{ grafana_url }}">Открыть Grafana</a>
+      <a class="secondary-link" href="{{ prometheus_url }}">Prometheus</a>
+    </div>
+  </div>
+  <iframe
+    class="grafana-frame"
+    src="{{ grafana_main_dashboard_url }}"
+    title="MLSystem Grafana dashboard"
+    loading="lazy"
+  ></iframe>
+</section>
+
 <section class="status-strip" id="service-status" aria-label="Статус сервисов">
   <span data-service="airflow">Airflow: <b>...</b></span>
   <span data-service="mlflow">MLflow: <b>...</b></span>
   <span data-service="minio">MinIO: <b>...</b></span>
   <span data-service="inference_engine">InferenceEngine: <b>...</b></span>
   <span data-service="rabbitmq">RabbitMQ: <b>...</b></span>
+  <span data-service="grafana">Grafana: <b>...</b></span>
+  <span data-service="prometheus">Prometheus: <b>...</b></span>
 </section>
 
 <section class="grid">
   <a class="card active" href="/annotation-check">
     <h2>Проверка разметок</h2>
     <p>Загрузка GeoJSON и списка сцен, запуск production stages inventory_scenes и prepare_dataset.</p>
+  </a>
+
+  <a class="card active" href="{{ grafana_url }}">
+    <h2>Grafana</h2>
+    <p>Главный dashboard MLSystem: машина, GPU, очереди, InferenceEngine, Airflow и storage/IO.</p>
+  </a>
+
+  <a class="card active" href="{{ prometheus_url }}">
+    <h2>Prometheus</h2>
+    <p>Targets, PromQL и raw metrics для диагностики мониторинга.</p>
   </a>
 
   <a class="card active" href="{{ airflow_ui_url }}">
@@ -32,7 +63,7 @@
 
   <a class="card active" href="{{ minio_ui_url }}">
     <h2>MinIO artifacts</h2>
-    <p>Read-only просмотр buckets и artifacts через backend frontend без передачи S3 credentials в браузер.</p>
+    <p>Read-only просмотр buckets и artifacts через frontend backend без передачи S3 credentials в браузер.</p>
   </a>
 
   <a class="card active queue-card" href="{{ rabbitmq_management_url }}">
@@ -48,7 +79,7 @@
 
   <a class="card active" href="/docs/frontend">
     <h2>Документация</h2>
-    <p>Описание frontend gateway, annotation checks и доступа к админским UI.</p>
+    <p>Описание frontend gateway, annotation checks, мониторинга и доступа к админским UI.</p>
   </a>
 </section>
 

@@ -45,7 +45,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install --extra-index-url https://download.pytorch.org/whl/cpu torch torchvision
           pip install -e InferenceEngine
-          pip install fastapi uvicorn shapely rasterio affine numpy pydantic pika aio-pika tritonclient[http] mlflow boto3 requests httpx
+          pip install fastapi uvicorn shapely rasterio affine numpy pydantic pika aio-pika tritonclient[http] mlflow boto3 requests httpx PyYAML
       - name: Run InferenceEngine unit tests
         run: python -m unittest discover -s InferenceEngine/tests
       - name: Run repository unit tests

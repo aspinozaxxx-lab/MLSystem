@@ -65,6 +65,8 @@ Frontend cards and authenticated UI routes:
 - `MLflow`: `http://31.192.104.147/mlflow/`
 - `MinIO artifacts`: `http://31.192.104.147/minio-browser/`
 - `Очереди RabbitMQ`: `http://31.192.104.147/rabbitmq/`
+- `Grafana`: `http://31.192.104.147/grafana/`
+- `Prometheus`: `http://31.192.104.147/prometheus/`
 
 Gateway checks:
 
@@ -83,6 +85,50 @@ Implementation:
 - MLflow remains behind frontend auth; its direct UI is not the public entrypoint.
 - RabbitMQ Management runs under `/rabbitmq/`; Nginx injects the Basic Authorization header server-side from environment, so RabbitMQ credentials are not present in HTML, JavaScript, URLs, docs, or git.
 - Native MinIO Console SSO was not enabled because the current frontend session is not an OIDC/LDAP identity provider. The safe alternative is `/minio-browser/`, a frontend-authenticated read-only browser that uses S3 credentials only server-side.
+
+## Monitoring Stack
+
+Monitoring is deployed through the repository-managed GPU platform compose and Ansible role.
+
+Expected containers:
+
+- `mlsystem-gpu-prometheus`
+- `mlsystem-gpu-grafana`
+- `mlsystem-gpu-node-exporter`
+- `mlsystem-gpu-cadvisor`
+- `mlsystem-gpu-dcgm-exporter`
+- `mlsystem-gpu-statsd-exporter`
+- `mlsystem-gpu-monitor-exporter`
+
+Public authenticated routes:
+
+- Grafana: `/grafana/`
+- Prometheus: `/prometheus/`
+- Main dashboard UID: `mlsystem-overview`
+
+Dashboard sections:
+
+- service status cards
+- CPU/RAM/swap
+- NVIDIA GPU utilization/memory/power/temperature
+- disk free/used and disk IO
+- Docker container CPU/memory/network
+- RabbitMQ ready/unacked/consumers/dead-letter
+- InferenceEngine jobs/tiles/blocks/Triton batches/streaming overlap
+- Airflow scheduler, DAG/task states, and durations
+
+Prometheus scrape jobs:
+
+- `node-exporter`
+- `cadvisor`
+- `dcgm-exporter`
+- `rabbitmq`
+- `triton`
+- `airflow-statsd`
+- `inference-engine`
+- `mlsystem-monitor-exporter`
+
+InferenceEngine now exposes `GET /metrics/prometheus` in addition to the existing JSON `GET /metrics`.
 
 ## Airflow And MLSystem API
 

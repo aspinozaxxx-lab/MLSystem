@@ -34,6 +34,44 @@ body {
 .hero { padding: 20px 0 26px; }
 .hero h1 { margin: 0; font-size: 42px; }
 .hero p, .muted { color: var(--muted); }
+.monitor-hero {
+  margin: 0 0 22px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 10px 24px rgba(23, 50, 77, 0.06);
+  overflow: hidden;
+}
+.monitor-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  align-items: flex-start;
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.monitor-heading h2 { margin: 0 0 6px; font-size: 24px; }
+.monitor-heading p { margin: 0; color: var(--muted); max-width: 760px; }
+.monitor-actions { display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+.primary-link, .secondary-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 38px;
+  border-radius: 6px;
+  padding: 9px 12px;
+  text-decoration: none;
+  font-weight: 700;
+}
+.primary-link { color: #fff; background: var(--blue); }
+.secondary-link { color: var(--blue); border: 1px solid var(--border); background: var(--blue-2); }
+.grafana-frame {
+  display: block;
+  width: 100%;
+  height: min(720px, 72vh);
+  min-height: 420px;
+  border: 0;
+  background: #111827;
+}
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 16px; }
 .status-strip {
   display: flex;

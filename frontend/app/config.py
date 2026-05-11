@@ -38,6 +38,12 @@ class FrontendConfig:
         "FRONTEND_RABBITMQ_MANAGEMENT_URL",
         os.getenv("RABBITMQ_MANAGEMENT_PUBLIC_URL", "/rabbitmq/"),
     )
+    grafana_url: str = os.getenv("FRONTEND_GRAFANA_URL", "/grafana/")
+    prometheus_url: str = os.getenv("FRONTEND_PROMETHEUS_URL", "/prometheus/")
+    grafana_main_dashboard_url: str = os.getenv(
+        "FRONTEND_GRAFANA_MAIN_DASHBOARD_URL",
+        "/grafana/d/mlsystem-overview/mlsystem-overview?orgId=1&kiosk",
+    )
     upload_root: Path = Path(os.getenv("MLSYSTEM_FRONTEND_UPLOAD_ROOT", "/data/mlsystem/frontend/uploads"))
     status_root: Path = Path(os.getenv("MLSYSTEM_AIRFLOW_STATUS_ROOT", "/data/mlsystem/airflow/status"))
     default_images_uri: str = os.getenv("MLSYSTEM_FRONTEND_DEFAULT_IMAGES_URI", "s3://mlsystems/images/")

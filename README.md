@@ -34,13 +34,14 @@ GitHub Actions are split by responsibility:
 - `frontend-ansible` (`.github/workflows/frontend-ansible.yml`) applies frontend Ansible settings when `ansible/**` changes.
 - `inference-engine-service` validates and deploys InferenceEngine service code.
 - `inference-engine-infra` validates and applies RabbitMQ/InferenceEngine infrastructure.
+- `monitoring` validates and deploys Prometheus, Grafana, exporters, dashboards, and monitoring gateway routes.
 
 The retired combined workflow must not be restored. Code/service rollout, infrastructure rollout, frontend code rollout and frontend settings rollout must stay separate.
 
 Frontend lives in `frontend/` and is deployed with `ansible/playbooks/deploy_frontend.yml`.
-It provides login, annotation checks, and the authenticated admin gateway for Airflow, MLflow, MinIO artifacts, and RabbitMQ Management. Annotation checks call `mlsystem-api` stages `inventory_scenes` and `prepare_dataset`; they do not trigger Airflow DAGs.
+It provides login, annotation checks, monitoring, and the authenticated admin gateway for Airflow, MLflow, MinIO artifacts, RabbitMQ Management, Grafana, and Prometheus. Annotation checks call `mlsystem-api` stages `inventory_scenes` and `prepare_dataset`; they do not trigger Airflow DAGs.
 Public frontend URL is `http://31.192.104.147/`; port `8090` is only the internal frontend upstream behind the port 80 reverse proxy.
-The home page includes cards for `Airflow`, `MLflow`, `MinIO artifacts`, and `Очереди RabbitMQ`. Admin UI paths are `/airflow/`, `/mlflow/`, `/minio-browser/`, and `/rabbitmq/`; they are protected by the frontend session through nginx `auth_request`.
+The home page includes an embedded `Мониторинг MLSystem` Grafana dashboard and cards for `Airflow`, `MLflow`, `MinIO artifacts`, `Очереди RabbitMQ`, `Grafana`, and `Prometheus`. Admin UI paths are `/airflow/`, `/mlflow/`, `/minio-browser/`, `/rabbitmq/`, `/grafana/`, and `/prometheus/`; they are protected by the frontend session through nginx `auth_request`.
 
 Frontend runtime data is not stored in git:
 
@@ -57,3 +58,4 @@ Main references:
 - [Airflow stage inventory](docs/airflow_stage_inventory.md)
 - [Airflow deploy validation](docs/airflow_deploy_validation.md)
 - [Frontend](docs/frontend.md)
+- [Monitoring](docs/monitoring.md)

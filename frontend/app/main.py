@@ -100,6 +100,9 @@ def create_app(config: FrontendConfig | None = None) -> FastAPI:
                 "mlflow_ui_url": config.mlflow_ui_url,
                 "minio_ui_url": config.minio_ui_url,
                 "rabbitmq_management_url": config.rabbitmq_management_url,
+                "grafana_url": config.grafana_url,
+                "prometheus_url": config.prometheus_url,
+                "grafana_main_dashboard_url": config.grafana_main_dashboard_url,
             },
         )
 
@@ -271,6 +274,8 @@ def create_app(config: FrontendConfig | None = None) -> FastAPI:
                     "consumers": queues.get("consumers") if isinstance(queues, dict) else None,
                     "dead_letter": dead_letter,
                 },
+                "grafana": _url_status("http://grafana:3000/api/health"),
+                "prometheus": _url_status("http://prometheus:9090/prometheus/-/ready"),
             },
         }
 

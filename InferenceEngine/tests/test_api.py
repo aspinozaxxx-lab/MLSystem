@@ -43,6 +43,12 @@ class ApiTests(unittest.TestCase):
             artifacts = client.get(f"/api/v1/jobs/{job_id}/artifacts").json()["artifacts"]
             self.assertIn("accepted_geojson", artifacts)
 
+            prometheus = client.get("/metrics/prometheus")
+            self.assertEqual(prometheus.status_code, 200)
+            self.assertIn("text/plain", prometheus.headers.get("content-type", ""))
+            self.assertIn("inference_engine_jobs_total", prometheus.text)
+            self.assertIn("inference_engine_tiles_done", prometheus.text)
+
 
 if __name__ == "__main__":
     unittest.main()

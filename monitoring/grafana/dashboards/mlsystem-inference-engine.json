@@ -1,0 +1,19 @@
+{
+  "uid": "mlsystem-inference-engine",
+  "title": "MLSystem InferenceEngine",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "tags": ["mlsystem", "inference-engine"],
+  "time": {"from": "now-1h", "to": "now"},
+  "panels": [
+    {"id": 1, "type": "stat", "title": "Active Jobs", "gridPos": {"x": 0, "y": 0, "w": 4, "h": 4}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "inference_engine_active_jobs", "refId": "A"}]},
+    {"id": 2, "type": "stat", "title": "Failed Jobs", "gridPos": {"x": 4, "y": 0, "w": 4, "h": 4}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "inference_engine_jobs_total{status=\"failed\"}", "refId": "A"}]},
+    {"id": 3, "type": "stat", "title": "Spool Bytes", "gridPos": {"x": 8, "y": 0, "w": 4, "h": 4}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "inference_engine_spool_bytes", "refId": "A"}], "fieldConfig": {"defaults": {"unit": "bytes"}, "overrides": []}},
+    {"id": 4, "type": "stat", "title": "Streaming Overlap", "gridPos": {"x": 12, "y": 0, "w": 4, "h": 4}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "inference_engine_streaming_overlap_seconds", "refId": "A"}], "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []}},
+    {"id": 10, "type": "timeseries", "title": "Tiles And Blocks", "gridPos": {"x": 0, "y": 4, "w": 12, "h": 8}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "inference_engine_tiles_done", "legendFormat": "tiles done", "refId": "A"}, {"expr": "inference_engine_tiles_total", "legendFormat": "tiles total", "refId": "B"}, {"expr": "inference_engine_blocks_done", "legendFormat": "blocks done", "refId": "C"}, {"expr": "inference_engine_blocks_total", "legendFormat": "blocks total", "refId": "D"}]},
+    {"id": 11, "type": "timeseries", "title": "Triton Batching", "gridPos": {"x": 12, "y": 4, "w": 12, "h": 8}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "inference_engine_triton_batches_total", "legendFormat": "batches", "refId": "A"}, {"expr": "inference_engine_triton_batch_fill_ratio", "legendFormat": "fill ratio", "refId": "B"}, {"expr": "inference_engine_triton_request_duration_ms", "legendFormat": "request ms", "refId": "C"}]},
+    {"id": 12, "type": "timeseries", "title": "Queues", "gridPos": {"x": 0, "y": 12, "w": 24, "h": 8}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "inference_engine_queue_ready", "legendFormat": "{{queue}} ready", "refId": "A"}, {"expr": "inference_engine_queue_unacked", "legendFormat": "{{queue}} unacked", "refId": "B"}, {"expr": "inference_engine_queue_consumers", "legendFormat": "{{queue}} consumers", "refId": "C"}]}
+  ]
+}

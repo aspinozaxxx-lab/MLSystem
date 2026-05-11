@@ -1,0 +1,154 @@
+{
+  "uid": "mlsystem-overview",
+  "title": "MLSystem Overview",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "tags": ["mlsystem", "overview"],
+  "links": [
+    {"title": "Airflow", "url": "/airflow/", "targetBlank": true},
+    {"title": "RabbitMQ", "url": "/rabbitmq/", "targetBlank": true},
+    {"title": "MLflow", "url": "/mlflow/", "targetBlank": true},
+    {"title": "MinIO artifacts", "url": "/minio-browser/", "targetBlank": true}
+  ],
+  "templating": {"list": []},
+  "time": {"from": "now-1h", "to": "now"},
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Services Up",
+      "gridPos": {"x": 0, "y": 0, "w": 4, "h": 4},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "sum(mlsystem_service_up)", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "short", "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 7}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "orientation": "auto"}
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "GPU Utilization",
+      "gridPos": {"x": 4, "y": 0, "w": 4, "h": 4},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "max(DCGM_FI_DEV_GPU_UTIL)", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 70}, {"color": "red", "value": 95}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}}
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Active IE Jobs",
+      "gridPos": {"x": 8, "y": 0, "w": 4, "h": 4},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "inference_engine_active_jobs", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "short", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "blue", "value": 1}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}}
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Dead Letters",
+      "gridPos": {"x": 12, "y": 0, "w": 4, "h": 4},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "inference_engine_dead_letter_messages", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "short", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}}
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Airflow Scheduler",
+      "gridPos": {"x": 16, "y": 0, "w": 4, "h": 4},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "airflow_scheduler_healthy", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "short", "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}}
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Data Disk Used",
+      "gridPos": {"x": 20, "y": 0, "w": 4, "h": 4},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "100 * (1 - min(node_filesystem_avail_bytes{mountpoint=~\"/|/data.*\",fstype!~\"tmpfs|overlay\"} / node_filesystem_size_bytes{mountpoint=~\"/|/data.*\",fstype!~\"tmpfs|overlay\"}))", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 80}, {"color": "red", "value": 90}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}}
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Machine CPU",
+      "gridPos": {"x": 0, "y": 4, "w": 8, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "100 * (1 - avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m])))", "legendFormat": "CPU used %", "refId": "A"}, {"expr": "100 * avg(rate(node_cpu_seconds_total{mode=\"iowait\"}[5m]))", "legendFormat": "IO wait %", "refId": "B"}],
+      "fieldConfig": {"defaults": {"unit": "percent"}, "overrides": []}
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "RAM And Swap",
+      "gridPos": {"x": 8, "y": 4, "w": 8, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "100 * (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)", "legendFormat": "RAM used %", "refId": "A"}, {"expr": "100 * (1 - node_memory_SwapFree_bytes / node_memory_SwapTotal_bytes)", "legendFormat": "Swap used %", "refId": "B"}],
+      "fieldConfig": {"defaults": {"unit": "percent"}, "overrides": []}
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "GPU",
+      "gridPos": {"x": 16, "y": 4, "w": 8, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "DCGM_FI_DEV_GPU_UTIL", "legendFormat": "GPU util %", "refId": "A"}, {"expr": "DCGM_FI_DEV_FB_USED / 1024", "legendFormat": "GPU memory MiB", "refId": "B"}, {"expr": "DCGM_FI_DEV_GPU_TEMP", "legendFormat": "GPU temp C", "refId": "C"}, {"expr": "DCGM_FI_DEV_POWER_USAGE / 1000", "legendFormat": "Power W", "refId": "D"}]
+    },
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "RabbitMQ Queue Depth",
+      "gridPos": {"x": 0, "y": 12, "w": 8, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "inference_engine_queue_ready", "legendFormat": "{{queue}} ready", "refId": "A"}, {"expr": "inference_engine_queue_unacked", "legendFormat": "{{queue}} unacked", "refId": "B"}]
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "InferenceEngine Progress",
+      "gridPos": {"x": 8, "y": 12, "w": 8, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "inference_engine_tiles_done", "legendFormat": "tiles done", "refId": "A"}, {"expr": "inference_engine_blocks_done", "legendFormat": "blocks done", "refId": "B"}, {"expr": "inference_engine_triton_batches_total", "legendFormat": "triton batches", "refId": "C"}]
+    },
+    {
+      "id": 22,
+      "type": "timeseries",
+      "title": "Airflow Task Duration",
+      "gridPos": {"x": 16, "y": 12, "w": 8, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "airflow_task_duration_seconds", "legendFormat": "{{task_id}}", "refId": "A"}]
+    },
+    {
+      "id": 30,
+      "type": "timeseries",
+      "title": "Disk IO",
+      "gridPos": {"x": 0, "y": 20, "w": 8, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "rate(node_disk_read_bytes_total[5m])", "legendFormat": "{{device}} read", "refId": "A"}, {"expr": "rate(node_disk_written_bytes_total[5m])", "legendFormat": "{{device}} write", "refId": "B"}],
+      "fieldConfig": {"defaults": {"unit": "Bps"}, "overrides": []}
+    },
+    {
+      "id": 31,
+      "type": "timeseries",
+      "title": "Container CPU And Memory",
+      "gridPos": {"x": 8, "y": 20, "w": 8, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "sum by (name) (rate(container_cpu_usage_seconds_total{name=~\"mlsystem.*\"}[5m]))", "legendFormat": "{{name}} CPU", "refId": "A"}, {"expr": "sum by (name) (container_memory_working_set_bytes{name=~\"mlsystem.*\"})", "legendFormat": "{{name}} memory", "refId": "B"}]
+    },
+    {
+      "id": 32,
+      "type": "table",
+      "title": "Service Health",
+      "gridPos": {"x": 16, "y": 20, "w": 8, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "mlsystem_service_up", "format": "table", "instant": true, "refId": "A"}]
+    }
+  ]
+}

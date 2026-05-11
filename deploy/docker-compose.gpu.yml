@@ -53,14 +53,164 @@ services:
     ports:
       - "${RABBITMQ_PORT:-5672}:5672"
       - "${RABBITMQ_MANAGEMENT_LISTEN_HOST:-127.0.0.1}:${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+      - "${RABBITMQ_PROMETHEUS_LISTEN_HOST:-127.0.0.1}:${RABBITMQ_PROMETHEUS_PORT:-15692}:15692"
     volumes:
       - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/rabbitmq:/var/lib/rabbitmq
       - ${MLSYSTEM_PLATFORM_ROOT:-/data/mlsystem/platform}/rabbitmq.conf:/etc/rabbitmq/conf.d/20-mlsystem-management.conf:ro
+      - ${MLSYSTEM_PLATFORM_ROOT:-/data/mlsystem/platform}/rabbitmq-enabled-plugins:/etc/rabbitmq/enabled_plugins:ro
     healthcheck:
       test: ["CMD-SHELL", "rabbitmq-diagnostics -q ping"]
       interval: 10s
       timeout: 5s
       retries: 12
+    restart: unless-stopped
+    networks: [mlsystem-gpu]
+
+  prometheus:
+    image: ${PROMETHEUS_IMAGE:-prom/prometheus:v2.55.1}
+    container_name: mlsystem-gpu-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-30d}
+      - --web.external-url=${MLSYSTEM_FRONTEND_PUBLIC_BASE_URL:-http://31.192.104.147}/prometheus/
+      - --web.route-prefix=/prometheus
+    ports:
+      - "${PROMETHEUS_LISTEN_HOST:-127.0.0.1}:${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/monitoring/prometheus/rules:/etc/prometheus/rules:ro
+      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/prometheus:/prometheus
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/prometheus/-/ready >/dev/null || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+    networks: [mlsystem-gpu]
+
+  grafana:
+    image: ${GRAFANA_IMAGE:-grafana/grafana:11.4.0}
+    container_name: mlsystem-gpu-grafana
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    env_file: /etc/mlsystem/gpu-platform.env
+    environment:
+      GF_SERVER_ROOT_URL: ${MLSYSTEM_FRONTEND_PUBLIC_BASE_URL:-http://31.192.104.147}/grafana/
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_SECURITY_SECRET_KEY: ${GF_SECURITY_SECRET_KEY}
+      GF_SECURITY_ALLOW_EMBEDDING: "true"
+      GF_AUTH_PROXY_ENABLED: "true"
+      GF_AUTH_PROXY_HEADER_NAME: X-MLSystem-User
+      GF_AUTH_PROXY_HEADER_PROPERTY: username
+      GF_AUTH_PROXY_AUTO_SIGN_UP: "true"
+      GF_AUTH_PROXY_ENABLE_LOGIN_TOKEN: "false"
+      GF_USERS_AUTO_ASSIGN_ORG_ROLE: Admin
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/mlsystem-overview.json
+    ports:
+      - "${GRAFANA_LISTEN_HOST:-127.0.0.1}:${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/grafana:/var/lib/grafana
+      - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health >/dev/null || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 45s
+    restart: unless-stopped
+    networks: [mlsystem-gpu]
+
+  node-exporter:
+    image: ${NODE_EXPORTER_IMAGE:-prom/node-exporter:v1.8.2}
+    container_name: mlsystem-gpu-node-exporter
+    command:
+      - --path.rootfs=/host
+      - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|var/lib/docker/.+|run/docker/netns/.+)($$|/)
+    pid: host
+    ports:
+      - "${NODE_EXPORTER_LISTEN_HOST:-127.0.0.1}:${NODE_EXPORTER_PORT:-9100}:9100"
+    volumes:
+      - /:/host:ro,rslave
+    restart: unless-stopped
+    networks: [mlsystem-gpu]
+
+  cadvisor:
+    image: ${CADVISOR_IMAGE:-gcr.io/cadvisor/cadvisor:v0.49.1}
+    container_name: mlsystem-gpu-cadvisor
+    privileged: true
+    ports:
+      - "${CADVISOR_LISTEN_HOST:-127.0.0.1}:${CADVISOR_PORT:-8080}:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      - /dev/disk:/dev/disk:ro
+    restart: unless-stopped
+    networks: [mlsystem-gpu]
+
+  dcgm-exporter:
+    image: ${DCGM_EXPORTER_IMAGE:-nvcr.io/nvidia/k8s/dcgm-exporter:3.3.8-3.6.0-ubuntu22.04}
+    container_name: mlsystem-gpu-dcgm-exporter
+    gpus: all
+    cap_add:
+      - SYS_ADMIN
+    ports:
+      - "${DCGM_EXPORTER_LISTEN_HOST:-127.0.0.1}:${DCGM_EXPORTER_PORT:-9400}:9400"
+    restart: unless-stopped
+    networks: [mlsystem-gpu]
+
+  statsd-exporter:
+    image: ${STATSD_EXPORTER_IMAGE:-prom/statsd-exporter:v0.28.0}
+    container_name: mlsystem-gpu-statsd-exporter
+    command:
+      - --statsd.listen-udp=:9125
+      - --statsd.listen-tcp=:9125
+      - --web.listen-address=:9102
+    ports:
+      - "${STATSD_EXPORTER_LISTEN_HOST:-127.0.0.1}:${STATSD_EXPORTER_PORT:-9102}:9102"
+    restart: unless-stopped
+    networks: [mlsystem-gpu]
+
+  mlsystem-monitor-exporter:
+    build:
+      context: ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}
+      dockerfile: monitoring/exporter/Dockerfile
+    image: ${MLSYSTEM_MONITOR_EXPORTER_IMAGE:-mlsystem/monitor-exporter:local}
+    container_name: mlsystem-gpu-monitor-exporter
+    depends_on:
+      airflow-webserver:
+        condition: service_healthy
+      inference-engine-api:
+        condition: service_healthy
+    env_file: /etc/mlsystem/gpu-platform.env
+    environment:
+      AIRFLOW_BASE_URL: http://airflow-webserver:8080/airflow
+      AIRFLOW_ADMIN_USER: ${AIRFLOW_ADMIN_USER}
+      AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD}
+      INFERENCE_ENGINE_API_URL: http://inference-engine-api:8095
+      INFERENCE_ENGINE_API_TOKEN: ${INFERENCE_ENGINE_API_TOKEN}
+      MLSYSTEM_API_URL: http://mlsystem-api:8088
+      MLSYSTEM_FRONTEND_INTERNAL_URL: http://mlsystem-frontend:8090
+      MLFLOW_INTERNAL_URL: http://mlflow:5000/mlflow
+      MINIO_INTERNAL_URL: http://minio:9000
+      INFERENCE_ENGINE_TRITON_URL: http://triton:8000
+      INFERENCE_ENGINE_RABBITMQ_MANAGEMENT_URL: http://rabbitmq:15672/rabbitmq
+      MLSYSTEM_MONITOR_EXPORTER_PORT: ${MLSYSTEM_MONITOR_EXPORTER_PORT:-9200}
+    ports:
+      - "${MLSYSTEM_MONITOR_EXPORTER_LISTEN_HOST:-127.0.0.1}:${MLSYSTEM_MONITOR_EXPORTER_PORT:-9200}:9200"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:9200/health', timeout=5)\" || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
     restart: unless-stopped
     networks: [mlsystem-gpu]
 
@@ -152,6 +302,10 @@ services:
       PYTHONPATH: /opt/mlsystem:/opt
       MLSYSTEM_PIPELINE_CONFIG: ${MLSYSTEM_PIPELINE_CONFIG:-/opt/mlsystem/configs/pipeline.server.yaml}
       _PIP_ADDITIONAL_REQUIREMENTS: ""
+      AIRFLOW__METRICS__STATSD_ON: "True"
+      AIRFLOW__METRICS__STATSD_HOST: statsd-exporter
+      AIRFLOW__METRICS__STATSD_PORT: "9125"
+      AIRFLOW__METRICS__STATSD_PREFIX: airflow
     entrypoint: /bin/bash
     command:
       - -lc
@@ -397,6 +551,9 @@ services:
       MLSYSTEM_API_BASE_URL: http://mlsystem-api:8088
       MLSYSTEM_AIRFLOW_STATUS_ROOT: /data/mlsystem/airflow/status
       MLSYSTEM_FRONTEND_UPLOAD_ROOT: /data/mlsystem/frontend/uploads
+      FRONTEND_GRAFANA_URL: ${FRONTEND_GRAFANA_URL:-/grafana/}
+      FRONTEND_PROMETHEUS_URL: ${FRONTEND_PROMETHEUS_URL:-/prometheus/}
+      FRONTEND_GRAFANA_MAIN_DASHBOARD_URL: ${FRONTEND_GRAFANA_MAIN_DASHBOARD_URL:-/grafana/d/mlsystem-overview/mlsystem-overview?orgId=1&kiosk}
     command:
       - python
       - -m
@@ -454,6 +611,10 @@ services:
       PYTHONPATH: /opt/mlsystem:/opt
       MLSYSTEM_PIPELINE_CONFIG: ${MLSYSTEM_PIPELINE_CONFIG:-/opt/mlsystem/configs/pipeline.server.yaml}
       _PIP_ADDITIONAL_REQUIREMENTS: ""
+      AIRFLOW__METRICS__STATSD_ON: "True"
+      AIRFLOW__METRICS__STATSD_HOST: statsd-exporter
+      AIRFLOW__METRICS__STATSD_PORT: "9125"
+      AIRFLOW__METRICS__STATSD_PREFIX: airflow
     command: webserver
     ports:
       - "${AIRFLOW_LISTEN_HOST:-127.0.0.1}:${AIRFLOW_PORT:-8081}:8080"
@@ -488,6 +649,10 @@ services:
       PYTHONPATH: /opt/mlsystem:/opt
       MLSYSTEM_PIPELINE_CONFIG: ${MLSYSTEM_PIPELINE_CONFIG:-/opt/mlsystem/configs/pipeline.server.yaml}
       _PIP_ADDITIONAL_REQUIREMENTS: ""
+      AIRFLOW__METRICS__STATSD_ON: "True"
+      AIRFLOW__METRICS__STATSD_HOST: statsd-exporter
+      AIRFLOW__METRICS__STATSD_PORT: "9125"
+      AIRFLOW__METRICS__STATSD_PREFIX: airflow
     command: scheduler
     volumes: *airflow-volumes
     healthcheck:
@@ -511,6 +676,10 @@ services:
       PYTHONPATH: /opt/mlsystem:/opt
       MLSYSTEM_PIPELINE_CONFIG: ${MLSYSTEM_PIPELINE_CONFIG:-/opt/mlsystem/configs/pipeline.server.yaml}
       _PIP_ADDITIONAL_REQUIREMENTS: ""
+      AIRFLOW__METRICS__STATSD_ON: "True"
+      AIRFLOW__METRICS__STATSD_HOST: statsd-exporter
+      AIRFLOW__METRICS__STATSD_PORT: "9125"
+      AIRFLOW__METRICS__STATSD_PREFIX: airflow
     command: triggerer
     volumes: *airflow-volumes
     networks: [mlsystem-gpu]
