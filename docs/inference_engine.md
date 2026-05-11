@@ -90,6 +90,17 @@ The finalizer writes the old Airflow artifact names into `run_dir`. Real probabi
 - `GET /api/v1/jobs/{job_id}/events`
 - `GET /api/v1/jobs/{job_id}/artifacts`
 - `POST /api/v1/jobs/{job_id}/cancel`
+- `GET /openapi.json`
+- `GET /docs`
+- `GET /redoc`
+
+`/health` reports the deployed commit through `MLSYSTEM_COMMIT` or `GIT_COMMIT`. `/ready` checks job/spool/artifact/log roots, RabbitMQ configuration, and Triton health.
+
+## Airflow Integration
+
+Airflow does not model internal InferenceEngine stages. The only Airflow pseudolabel task is `inference_engine_pipeline`; it calls `POST /api/v1/jobs`, polls `GET /api/v1/jobs/{job_id}`, reads `GET /api/v1/jobs/{job_id}/artifacts`, and validates the final artifacts in the Airflow run directory.
+
+The InferenceEngine job itself fans out through RabbitMQ queues and worker containers. Stage transitions are visible through job events and queue metrics, not as Airflow tasks.
 
 ## Testing
 

@@ -69,6 +69,7 @@ def ready(response: Response) -> dict[str, Any]:
         "AWS_ACCESS_KEY_ID",
         "AWS_SECRET_ACCESS_KEY",
         "MLSYSTEM_TRITON_URL",
+        "INFERENCE_ENGINE_API_URL",
     ]
     missing_env = [key for key in required_env if not os.getenv(key)]
     checks["required_env"] = {"status": "failed" if missing_env else "ok", "missing": missing_env}

@@ -23,6 +23,7 @@ mlsystem_gpu_triton_image: nvcr.io/nvidia/tritonserver:25.03-py3
 mlsystem_gpu_rabbitmq_image: rabbitmq:3.13-management
 mlsystem_gpu_rabbitmq_port: 5672
 mlsystem_gpu_rabbitmq_management_port: 15672
+mlsystem_gpu_rabbitmq_management_listen_host: "0.0.0.0"
 mlsystem_gpu_rabbitmq_user: mlsystem
 mlsystem_gpu_inference_engine_api_port: 8095
 mlsystem_gpu_inference_engine_image: mlsystem/inference-engine:local

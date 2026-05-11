@@ -28,6 +28,12 @@ class FrontendConfig:
     allowed_hosts: str = os.getenv("MLSYSTEM_FRONTEND_ALLOWED_HOSTS", "")
     api_base_url: str = os.getenv("MLSYSTEM_API_BASE_URL", os.getenv("MLSYSTEM_API_URL", "http://mlsystem-api:8088")).rstrip("/")
     api_token: str | None = os.getenv("MLSYSTEM_API_TOKEN")
+    inference_engine_api_url: str = os.getenv("INFERENCE_ENGINE_API_URL", "http://inference-engine-api:8095").rstrip("/")
+    inference_engine_api_token: str | None = os.getenv("INFERENCE_ENGINE_API_TOKEN")
+    rabbitmq_management_url: str = os.getenv(
+        "FRONTEND_RABBITMQ_MANAGEMENT_URL",
+        os.getenv("RABBITMQ_MANAGEMENT_PUBLIC_URL", "/rabbitmq/"),
+    )
     upload_root: Path = Path(os.getenv("MLSYSTEM_FRONTEND_UPLOAD_ROOT", "/data/mlsystem/frontend/uploads"))
     status_root: Path = Path(os.getenv("MLSYSTEM_AIRFLOW_STATUS_ROOT", "/data/mlsystem/airflow/status"))
     default_images_uri: str = os.getenv("MLSYSTEM_FRONTEND_DEFAULT_IMAGES_URI", "s3://mlsystems/images/")

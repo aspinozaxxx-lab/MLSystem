@@ -79,6 +79,7 @@ jobs:
           AIRFLOW_POSTGRES_PASSWORD: airflowsecret
           RABBITMQ_DEFAULT_USER: mlsystem
           RABBITMQ_DEFAULT_PASS: rabbitsecret
+          RABBITMQ_MANAGEMENT_LISTEN_HOST: 127.0.0.1
           INFERENCE_ENGINE_API_TOKEN: ietoken
           INFERENCE_ENGINE_RABBITMQ_URL: amqp://mlsystem:rabbitsecret@rabbitmq:5672/
         run: docker compose -f deploy/docker-compose.gpu.yml config >/tmp/compose.yml
@@ -168,6 +169,7 @@ jobs:
           RABBIT_USER="$($SSH "awk -F= '/^RABBITMQ_DEFAULT_USER=/{print substr(\$0,index(\$0,\"=\")+1)}' /etc/mlsystem/gpu-platform.env")"
           RABBIT_PASS="$($SSH "awk -F= '/^RABBITMQ_DEFAULT_PASS=/{print substr(\$0,index(\$0,\"=\")+1)}' /etc/mlsystem/gpu-platform.env")"
           $SSH "curl -fsS -u '${RABBIT_USER}:${RABBIT_PASS}' http://127.0.0.1:15672/api/overview >/tmp/rabbitmq-overview.json"
+          $SSH "test \"\$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:15672/api/overview)\" = \"401\""
           $SSH "docker exec mlsystem-gpu-rabbitmq rabbitmqctl list_queues name messages_ready messages_unacknowledged consumers"
           $SSH "for i in \$(seq 1 60); do curl -fsS http://127.0.0.1:8095/health && exit 0; sleep 5; done; exit 1"
           $SSH "for i in \$(seq 1 60); do curl -fsS http://127.0.0.1:8095/ready && exit 0; sleep 5; done; exit 1"

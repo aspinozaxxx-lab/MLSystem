@@ -50,15 +50,22 @@ InferenceEngine finalizer writes artifacts expected by the old Airflow pipeline 
 Runtime arrays and intermediate queue artifacts stay under `/data/mlsystem/inference-engine/...` and are not committed.
 Probability tile artifacts remain tile-backed in the InferenceEngine job directory. The scene-level `npz_path` entries kept for legacy validators are compact placeholders in `source=inference_engine` mode; mlsystem downstream stages validate summaries and accepted vectors instead of rebuilding probability mosaics.
 
-## Validate-Only Stages
+## Production Airflow Boundary
 
-When `pseudolabel.source=inference_engine`:
+Production Airflow now has one pseudolabel stage:
 
-- `run_pseudolabel_inference` starts an InferenceEngine job and polls it.
-- `validate_probability_maps` validates `coverage_report.json` and probability index.
-- `vectorize_pseudolabel` validates InferenceEngine vectorization artifacts and skips CPU vectorization in `mlsystem`.
-- `postprocess_pseudolabel` validates `postprocess_summary.json` and skips heavy postprocess.
-- `export_pseudolabel_artifacts` validates required compatibility artifacts.
+- `inference_engine_pipeline` starts an InferenceEngine job over HTTP, polls it, and validates compatibility artifacts.
+
+The old stage modules are not registered in `MAIN_DAG_STAGES` or the production stage registry:
+
+- `prepare_inference_scenes`
+- `run_pseudolabel_inference`
+- `validate_probability_maps`
+- `vectorize_pseudolabel`
+- `postprocess_pseudolabel`
+- `export_pseudolabel_artifacts`
+
+The retired `run/validate/vectorize/postprocess/export` stage modules have been removed. `prepare_inference_scenes.py` remains only as a small manifest helper used by `inference_engine_pipeline` before HTTP submission.
 
 ## Deferred From Training
 

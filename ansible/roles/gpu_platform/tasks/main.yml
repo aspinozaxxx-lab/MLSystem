@@ -62,6 +62,23 @@
     - "{{ mlsystem_gpu_data_root }}/storage/system"
     - "{{ mlsystem_gpu_data_root }}/logs"
 
+- name: Check UFW status for RabbitMQ management UI
+  ansible.builtin.command:
+    cmd: ufw status
+  register: rabbitmq_ufw_status
+  changed_when: false
+  failed_when: false
+
+- name: Allow RabbitMQ management UI in UFW when published
+  ansible.builtin.command:
+    cmd: "ufw allow {{ mlsystem_gpu_rabbitmq_management_port }}/tcp"
+  register: rabbitmq_ufw_allow
+  changed_when: "'Skipping' not in rabbitmq_ufw_allow.stdout"
+  when:
+    - rabbitmq_ufw_status.rc == 0
+    - "'Status: active' in rabbitmq_ufw_status.stdout"
+    - mlsystem_gpu_rabbitmq_management_listen_host not in ["127.0.0.1", "localhost"]
+
 - name: Install GPU platform env
   ansible.builtin.template:
     src: gpu-platform.env.j2

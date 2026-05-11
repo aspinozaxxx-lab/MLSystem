@@ -52,7 +52,7 @@ services:
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
     ports:
       - "${RABBITMQ_PORT:-5672}:5672"
-      - "127.0.0.1:${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+      - "${RABBITMQ_MANAGEMENT_LISTEN_HOST:-127.0.0.1}:${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
     volumes:
       - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/rabbitmq:/var/lib/rabbitmq
     healthcheck:

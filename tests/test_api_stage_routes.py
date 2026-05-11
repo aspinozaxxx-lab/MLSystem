@@ -16,7 +16,9 @@ class ApiStageRoutesTests(unittest.TestCase):
     def test_stages_payload_contains_main_stages(self) -> None:
         payload = stages_payload()
         self.assertIn("inventory_scenes", payload["main_dag_stages"])
-        self.assertIn("run_pseudolabel_inference", payload["main_dag_stages"])
+        self.assertIn("inference_engine_pipeline", payload["main_dag_stages"])
+        self.assertNotIn("run_pseudolabel_inference", payload["main_dag_stages"])
+        self.assertNotIn("prepare_inference_scenes", payload["registry_stages"])
         self.assertEqual(payload["aliases"], {})
 
     def test_unknown_stage_fails_validation(self) -> None:
@@ -38,11 +40,11 @@ class ApiStageRoutesTests(unittest.TestCase):
             request = StageStartRequest(
                 experiment_config={
                     "experiment_id": "unit_api_failure",
-                    "pseudolabel": {"run_on": "explicit_scene_list", "scene_list": ["missing.tif"]},
+                    "pseudolabel": {"enabled": True, "source": "inference_engine", "run_on": "explicit_scene_list", "scene_list": ["missing.tif"]},
                 },
                 status_root=str(Path(tmp) / "status"),
             )
-            status = debug_run_stage_sync("unit_api_failure", "prepare_inference_scenes", request, store)
+            status = debug_run_stage_sync("unit_api_failure", "inference_engine_pipeline", request, store)
             self.assertEqual(status.state, "failed")
             self.assertIn("missing", status.error.message.lower())
 

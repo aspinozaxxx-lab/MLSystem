@@ -45,6 +45,8 @@ body {
 .card { text-decoration: none; color: var(--text); min-height: 150px; }
 .card.active:hover { border-color: var(--blue); }
 .card.disabled { opacity: .62; }
+.queue-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; margin-top: 14px; color: var(--muted); font-size: 13px; }
+.queue-metrics b { color: var(--text); }
 .panel { margin-bottom: 20px; }
 .form-stack { display: flex; flex-direction: column; gap: 14px; }
 label { display: flex; flex-direction: column; gap: 6px; font-weight: 600; }

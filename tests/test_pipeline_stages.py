@@ -12,14 +12,9 @@ from mlsystem.src.storage.local_io import write_json
 from mlsystem.src.pipeline.airflow_tasks import AirflowRunStore
 from mlsystem.src.pipeline.stages.context import StageContext
 from mlsystem.src.pipeline.stages.inventory_scenes import run as run_inventory_scenes
-from mlsystem.src.pipeline.stages.export_pseudolabel import run as run_export_pseudolabel
-from mlsystem.src.pipeline.stages.postprocess_pseudolabel import run as run_postprocess_pseudolabel
+from mlsystem.src.pipeline.stages.inference_engine_pipeline import run as run_inference_engine_pipeline
 from mlsystem.src.pipeline.stages.prepare_dataset import run as run_prepare_dataset
-from mlsystem.src.pipeline.stages.prepare_inference_scenes import run as run_prepare_inference_scenes
-from mlsystem.src.pipeline.stages.probability_maps import run as run_probability_maps
-from mlsystem.src.pipeline.stages.pseudolabel_inference import run as run_pseudolabel_inference
 from mlsystem.src.pipeline.stages.report import StageFailure
-from mlsystem.src.pipeline.stages.vectorize_pseudolabel import run as run_vectorize_pseudolabel
 
 
 class PipelineStagesTests(unittest.TestCase):
@@ -179,148 +174,75 @@ class PipelineStagesTests(unittest.TestCase):
                 report = run_prepare_dataset(ctx)
             self.assertEqual(report.counters["split_strategy"], "legacy_75_25")
 
-    def test_prepare_inference_scenes_dataset_and_explicit_missing(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            ctx = self._context(tmp, pseudolabel={"run_on": "dataset_scenes", "bad_scene_policy": "skip"})
-            self._write_inventory(ctx)
-            write_json(ctx.store.run_dir / "dataset_manifest.json", {"train_scenes": [], "val_scenes": []})
-            report = run_prepare_inference_scenes(ctx)
-            self.assertEqual(report.counters["inference_scenes"], 3)
-            self.assertTrue((ctx.store.run_dir / "inference_manifest.json").exists())
-
-        with tempfile.TemporaryDirectory() as tmp:
-            ctx = self._context(tmp, pseudolabel={"run_on": "explicit_scene_list", "scene_list": ["missing.tif"]})
-            self._write_inventory(ctx)
-            with self.assertRaises(StageFailure):
-                run_prepare_inference_scenes(ctx)
-
-        with tempfile.TemporaryDirectory() as tmp:
-            ctx = self._context(tmp, pseudolabel={"run_on": "all_images"})
-            self._write_inventory(ctx)
-            report = run_prepare_inference_scenes(ctx)
-            self.assertEqual(report.counters["inference_scenes"], 3)
-
-        with tempfile.TemporaryDirectory() as tmp:
-            ctx = self._context(tmp, pseudolabel={"run_on": "synthetic"})
-            report = run_prepare_inference_scenes(ctx)
-            self.assertEqual(report.counters["inference_scenes"], 1)
-            manifest = json.loads((ctx.store.run_dir / "inference_manifest.json").read_text(encoding="utf-8"))
-            self.assertEqual(manifest["scenes"][0]["entry"], "synthetic")
-
-    def test_run_pseudolabel_inference_uses_inference_manifest_scene_entries(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            ctx = self._context(tmp, pseudolabel={"enabled": True, "run_on": "dataset_scenes"})
-            write_json(
-                ctx.store.run_dir / "inference_manifest.json",
-                {
-                    "run_on": "dataset_scenes",
-                    "bad_scene_policy": "skip",
-                    "scenes": [
-                        {"entry": "scene_a.tif", "name": "scene_a.tif", "key": "images/scene_a.tif"},
-                        {"entry": "scene_b.tif", "name": "scene_b.tif", "key": "images/scene_b.tif"},
-                    ],
-                },
-            )
-            write_json(ctx.store.run_dir / "coverage_report.json", {"scenes_processed": 2, "total_predicted_windows": 4})
-            write_json(ctx.store.run_dir / "pseudolabel_scene_results_manifest.json", {"scenes": ["scene_a.tif", "scene_b.tif"]})
-            captured: dict[str, object] = {}
-
-            def fake_pipeline(conf, _store, *, stage_mode: str):
-                captured["stage_mode"] = stage_mode
-                captured["pseudolabel"] = conf.pseudolabel
-                return {"pseudolabel": {"accepted_objects": 0}}
-
-            with patch("mlsystem.src.pipeline.airflow_tasks._run_pseudolabel_pipeline", side_effect=fake_pipeline):
-                report = run_pseudolabel_inference(ctx)
-            self.assertEqual(report.status, "success")
-            self.assertEqual(captured["stage_mode"], "inference")
-            self.assertEqual(captured["pseudolabel"]["scene_entries"], ["scene_a.tif", "scene_b.tif"])
-
-    def test_run_pseudolabel_inference_reports_explicit_scene_limit(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            ctx = self._context(tmp, pseudolabel={"enabled": True, "run_on": "validation_scenes", "max_scenes": 1})
-            write_json(
-                ctx.store.run_dir / "inference_manifest.json",
-                {
-                    "run_on": "validation_scenes",
-                    "bad_scene_policy": "skip",
-                    "scenes": [
-                        {"entry": "scene_a.tif", "name": "scene_a.tif", "key": "images/scene_a.tif"},
-                        {"entry": "scene_b.tif", "name": "scene_b.tif", "key": "images/scene_b.tif"},
-                        {"entry": "scene_c.tif", "name": "scene_c.tif", "key": "images/scene_c.tif"},
-                    ],
-                },
-            )
-            write_json(ctx.store.run_dir / "coverage_report.json", {"scenes_processed": 1, "total_predicted_windows": 4})
-            write_json(ctx.store.run_dir / "pseudolabel_scene_results_manifest.json", {"scenes": ["scene_a.tif"]})
-
-            with patch("mlsystem.src.pipeline.airflow_tasks._run_pseudolabel_pipeline", return_value={"pseudolabel": {}}):
-                report = run_pseudolabel_inference(ctx)
-
-            self.assertEqual(report.status, "success")
-            self.assertEqual(report.counters["inference_scene_limit"], 1)
-            self.assertEqual(report.counters["pseudolabel_scenes_excluded"], 2)
-            self.assertEqual(report.counters["limit_source"], "dag_run.conf.pseudolabel.max_scenes")
-            skipped = ctx.store.run_dir / "pseudolabel_skipped_scenes.txt"
-            self.assertTrue(skipped.exists())
-            self.assertIn("scene_b.tif", skipped.read_text(encoding="utf-8"))
-
-    def test_synthetic_smoke_writes_compatibility_artifacts_for_downstream_stages(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            ctx = self._context(tmp, pseudolabel={"enabled": True, "run_on": "synthetic"}, smoke=True)
-            self.assertEqual(run_pseudolabel_inference(ctx).status, "success")
-            self.assertTrue((ctx.store.run_dir / "coverage_report.json").exists())
-            self.assertTrue((ctx.store.run_dir / "pseudolabel_summary.json").exists())
-            self.assertEqual(run_probability_maps(ctx).status, "success")
-            self.assertEqual(run_vectorize_pseudolabel(ctx).status, "success")
-            self.assertEqual(run_postprocess_pseudolabel(ctx).status, "success")
-            self.assertEqual(run_export_pseudolabel(ctx).status, "success")
-
-    def test_block_parallel_vectorize_writes_downstream_compatibility_artifacts(self) -> None:
+    def test_inference_engine_pipeline_submits_and_polls_http(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             ctx = self._context(
                 tmp,
-                pseudolabel={
-                    "enabled": True,
-                    "run_on": "validation_scenes",
-                    "vectorization": {"mode": "block_parallel", "workers": 4},
-                },
+                pseudolabel={"enabled": True, "source": "inference_engine", "run_on": "dataset_scenes", "max_scenes": 2},
             )
-            ctx.config.class_name = "deforest"
-            ctx.config.postprocess = {"threshold": 0.5, "min_area_m2": 500.0}
-            write_json(ctx.store.run_dir / "pseudolabel_scene_results_manifest.json", {"scenes": ["scene_a.tif"]})
+            self._write_inventory(ctx)
+            self._write_inference_engine_compat_artifacts(ctx)
+            calls: list[dict[str, object]] = []
 
-            def fake_block_vectorization(**kwargs):
-                kwargs["accepted_geojson"].write_text('{"type":"FeatureCollection","features":[]}', encoding="utf-8")
-                return {
-                    "prediction_tiles": 1,
-                    "prediction_scenes": 1,
-                    "blocks_total": 2,
-                    "blocks_done": 2,
-                    "blocks_failed": 0,
-                    "workers_requested": 4,
-                    "workers_effective": 4,
-                    "boundary_candidates_count": 0,
-                    "polygons_before_merge": 3,
-                    "polygons_after_merge": 1,
-                    "accepted_objects": 1,
-                    "final_objects": 1,
-                    "final_geojson_size_mb": 0.01,
-                    "vectorization_duration_sec": 1.2,
-                    "merge_duration_sec": 0.4,
-                    "memory_guard": {"reduced": False},
-                }
+            class FakeResponse:
+                def __init__(self, payload: dict) -> None:
+                    self.payload = json.dumps(payload).encode("utf-8")
 
-            with patch("mlsystem.src.pipeline.stages.vectorize_pseudolabel.run_block_parallel_vectorization", side_effect=fake_block_vectorization):
-                report = run_vectorize_pseudolabel(ctx)
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_args):
+                    return None
+
+                def read(self) -> bytes:
+                    return self.payload
+
+            states = [
+                {"job_id": "job-unit", "status": "running", "metrics": {"tiles_done": 1}},
+                {
+                    "job_id": "job-unit",
+                    "status": "success",
+                    "metrics": {
+                        "tiles_total": 4,
+                        "tiles_done": 4,
+                        "blocks_total": 2,
+                        "blocks_done": 2,
+                        "triton_batches": 2,
+                        "streaming_overlap_sec": 1.5,
+                    },
+                    "artifacts": {"accepted_geojson": str(ctx.store.run_dir / "unit_stage.accepted.geojson")},
+                },
+            ]
+
+            def fake_urlopen(request, timeout=30):
+                method = request.get_method()
+                url = request.full_url
+                body = json.loads(request.data.decode("utf-8")) if getattr(request, "data", None) else None
+                calls.append({"method": method, "url": url, "body": body, "timeout": timeout})
+                if method == "POST" and url == "http://ie.local/api/v1/jobs":
+                    return FakeResponse({"job_id": "job-unit", "status": "queued"})
+                if method == "GET" and url == "http://ie.local/api/v1/jobs/job-unit":
+                    return FakeResponse(states.pop(0))
+                if method == "GET" and url == "http://ie.local/api/v1/jobs/job-unit/artifacts":
+                    return FakeResponse({"job_id": "job-unit", "artifacts": {"accepted_geojson": "ok"}})
+                raise AssertionError(f"unexpected request {method} {url}")
+
+            with patch.dict("os.environ", {"INFERENCE_ENGINE_API_URL": "http://ie.local", "INFERENCE_ENGINE_AIRFLOW_POLL_SEC": "0"}), \
+                patch("urllib.request.urlopen", side_effect=fake_urlopen):
+                report = run_inference_engine_pipeline(ctx)
 
             self.assertEqual(report.status, "success")
-            self.assertEqual(report.counters["vectorization_mode"], "block_parallel")
-            self.assertTrue((ctx.store.run_dir / "pseudolabel_summary.json").exists())
-            self.assertTrue((ctx.store.run_dir / "prediction_examples.html").exists())
-            self.assertTrue((ctx.store.run_dir / "vectorization_summary.json").exists())
-            training_result = json.loads((ctx.store.run_dir / "training_result.json").read_text(encoding="utf-8"))
-            self.assertEqual(training_result["pseudolabel"]["accepted_objects"], 1)
+            self.assertTrue((ctx.store.run_dir / "inference_manifest.json").exists())
+            self.assertTrue(any(call["method"] == "POST" and call["url"] == "http://ie.local/api/v1/jobs" for call in calls))
+            self.assertTrue(any(call["method"] == "GET" and call["url"] == "http://ie.local/api/v1/jobs/job-unit" for call in calls))
+            post_body = next(call["body"] for call in calls if call["method"] == "POST")
+            self.assertEqual(post_body["source"], "inference_engine")
+            self.assertEqual(len(post_body["scenes"]), 3)
+            self.assertEqual(report.details["inference_engine_api_url"], "http://ie.local")
+            self.assertEqual(report.details["inference_engine_job_id"], "job-unit")
+            self.assertTrue(report.details["request_submitted_via_http"])
+            self.assertEqual(report.counters["backend"], "inference_engine")
+            self.assertEqual(report.counters["inference_engine_http_submitted"], 1)
 
     def _context(self, tmp: str, *, preprocess: dict | None = None, pseudolabel: dict | None = None, smoke: bool = False) -> StageContext:
         preprocess = preprocess or {}
@@ -376,6 +298,18 @@ class PipelineStagesTests(unittest.TestCase):
         write_json(ctx.store.run_dir / "inventory_scenes.json", inventory)
         write_json(ctx.store.run_dir / "scene_matching_report.json", {"matched_count": len(matched), "matched": matched})
         (ctx.store.run_dir / "matched_scenes.txt").write_text("\n".join(item["entry"] for item in matched) + "\n", encoding="utf-8")
+
+    def _write_inference_engine_compat_artifacts(self, ctx: StageContext) -> None:
+        write_json(ctx.store.run_dir / "coverage_report.json", {"scenes_processed": 2, "scenes_failed": 0, "total_predicted_windows": 4})
+        write_json(ctx.store.run_dir / "pseudolabel_summary.json", {"metrics": {"accepted_objects": 1}})
+        write_json(ctx.store.run_dir / "postprocess_summary.json", {"final_objects": 1})
+        write_json(ctx.store.run_dir / "vectorization_summary.json", {"blocks_total": 2, "blocks_done": 2})
+        write_json(ctx.store.run_dir / "pseudolabel_scene_results_manifest.json", {"scenes": ["scene_a.tif", "scene_b.tif"]})
+        write_json(ctx.store.run_dir / "inference_timing_report.json", {"streaming_overlap_sec": 1.5})
+        (ctx.store.run_dir / "pseudolabel_scenes.txt").write_text("scene_a.tif\nscene_b.tif\n", encoding="utf-8")
+        (ctx.store.run_dir / "prediction_examples.html").write_text("<html></html>", encoding="utf-8")
+        (ctx.store.run_dir / "accepted.geojson.gz").write_bytes(b"gz")
+        (ctx.store.run_dir / "unit_stage.accepted.geojson").write_text('{"type":"FeatureCollection","features":[]}', encoding="utf-8")
 
     def _prepare_dataset_patches(self, ctx: StageContext, annotation: dict):
         return patch.multiple(

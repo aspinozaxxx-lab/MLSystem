@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# Deprecated compatibility helper. Source of truth: InferenceEngine. Not used as a production Airflow stage.
+
 from typing import Any
 
 from ...storage.local_io import read_json, write_json

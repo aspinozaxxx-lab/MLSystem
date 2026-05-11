@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+import urllib.request
 from typing import Any
 
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Response
 
 from ..config.settings import InferenceEngineSettings
 from ..queues.messages import QUEUE_NAMES, make_message, validate_queue_contracts
@@ -35,9 +36,28 @@ def health() -> dict[str, Any]:
 
 
 @app.get("/ready")
-def ready() -> dict[str, Any]:
+def ready(response: Response) -> dict[str, Any]:
     settings.ensure_dirs()
-    return {"status": "ready", "job_root": str(settings.job_root), "rabbitmq_enabled": settings.use_rabbitmq}
+    checks: dict[str, Any] = {
+        "job_root": _path_check(settings.job_root),
+        "spool_root": _path_check(settings.spool_root),
+        "artifact_root": _path_check(settings.artifact_root),
+        "logs_root": _path_check(settings.logs_root),
+        "rabbitmq": {"status": "ok" if not settings.use_rabbitmq else "unknown", "enabled": settings.use_rabbitmq},
+        "triton": _http_check(settings.triton_url.rstrip("/") + "/v2/health/ready"),
+    }
+    if settings.use_rabbitmq:
+        queue_metrics = rabbitmq_queue_metrics()
+        checks["rabbitmq"] = {
+            "status": "ok" if settings.rabbitmq_url else "failed",
+            "enabled": True,
+            "management_metrics_available": bool(queue_metrics),
+            "queues_seen": len(queue_metrics),
+        }
+    status = "ready" if all(item.get("status") == "ok" for item in checks.values()) else "degraded"
+    if status != "ready":
+        response.status_code = 503
+    return {"status": status, "service": "inference-engine", "checks": checks}
 
 
 @app.get("/queues")
@@ -121,6 +141,28 @@ async def _publish_job_submit(job_id: str) -> None:
 
 def run_background_job(job_id: str) -> None:
     run_job_local(job_id, store=store, settings=settings)
+
+
+def _path_check(path) -> dict[str, Any]:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / ".ready"
+        probe.write_text("ok", encoding="utf-8")
+        try:
+            probe.unlink()
+        except OSError:
+            pass
+        return {"status": "ok", "path": str(path)}
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "failed", "path": str(path), "message": str(exc)}
+
+
+def _http_check(url: str) -> dict[str, Any]:
+    try:
+        with urllib.request.urlopen(url, timeout=5) as response:
+            return {"status": "ok" if 200 <= response.status < 300 else "failed", "url": url, "http_status": response.status}
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "failed", "url": url, "message": str(exc)}
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ import json
 import logging
 import threading
 import time
+import urllib.request
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -75,7 +76,14 @@ def create_app(config: FrontendConfig | None = None) -> FastAPI:
         redirect = redirect_if_unauthorized(request)
         if redirect:
             return redirect
-        return templates.TemplateResponse(request, "index.html", {"user": request.session.get("mlsystem_user")})
+        return templates.TemplateResponse(
+            request,
+            "index.html",
+            {
+                "user": request.session.get("mlsystem_user"),
+                "rabbitmq_management_url": config.rabbitmq_management_url,
+            },
+        )
 
     @app.get("/annotation-check", response_class=HTMLResponse)
     def annotation_check_page(request: Request) -> HTMLResponse:
@@ -194,6 +202,29 @@ def create_app(config: FrontendConfig | None = None) -> FastAPI:
         if status.get("error"):
             report["error"] = status["error"]
         return report
+
+    @app.get("/api/inference-engine/queues")
+    def inference_engine_queues(_user: str = Depends(require_user)) -> dict[str, Any]:
+        headers = {"Authorization": f"Bearer {config.inference_engine_api_token}"} if config.inference_engine_api_token else {}
+        request = urllib.request.Request(config.inference_engine_api_url + "/queues", headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=8) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except Exception as exc:  # noqa: BLE001
+            return {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
+        metrics = payload.get("metrics") if isinstance(payload, dict) else []
+        ready = sum(int(item.get("messages_ready") or 0) for item in metrics or [])
+        unacked = sum(int(item.get("messages_unacked") or 0) for item in metrics or [])
+        consumers = sum(int(item.get("consumers") or 0) for item in metrics or [])
+        dead = next((item for item in metrics or [] if item.get("name") == "ie.dead_letter"), {})
+        return {
+            "status": "ok",
+            "ready": ready,
+            "unacked": unacked,
+            "consumers": consumers,
+            "dead_letter": int(dead.get("messages_ready") or 0) + int(dead.get("messages_unacked") or 0),
+            "queues": metrics or [],
+        }
 
     return app
 

@@ -18,9 +18,36 @@
     <h2>Состояние сервисов</h2>
     <p>Раздел в подготовке.</p>
   </div>
+  <a class="card active queue-card" href="{{ rabbitmq_management_url }}" target="_blank" rel="noopener">
+    <h2>Очереди RabbitMQ</h2>
+    <p>Мониторинг очередей InferenceEngine</p>
+    <div class="queue-metrics" id="rabbitmq-queue-metrics" aria-label="RabbitMQ queue metrics">
+      <span>ready: <b data-field="ready">...</b></span>
+      <span>unacked: <b data-field="unacked">...</b></span>
+      <span>consumers: <b data-field="consumers">...</b></span>
+      <span>dead_letter: <b data-field="dead_letter">...</b></span>
+    </div>
+  </a>
   <a class="card active" href="/docs/frontend">
     <h2>Документация</h2>
     <p>Описание frontend workflow и проверки данных.</p>
   </a>
 </section>
+<script>
+  (function () {
+    const root = document.getElementById("rabbitmq-queue-metrics");
+    if (!root) return;
+    fetch("/api/inference-engine/queues", { credentials: "same-origin" })
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error(String(response.status))))
+      .then((data) => {
+        for (const key of ["ready", "unacked", "consumers", "dead_letter"]) {
+          const el = root.querySelector(`[data-field="${key}"]`);
+          if (el) el.textContent = String(data[key] ?? "n/a");
+        }
+      })
+      .catch(() => {
+        for (const el of root.querySelectorAll("b")) el.textContent = "n/a";
+      });
+  })();
+</script>
 {% endblock %}

@@ -1,125 +1,94 @@
-# MLSystem frontend
+# MLSystem Frontend
 
-Frontend - отдельный FastAPI BFF-сервис для веб-интерфейса MLSystem.
+Frontend is a separate FastAPI BFF service for the MLSystem web UI.
 
-## URL
+## URLs
 
-Публичный вход:
+Public entrypoint:
 
 - `http://31.192.104.147/`
 - `http://31.192.104.147/login`
 - `http://31.192.104.147/health`
 
-Внутренний backend port frontend:
+Internal frontend backend:
 
 - `http://127.0.0.1:8090/health`
 
-Пользователь не должен открывать `:8090` снаружи. Внешний HTTP идет через reverse proxy на порту 80.
+RabbitMQ Management UI:
 
-## Назначение
+- `FRONTEND_RABBITMQ_MANAGEMENT_URL` or `RABBITMQ_MANAGEMENT_PUBLIC_URL`
+- production default: `http://31.192.104.147:15672/`
 
-Сервис дает единый вход по логину/паролю и страницу проверки разметок. Проверка разметок не запускает Airflow DAG и не содержит собственной ML-логики. Frontend вызывает внутренний `mlsystem-api` тем же stage-контрактом, который использует Airflow:
+RabbitMQ credentials are not rendered in the page. The management UI requires RabbitMQ authentication; unauthenticated API calls to `/api/overview` must return `401`.
 
-1. `POST /api/v1/runs/{run_id}/stages/inventory_scenes/start`
-2. `GET /api/v1/jobs/{job_id}`
-3. `POST /api/v1/runs/{run_id}/stages/prepare_dataset/start`
-4. `GET /api/v1/jobs/{job_id}`
+## Home Page
 
-## Аутентификация
+The home page includes a card titled `Очереди RabbitMQ`. It opens the native RabbitMQ Management UI and shows compact queue metrics fetched through the authenticated frontend session from:
 
-Настройки задаются через env:
+```text
+GET /api/inference-engine/queues
+```
 
-- `MLSYSTEM_FRONTEND_USER`, default для dev/test: `mluser`
-- `MLSYSTEM_FRONTEND_PASSWORD`, default для dev/test: `qazwsxedc`
-- `MLSYSTEM_FRONTEND_SESSION_SECRET`
-- `MLSYSTEM_FRONTEND_SESSION_TTL_SECONDS`
-- `MLSYSTEM_FRONTEND_COOKIE_SECURE=false` для текущего HTTP-доступа
+The frontend server calls InferenceEngine `/queues` internally using `INFERENCE_ENGINE_API_URL` and, if configured, `INFERENCE_ENGINE_API_TOKEN`.
 
-Пароль и session secret должны переопределяться через Ansible/GitHub secrets для production. API token хранится только в контейнере frontend и не отдается браузеру.
+## Annotation Check
 
-## Проверка разметок
+The annotation check workflow uses `mlsystem-api` stage contracts and does not run ML logic in the frontend:
 
-Пользователь загружает только GeoJSON/JSON файл разметки и TXT файл со списком сцен или папок.
+```text
+POST /api/v1/runs/{run_id}/stages/inventory_scenes/start
+GET  /api/v1/jobs/{job_id}
+POST /api/v1/runs/{run_id}/stages/prepare_dataset/start
+GET  /api/v1/jobs/{job_id}
+```
 
-Frontend сохраняет файлы вне git:
+Uploaded runtime data is outside git:
 
 ```text
 /data/mlsystem/frontend/uploads/<run_id>/
 ```
 
-Затем загружает их в MinIO prefix:
+## Environment
 
-```text
-s3://mlsystems/frontend-checks/<run_id>/
-```
+- `MLSYSTEM_FRONTEND_USER`
+- `MLSYSTEM_FRONTEND_PASSWORD`
+- `MLSYSTEM_FRONTEND_SESSION_SECRET`
+- `MLSYSTEM_FRONTEND_SESSION_TTL_SECONDS`
+- `MLSYSTEM_FRONTEND_COOKIE_SECURE`
+- `MLSYSTEM_API_BASE_URL`
+- `MLSYSTEM_API_TOKEN`
+- `INFERENCE_ENGINE_API_URL`
+- `INFERENCE_ENGINE_API_TOKEN`
+- `FRONTEND_RABBITMQ_MANAGEMENT_URL`
+- `RABBITMQ_MANAGEMENT_PUBLIC_URL`
 
-После этого stages получают обычный production payload:
-
-- `images_uri`
-- `layout_uri=s3://mlsystems/frontend-checks/<run_id>/`
-- `scenes_file`
-- `annotation_file`
-- `preprocess.split_strategy`
-- optional `preprocess.annotation_crs`
-- `preprocess.allow_inferred_annotation_crs`
-
-## Отчеты
-
-Frontend читает готовые artifacts stage run из:
-
-```text
-/data/mlsystem/airflow/status/<run_id>/
-```
-
-Используются:
-
-- `inventory_scenes.json`
-- `scene_matching_report.json`
-- `matched_scenes.txt`
-- `missing_scenes.txt`
-- `dataset_manifest.json`
-- `scene_object_counts.txt`
-- `split_summary.json`
-- `dataset_validation_report.json`
-- stage JSON reports
-
-Frontend не пересчитывает GeoJSON, не ищет сцены в S3 и не делает train/val split самостоятельно.
+Secrets stay in container/server env and are not sent to the browser.
 
 ## Deploy
 
-GitHub Actions workflows:
+Workflows:
 
 ```text
 .github/workflows/frontend-site.yml
 .github/workflows/frontend-ansible.yml
 ```
 
-`frontend-site` is the fast code rollout: it runs frontend tests, syncs `frontend/` and `docs/frontend.md`, then rebuilds/restarts only `mlsystem-frontend` and `mlsystem-frontend-proxy`.
-
-`frontend-ansible` is the settings rollout: it runs the frontend Ansible playbook when `ansible/**` changes.
-
-Ansible playbook:
+Playbook:
 
 ```text
 ansible/playbooks/deploy_frontend.yml
 ```
 
-Контейнеры:
+Containers:
 
 - `mlsystem-gpu-frontend`
 - `mlsystem-gpu-frontend-proxy`
 
-Reverse proxy:
-
-- host port `0.0.0.0:80`
-- upstream `mlsystem-frontend:8090` inside docker network
-
-Health checks:
+Validation:
 
 ```bash
 curl -fsS http://127.0.0.1:8090/health
 curl -fsS http://127.0.0.1/health
-curl -fsS http://31.192.104.147/health
 curl -fsSI http://31.192.104.147/login
 ```
 

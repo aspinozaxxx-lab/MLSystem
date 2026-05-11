@@ -11,10 +11,10 @@ Airflow -> mlsystem-api -> persisted API job -> stage registry -> production mod
 Pseudolabel production path:
 
 ```text
-Airflow -> mlsystem-api -> InferenceEngine API -> RabbitMQ stage workers -> Triton -> compatibility artifacts
+Airflow inference_engine_pipeline -> mlsystem-api -> InferenceEngine API -> RabbitMQ stage workers -> Triton -> compatibility artifacts
 ```
 
-Set `pseudolabel.source=inference_engine` to use the extracted InferenceEngine service. In that mode, `mlsystem` keeps training/MLflow semantics and downstream pseudolabel stages validate artifacts produced by InferenceEngine.
+`InferenceEngine` owns scene planning, tile preprocessing, Triton inference, block/core/halo vectorization, postprocess, merge and export. Airflow exposes this as a single `inference_engine_pipeline` task; the six old internal pseudolabel stages are retired from production DAGs and `/api/v1/stages`.
 The production path is validated on the GPU server with RabbitMQ stage queues, Triton `segformer_b2`, a 2-scene mlsystem-api compatibility run, and a 20-scene InferenceEngine run; see [InferenceEngine validation report](docs/inference_engine_validation_report.md).
 
 Runtime data, API jobs, Airflow stage status, model artifacts, probability maps, reports, caches and heavy geospatial files are not stored in git. They live on the server under paths such as:
@@ -42,6 +42,7 @@ It provides login and annotation checks. Annotation checks call `mlsystem-api`
 stages `inventory_scenes` and `prepare_dataset`; they do not trigger Airflow DAGs.
 Public frontend URL is `http://31.192.104.147/`; port `8090` is only the internal
 frontend upstream behind the port 80 reverse proxy.
+The home page includes `Очереди RabbitMQ`, a link to the native RabbitMQ Management UI and compact queue metrics from InferenceEngine `/queues`.
 
 Frontend runtime data is not stored in git:
 

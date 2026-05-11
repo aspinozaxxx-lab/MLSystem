@@ -85,6 +85,8 @@
     - { key: "MLSYSTEM_FRONTEND_DEFAULT_SPLIT_STRATEGY", value: "{{ mlsystem_gpu_frontend_default_split_strategy }}" }
     - { key: "MLSYSTEM_FRONTEND_MAX_UPLOAD_MB", value: "{{ mlsystem_gpu_frontend_max_upload_mb }}" }
     - { key: "MLSYSTEM_FRONTEND_S3_PREFIX", value: "frontend-checks" }
+    - { key: "FRONTEND_RABBITMQ_MANAGEMENT_URL", value: "{{ mlsystem_gpu_frontend_public_url }}:{{ mlsystem_gpu_rabbitmq_management_port }}/" }
+    - { key: "RABBITMQ_MANAGEMENT_PUBLIC_URL", value: "{{ mlsystem_gpu_frontend_public_url }}:{{ mlsystem_gpu_rabbitmq_management_port }}/" }
   when: frontend_env_stat.stat.exists
   no_log: true
 

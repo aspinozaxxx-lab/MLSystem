@@ -7,10 +7,10 @@ from pathlib import Path
 
 import numpy as np
 
-from mlsystem.src.vectorization import run_block_parallel_vectorization
-from mlsystem.src.vectorization.block_grid import build_processing_blocks
-from mlsystem.src.vectorization.contracts import BlockVectorizationJob
-from mlsystem.src.vectorization.tile_index import build_prediction_tile_index
+from InferenceEngine.src.inference_engine.vectorization import run_block_parallel_vectorization
+from InferenceEngine.src.inference_engine.vectorization.block_grid import build_processing_blocks
+from InferenceEngine.src.inference_engine.vectorization.contracts import BlockVectorizationJob
+from InferenceEngine.src.inference_engine.vectorization.tile_index import build_prediction_tile_index
 
 
 class BlockParallelVectorizationTests(unittest.TestCase):

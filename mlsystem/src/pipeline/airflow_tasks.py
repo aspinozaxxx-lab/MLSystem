@@ -34,12 +34,7 @@ MAIN_DAG_STAGES = [
     "predict_validation_scenes",
     "vectorize_validation_predictions",
     "compute_f1",
-    "prepare_inference_scenes",
-    "run_pseudolabel_inference",
-    "validate_probability_maps",
-    "vectorize_pseudolabel",
-    "postprocess_pseudolabel",
-    "export_pseudolabel_artifacts",
+    "inference_engine_pipeline",
     "generate_prediction_examples",
     "log_mlflow_artifacts",
     "write_codex_api_summary",
@@ -55,19 +50,14 @@ STAGE_POOLS = {
     "predict_validation_scenes": ("gpu_inference", 1),
     "vectorize_validation_predictions": ("cpu_heavy", 2),
     "compute_f1": ("cpu_heavy", 1),
-    "prepare_inference_scenes": ("io_light", 1),
-    "run_pseudolabel_inference": ("gpu_inference", 1),
-    "validate_probability_maps": ("cpu_heavy", 2),
-    "vectorize_pseudolabel": ("cpu_heavy", 3),
-    "postprocess_pseudolabel": ("cpu_heavy", 3),
-    "export_pseudolabel_artifacts": ("io_light", 1),
+    "inference_engine_pipeline": ("io_light", 1),
     "generate_prediction_examples": ("cpu_heavy", 1),
     "log_mlflow_artifacts": ("io_light", 1),
     "write_codex_api_summary": ("io_light", 1),
     "finalize_mlflow_run": ("io_light", 1),
 }
 
-GPU_XCOM_STAGES = {"train_model", "predict_validation_scenes", "run_pseudolabel_inference"}
+GPU_XCOM_STAGES = {"train_model", "predict_validation_scenes"}
 
 STAGE_XCOM_COUNTERS = {
     "inventory_scenes": {"scene_rows", "available_images", "matched_scenes", "missing_scenes", "ambiguous_scenes"},
@@ -114,29 +104,18 @@ STAGE_XCOM_COUNTERS = {
         "reference_scenes",
         "prediction_scenes",
     },
-    "run_pseudolabel_inference": {
-        "pseudolabel_scenes_requested",
+    "inference_engine_pipeline": {
         "pseudolabel_scenes_processed",
         "pseudolabel_scenes_skipped",
         "pseudolabel_scenes_failed",
         "pseudolabel_prediction_windows",
         "probability_maps",
-        "inference_scene_limit",
-        "pseudolabel_scenes_excluded",
-    },
-    "vectorize_pseudolabel": {
-        "prediction_tiles",
-        "prediction_scenes",
+        "tiles_total",
+        "tiles_done",
         "blocks_total",
         "blocks_done",
-        "blocks_failed",
-        "workers_requested",
-        "workers_effective",
-        "boundary_candidates",
-        "polygons_before_merge",
-        "polygons_after_merge",
-        "final_objects",
-        "accepted_objects",
+        "triton_batches",
+        "inference_engine_http_submitted",
     },
     "finalize_mlflow_run": {"failed_stages", "warning_stages"},
     "log_mlflow_artifacts": {"artifacts_logged", "artifacts_failed"},
@@ -147,14 +126,13 @@ STAGE_XCOM_COUNTERS = {
 STAGE_XCOM_METRICS = {
     "evaluate_pixel_metrics": {"pixel_precision", "pixel_recall", "pixel_f1", "pixel_iou", "pixel_accuracy"},
     "compute_f1": {"pixel_precision", "pixel_recall", "pixel_f1", "pixel_iou", "object_precision", "object_recall", "object_f1"},
-    "vectorize_pseudolabel": {"vectorization_duration_sec", "merge_duration_sec", "area_ratio_after_merge_to_before_merge", "area_ratio_final_to_before_merge"},
+    "inference_engine_pipeline": {"streaming_overlap_sec", "triton_batch_fill_ratio", "triton_request_duration_ms"},
 }
 
 STAGE_XCOM_DIRECT_COUNTERS = {
     "prepare_dataset": {"split_strategy"},
     "evaluate_pixel_metrics": {"threshold"},
-    "run_pseudolabel_inference": {"backend", "device", "cuda_available", "gpu_name", "limit_source", "limit_reason"},
-    "vectorize_pseudolabel": {"vectorization_mode"},
+    "inference_engine_pipeline": {"backend", "source", "request_submitted_via_http", "inference_engine_job_id"},
     "finalize_mlflow_run": {"mlflow_run_id", "mlflow_final_status"},
     "log_mlflow_artifacts": {"mlflow_run_id"},
 }
@@ -165,11 +143,8 @@ CLI_STAGE_ALIASES = {
     "train": "train_model",
     "evaluate": "evaluate_pixel_metrics",
     "compute-f1": "compute_f1",
-    "prepare-inference": "prepare_inference_scenes",
-    "pseudolabel": "run_pseudolabel_inference",
-    "run-pseudolabel-inference": "run_pseudolabel_inference",
-    "validate-probability-maps": "validate_probability_maps",
-    "postprocess": "postprocess_pseudolabel",
+    "inference-engine": "inference_engine_pipeline",
+    "pseudolabel": "inference_engine_pipeline",
     "finalize": "finalize_mlflow_run",
 }
 
@@ -1444,7 +1419,7 @@ def _run_dispatcher_stage(stage: str, conf_payload: dict[str, Any], airflow_run_
             training_result = _run_training_pipeline(conf, store)
             result = _stage_result(
                 "success",
-                summary="TrainingPipeline completed real MLSystem train-only run; pseudolabel is handled by run_pseudolabel_inference.",
+                summary="TrainingPipeline completed real MLSystem train-only run; pseudolabel is handled by inference_engine_pipeline.",
                 mode=training_result.get("mode"),
                 epochs_completed=training_result.get("epochs_completed"),
                 best_val_iou=training_result.get("best_val_iou"),

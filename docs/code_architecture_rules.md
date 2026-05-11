@@ -1,31 +1,29 @@
-# Правила архитектуры кода MLSystem
+# MLSystem Code Architecture Rules
 
-## Текущий контур
+## Current Boundary
 
 ```text
-Airflow -> mlsystem-api -> persisted API job -> stage registry/dispatcher -> production modules
+Airflow -> mlsystem-api -> persisted API job -> production stage/dispatcher
+Airflow inference_engine_pipeline -> InferenceEngine API -> RabbitMQ workers -> Triton
 ```
 
-Runtime artifacts не хранятся в git.
+Runtime artifacts are never stored in git.
 
-## Правила
+## Rules
 
-| Priority | Rule | Why | Target |
-| --- | --- | --- | --- |
-| high | Airflow не исполняет domain logic напрямую. | Airflow отвечает за scheduling, retries, pools и XCom. | `airflow_tasks.run_airflow_stage` вызывает API. |
-| high | Каждый stage пишет `StageReport` или совместимый report payload. | Оператор должен видеть status/checks/counters/metrics/artifacts. | `stages/*`, dispatcher stages in `airflow_tasks.py`. |
-| high | XCom содержит только small scalar key/value. | Airflow metadata DB не должен хранить reports/artifacts. | `push_stage_xcom`, `safe_xcom_push`. |
-| high | Источник истины по stage - files under `/data/mlsystem/airflow/status/<run_id>/`. | Отчеты должны переживать перезапуск API/Airflow. | `AirflowRunStore`, API job reports. |
-| high | API job state лежит вне git. | Runtime jobs не являются исходным кодом. | `/data/mlsystem/api/jobs/<job_id>/`. |
-| high | Stage input/output artifacts объявляются явно. | Downstream stages не должны гадать, откуда читать данные. | artifact contracts and stage reports. |
-| medium | Storage access идет через adapters. | S3/MinIO/local cache можно менять независимо. | `storage/*`, S3 adapters. |
-| medium | MLflow URL/report formatting централизуется. | Логи Airflow должны быть одинаково читаемы. | `stage_report_formatter`, MLflow helpers. |
-| medium | GPU stages отделены от CPU-heavy stages. | GPU не должен удерживаться vectorization/postprocess работой. | Airflow pools and stage split. |
-| medium | Handtests вызывают production functions. | Ручная отладка не должна дублировать алгоритмы. | `tests/handtests/*` -> `mlsystem/src/*`. |
-| medium | Runtime artifacts не возвращаются в git. | История есть в git, актуальный repo должен быть чистым. | `.gitignore`, cleanup checks. |
+| Priority | Rule | Target |
+| --- | --- | --- |
+| high | Airflow does not execute pseudolabel domain logic. | `inference_engine_pipeline` submits/polls InferenceEngine over HTTP. |
+| high | InferenceEngine is the source of truth for pseudolabel scene planning, tiling, Triton inference, vectorization, postprocess, merge, and export. | `InferenceEngine/src/inference_engine/**` |
+| high | `mlsystem` keeps training, MLflow lifecycle, dataset preparation, pixel/object metrics, API job persistence, and report formatting. | `mlsystem/src/**` |
+| high | XCom contains only small scalar key/value data. | `push_stage_xcom`, `safe_xcom_push` |
+| high | Stage artifacts live under `/data/mlsystem/airflow/status/<run_id>/`; API job state lives under `/data/mlsystem/api/jobs/<job_id>/`. | `AirflowRunStore`, `JobStore` |
+| high | `/api/v1/stages` and Airflow task lists expose one pseudolabel stage: `inference_engine_pipeline`. | `MAIN_DAG_STAGES`, stage registry |
+| medium | Deprecated compatibility wrappers must be marked and must not be registered as production Airflow stages. | `mlsystem/src/**` |
+| medium | Runtime probability maps, accepted GeoJSON, queue spool, env files, and secrets stay outside git. | `.gitignore`, validation scripts |
 
-## Что оставлено
+## Deliberately Kept
 
-- `mlsystem/src/pipeline/airflow_tasks.py` пока содержит dispatcher stages для training/MLflow/reporting, потому что эти stages реально входят в текущий DAG.
-- `real_train.py` и тяжелая MLflow/training логика не переписаны в этом cleanup pass.
-- `vectorize_pseudolabel` сохраняет `legacy` mode как текущий совместимый режим выполнения; `block_parallel` включается явно config-ом.
+- `real_train.py` and `mlsystem/src/pipeline/pseudolabel_pipeline.py` are kept for training-era compatibility and are not the production Airflow pseudolabel path.
+- Thin wrappers under `mlsystem/src/inference`, `mlsystem/src/vectorization`, `mlsystem/src/postprocessing`, and `mlsystem/src/tiling` re-export InferenceEngine implementations for older imports.
+- `prepare_inference_scenes.py` remains as a small manifest helper used by `inference_engine_pipeline` before HTTP submission.

@@ -7,6 +7,7 @@ mlsystem_gpu_frontend_port: 8090
 mlsystem_gpu_frontend_user: mluser
 mlsystem_gpu_frontend_default_password: qazwsxedc
 mlsystem_gpu_frontend_public_url: "http://31.192.104.147"
+mlsystem_gpu_rabbitmq_management_port: 15672
 mlsystem_gpu_frontend_proxy_listen_host: "0.0.0.0"
 mlsystem_gpu_frontend_proxy_port: 80
 mlsystem_gpu_frontend_cookie_secure: "false"

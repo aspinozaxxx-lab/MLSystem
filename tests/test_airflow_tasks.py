@@ -47,9 +47,13 @@ class AirflowTasksTests(unittest.TestCase):
         self.assertEqual(MAIN_DAG_STAGES[0], "inventory_scenes")
         self.assertEqual(MAIN_DAG_STAGES[1], "prepare_dataset")
         self.assertEqual(MAIN_DAG_STAGES[-1], "finalize_mlflow_run")
-        self.assertIn("prepare_inference_scenes", MAIN_DAG_STAGES)
-        self.assertIn("run_pseudolabel_inference", MAIN_DAG_STAGES)
-        self.assertIn("validate_probability_maps", MAIN_DAG_STAGES)
+        self.assertIn("inference_engine_pipeline", MAIN_DAG_STAGES)
+        self.assertNotIn("prepare_inference_scenes", MAIN_DAG_STAGES)
+        self.assertNotIn("run_pseudolabel_inference", MAIN_DAG_STAGES)
+        self.assertNotIn("validate_probability_maps", MAIN_DAG_STAGES)
+        self.assertNotIn("vectorize_pseudolabel", MAIN_DAG_STAGES)
+        self.assertNotIn("postprocess_pseudolabel", MAIN_DAG_STAGES)
+        self.assertNotIn("export_pseudolabel_artifacts", MAIN_DAG_STAGES)
         self.assertIn("compute_f1", MAIN_DAG_STAGES)
         self.assertNotIn("compute_object_f1", MAIN_DAG_STAGES)
 
@@ -63,7 +67,7 @@ class AirflowTasksTests(unittest.TestCase):
     def test_gpu_stages_use_expected_pools(self) -> None:
         self.assertEqual(STAGE_POOLS["train_model"][0], "gpu_training")
         self.assertEqual(STAGE_POOLS["predict_validation_scenes"][0], "gpu_inference")
-        self.assertEqual(STAGE_POOLS["run_pseudolabel_inference"][0], "gpu_inference")
+        self.assertEqual(STAGE_POOLS["inference_engine_pipeline"][0], "io_light")
 
     def test_airflow_conf_passes_metrics_debug_to_training_job(self) -> None:
         conf = AirflowExperimentConfig.model_validate(
@@ -267,10 +271,9 @@ class AirflowTasksTests(unittest.TestCase):
                 self.values[key] = value
 
         summary = {
-            "stage": "run_pseudolabel_inference",
+            "stage": "inference_engine_pipeline",
             "status": "success",
             "key_counters": {
-                "pseudolabel_scenes_requested": 5,
                 "pseudolabel_scenes_processed": 1,
                 "cuda_available": True,
                 "gpu_name": "GPU",
@@ -279,9 +282,9 @@ class AirflowTasksTests(unittest.TestCase):
         }
         ti = FakeTaskInstance()
         push_stage_xcom(summary, ti)
-        self.assertTrue(ti.values["cuda_available"])
-        self.assertEqual(ti.values["gpu_name"], "GPU")
-        self.assertEqual(ti.values["device"], "cuda")
+        self.assertNotIn("cuda_available", ti.values)
+        self.assertNotIn("gpu_name", ti.values)
+        self.assertNotIn("device", ti.values)
         self.assertEqual(ti.values["counter_pseudolabel_scenes_processed"], 1)
 
     def test_evaluate_pixel_metrics_xcom_allowlist(self) -> None:
@@ -476,13 +479,13 @@ class AirflowTasksTests(unittest.TestCase):
     def test_stage_failure_writes_stage_report_before_raising(self) -> None:
         conf = {
             "experiment_id": "unit_stage_failure",
-            "pseudolabel": {"run_on": "explicit_scene_list", "scene_list": ["missing.tif"]},
+            "pseudolabel": {"enabled": True, "source": "inference_engine", "run_on": "explicit_scene_list", "scene_list": ["missing.tif"]},
         }
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(RuntimeError):
-                run_stage("prepare_inference_scenes", conf, "manual__unit", Path(tmp))
-            stage_path = Path(tmp) / "unit_stage_failure" / "stages" / "prepare_inference_scenes.json"
-            report_path = Path(tmp) / "unit_stage_failure" / "stages" / "prepare_inference_scenes.report.md"
+                run_stage("inference_engine_pipeline", conf, "manual__unit", Path(tmp))
+            stage_path = Path(tmp) / "unit_stage_failure" / "stages" / "inference_engine_pipeline.json"
+            report_path = Path(tmp) / "unit_stage_failure" / "stages" / "inference_engine_pipeline.report.md"
             self.assertTrue(stage_path.exists())
             self.assertTrue(report_path.exists())
             self.assertIn("stage_report", stage_path.read_text(encoding="utf-8"))

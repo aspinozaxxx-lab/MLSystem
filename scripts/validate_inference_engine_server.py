@@ -21,6 +21,7 @@ REQUIRED_ARTIFACTS = [
     "accepted.geojson.gz",
     "coverage_report.json",
     "inference_results.json",
+    "inference_timing_report.json",
     "postprocess_summary.json",
     "prediction_examples.html",
     "probability_maps_index.json",
@@ -62,11 +63,26 @@ def main() -> None:
         dead_letter_purge_output = _purge_rabbitmq_queue("ie.dead_letter")
     health = _safe_get_json(args.api.rstrip("/") + "/health", token=ie_token)
     health_commit = health.get("commit") if isinstance(health, dict) else None
+    ready = _safe_get_json(args.api.rstrip("/") + "/ready", token=ie_token)
+    openapi = _safe_get_json(args.api.rstrip("/") + "/openapi.json")
+    endpoints = _openapi_endpoints(openapi)
+    mlsystem_stages = _safe_get_json(args.mlsystem_api.rstrip("/") + "/api/v1/stages")
 
     summary: dict[str, Any] = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "commit": health_commit or _run_text("git -C /opt/mlsystem/repo rev-parse HEAD", check=False).strip(),
         "health": health,
+        "ready": ready,
+        "openapi_endpoints": endpoints,
+        "queues_initial": _safe_get_json(args.api.rstrip("/") + "/queues", token=ie_token),
+        "metrics_initial": _safe_get_json(args.api.rstrip("/") + "/metrics", token=ie_token),
+        "mlsystem_health": _safe_get_json(args.mlsystem_api.rstrip("/") + "/health"),
+        "mlsystem_ready": _safe_get_json(args.mlsystem_api.rstrip("/") + "/ready"),
+        "mlsystem_stages": mlsystem_stages,
+        "airflow_tasks": _airflow_tasks(),
+        "airflow_import_errors": _airflow_import_errors(),
+        "rabbitmq_management": _rabbitmq_management_overview(env),
+        "rabbitmq_management_public_url": env.get("RABBITMQ_MANAGEMENT_PUBLIC_URL") or env.get("FRONTEND_RABBITMQ_MANAGEMENT_URL") or "/rabbitmq/",
         "manifest": str(manifest),
         "manifest_scenes": manifest_scenes,
         "stale_validation_cleanup": stale_validation_cleanup,
@@ -131,13 +147,7 @@ def _run_two_scene_via_mlsystem_api(
     _make_tree_container_writable(run_dir)
     config = _mlsystem_config(experiment_id, max_scenes=2)
     stage_results = []
-    for stage in [
-        "run_pseudolabel_inference",
-        "validate_probability_maps",
-        "vectorize_pseudolabel",
-        "postprocess_pseudolabel",
-        "export_pseudolabel_artifacts",
-    ]:
+    for stage in ["inference_engine_pipeline"]:
         stage_results.append(
             _run_mlsystem_stage(
                 mlsystem_api=mlsystem_api,
@@ -303,6 +313,40 @@ def _ie_payload(experiment_id: str, manifest: Path, *, max_scenes: int, resource
 def _assert_success(summary: dict[str, Any]) -> None:
     two_job = summary["two_scene"]["inference_engine_job"]
     twenty = summary["twenty_scene"]
+    required_endpoints = {
+        "GET /health",
+        "GET /ready",
+        "GET /queues",
+        "GET /metrics",
+        "POST /api/v1/jobs",
+        "GET /api/v1/jobs/{job_id}",
+        "GET /api/v1/jobs/{job_id}/events",
+        "GET /api/v1/jobs/{job_id}/artifacts",
+        "POST /api/v1/jobs/{job_id}/cancel",
+    }
+    missing_endpoints = sorted(required_endpoints - set(summary.get("openapi_endpoints") or []))
+    if missing_endpoints:
+        raise RuntimeError(f"InferenceEngine OpenAPI is missing endpoints: {missing_endpoints}")
+    stages = summary.get("mlsystem_stages") or {}
+    main_stages = set(stages.get("main_dag_stages") or [])
+    if "inference_engine_pipeline" not in main_stages:
+        raise RuntimeError(f"mlsystem-api /api/v1/stages does not expose inference_engine_pipeline: {stages}")
+    old_stages = {
+        "prepare_inference_scenes",
+        "run_pseudolabel_inference",
+        "validate_probability_maps",
+        "vectorize_pseudolabel",
+        "postprocess_pseudolabel",
+        "export_pseudolabel_artifacts",
+    }
+    if old_stages & main_stages:
+        raise RuntimeError(f"mlsystem-api still exposes old pseudolabel stages in MAIN_DAG_STAGES: {old_stages & main_stages}")
+    airflow_tasks = str(summary.get("airflow_tasks") or "")
+    if "inference_engine_pipeline" not in airflow_tasks:
+        raise RuntimeError(f"Airflow task list does not contain inference_engine_pipeline: {airflow_tasks}")
+    old_in_airflow = [stage for stage in old_stages if stage in airflow_tasks]
+    if old_in_airflow:
+        raise RuntimeError(f"Airflow task list still contains old pseudolabel stages: {old_in_airflow}")
     if summary["two_scene"].get("status") != "success":
         raise RuntimeError("2-scene MLSystem API validation failed")
     if twenty.get("status") != "success":
@@ -483,6 +527,30 @@ def _service_snapshot() -> str:
     return _run_text("docker ps --format 'table {{.Names}}\\t{{.Status}}\\t{{.Ports}}'", check=False)
 
 
+def _airflow_tasks() -> str:
+    compose = "docker compose --env-file /etc/mlsystem/gpu-platform.env -f /data/mlsystem/platform/docker-compose.yml"
+    return _run_text(f"{compose} exec -T airflow-scheduler airflow tasks list mlsystem_experiment_pipeline", check=False)
+
+
+def _airflow_import_errors() -> str:
+    compose = "docker compose --env-file /etc/mlsystem/gpu-platform.env -f /data/mlsystem/platform/docker-compose.yml"
+    return _run_text(f"{compose} exec -T airflow-scheduler airflow dags list-import-errors", check=False)
+
+
+def _openapi_endpoints(openapi: Any) -> list[str]:
+    if not isinstance(openapi, dict):
+        return []
+    endpoints: list[str] = []
+    for path, methods in sorted((openapi.get("paths") or {}).items()):
+        if not isinstance(methods, dict):
+            continue
+        for method in sorted(methods):
+            if method.lower() in {"get", "post", "put", "patch", "delete"}:
+                endpoints.append(f"{method.upper()} {path}")
+    endpoints.extend(["GET /openapi.json", "GET /docs", "GET /redoc"])
+    return sorted(set(endpoints))
+
+
 def _rabbitmq_queues(filter_queue: str | None = None) -> str:
     output = _run_text("docker exec mlsystem-gpu-rabbitmq rabbitmqctl list_queues name messages_ready messages_unacknowledged consumers", check=False)
     if not filter_queue:
@@ -515,6 +583,30 @@ def _queue_message_total(row: dict[str, Any]) -> int:
 
 def _purge_rabbitmq_queue(queue: str) -> str:
     return _run_text(f"docker exec mlsystem-gpu-rabbitmq rabbitmqctl purge_queue {shlex.quote(queue)}", check=False)
+
+
+def _rabbitmq_management_overview(env: dict[str, str]) -> dict[str, Any]:
+    user = env.get("RABBITMQ_DEFAULT_USER")
+    password = env.get("RABBITMQ_DEFAULT_PASS")
+    if not user or not password:
+        return {"status": "skipped", "reason": "RabbitMQ credentials are not available in env file"}
+    curl = (
+        "curl -fsS "
+        + shlex.quote(f"http://127.0.0.1:{env.get('RABBITMQ_MANAGEMENT_PORT') or '15672'}/api/overview")
+        + " -u "
+        + shlex.quote(f"{user}:{password}")
+    )
+    output = _run_text(curl, check=False)
+    try:
+        payload = json.loads(output)
+    except Exception:
+        return {"status": "failed", "output": output[:1000]}
+    return {
+        "status": "ok",
+        "management_version": payload.get("management_version"),
+        "rabbitmq_version": payload.get("rabbitmq_version"),
+        "auth_required": True,
+    }
 
 
 def _nvidia_smi() -> str:

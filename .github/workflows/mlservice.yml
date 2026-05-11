@@ -170,4 +170,22 @@ jobs:
           import json, os
           data = json.loads(os.environ["STAGES_JSON"])
           assert data.get("aliases") == {}, data.get("aliases")
+          main = set(data.get("main_dag_stages") or [])
+          registry = set(data.get("registry_stages") or [])
+          assert "inference_engine_pipeline" in main, main
+          assert "inference_engine_pipeline" in registry, registry
+          old = {
+              "prepare_inference_scenes",
+              "run_pseudolabel_inference",
+              "validate_probability_maps",
+              "vectorize_pseudolabel",
+              "postprocess_pseudolabel",
+              "export_pseudolabel_artifacts",
+          }
+          assert not (old & main), old & main
+          assert not (old & registry), old & registry
           PY
+          tasks="$($SSH "$COMPOSE exec -T airflow-scheduler airflow tasks list mlsystem_experiment_pipeline")"
+          echo "$tasks"
+          grep -q inference_engine_pipeline <<< "$tasks"
+          ! grep -E 'prepare_inference_scenes|run_pseudolabel_inference|validate_probability_maps|vectorize_pseudolabel|postprocess_pseudolabel|export_pseudolabel_artifacts' <<< "$tasks"

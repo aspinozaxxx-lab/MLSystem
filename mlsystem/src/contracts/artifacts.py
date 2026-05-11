@@ -45,7 +45,7 @@ class DatasetManifestArtifact(ArtifactBase):
 
 
 class InferenceManifestArtifact(ArtifactBase):
-    stage: str = "prepare_inference_scenes"
+    stage: str = "inference_engine_pipeline"
     experiment_id: str
     run_on: str
     bad_scene_policy: str = "skip"
