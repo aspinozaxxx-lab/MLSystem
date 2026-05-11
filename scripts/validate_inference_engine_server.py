@@ -461,11 +461,14 @@ def _rabbitmq_queue_counts() -> dict[str, dict[str, int]]:
         parts = line.split()
         if len(parts) < 4 or parts[0] == "name":
             continue
-        result[parts[0]] = {
-            "messages_ready": int(parts[1]),
-            "messages_unacknowledged": int(parts[2]),
-            "consumers": int(parts[3]),
-        }
+        try:
+            result[parts[0]] = {
+                "messages_ready": int(parts[1]),
+                "messages_unacknowledged": int(parts[2]),
+                "consumers": int(parts[3]),
+            }
+        except ValueError:
+            continue
     return result
 
 
