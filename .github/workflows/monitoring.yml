@@ -85,6 +85,7 @@ jobs:
           RABBITMQ_DEFAULT_USER=mlsystem
           RABBITMQ_DEFAULT_PASS=rabbit-password
           INFERENCE_ENGINE_API_TOKEN=ie-token
+          INFERENCE_ENGINE_RABBITMQ_URL=amqp://mlsystem:rabbit-password@rabbitmq:5672/
           MLSYSTEM_API_TOKEN=api-token
           MLSYSTEM_REPO_ROOT=${{ github.workspace }}
           MLSYSTEM_DATA_ROOT=/tmp/mlsystem
@@ -92,6 +93,8 @@ jobs:
           MLSYSTEM_FRONTEND_PUBLIC_BASE_URL=http://127.0.0.1
           GF_SECURITY_SECRET_KEY=grafana-secret
           EOF
+          sudo mkdir -p /etc/mlsystem
+          sudo cp /tmp/gpu-platform.env /etc/mlsystem/gpu-platform.env
           docker compose --env-file /tmp/gpu-platform.env -f deploy/docker-compose.gpu.yml config >/tmp/gpu-compose.yml
           grep -q "mlsystem-gpu-prometheus" /tmp/gpu-compose.yml
           grep -q "mlsystem-gpu-grafana" /tmp/gpu-compose.yml
