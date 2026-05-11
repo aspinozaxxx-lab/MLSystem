@@ -313,10 +313,10 @@
   register: triton_health
   until: triton_health.status == 200
 
-- name: Verify PyTorch sees CUDA inside Airflow scheduler
+- name: Verify Airflow scheduler imports MLSystem orchestration modules
   ansible.builtin.command:
-    cmd: docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}" exec -T airflow-scheduler python -c "import torch; print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NO_CUDA')"
-  register: torch_cuda_check
+    cmd: docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}" exec -T airflow-scheduler python -c "from src.pipeline.airflow_tasks import MAIN_DAG_STAGES; print(','.join(MAIN_DAG_STAGES))"
+  register: airflow_orchestration_import_check
   changed_when: false
 
 - name: Verify PyTorch sees CUDA inside MLSystem API
@@ -342,6 +342,6 @@
       rabbitmq: "{{ mlsystem_gpu_frontend_public_url }}/rabbitmq/"
       triton_ready: "http://{{ mlsystem_gpu_public_host }}:{{ mlsystem_gpu_triton_http_port }}/v2/health/ready"
       mlsystem_api: "ssh tunnel/local only: http://127.0.0.1:{{ mlsystem_gpu_api_port }}"
-      torch_cuda: "{{ torch_cuda_check.stdout_lines }}"
+      airflow_orchestration_import: "{{ airflow_orchestration_import_check.stdout_lines }}"
       api_torch_cuda: "{{ api_torch_cuda_check.stdout_lines }}"
       triton_models: "{{ triton_models.content }}"
