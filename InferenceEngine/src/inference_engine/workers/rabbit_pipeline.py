@@ -37,7 +37,7 @@ class RabbitPipeline:
     def __init__(self, settings: InferenceEngineSettings) -> None:
         self.settings = settings
         self.store = JobStore(settings.job_root)
-        self.client = RabbitMQClient(settings.rabbitmq_url)
+        self.client = RabbitMQClient(settings.rabbitmq_url, failure_handler=self._handle_message_failure)
 
     async def run_role(self, role: str) -> None:
         role = role.replace("_", "-")
@@ -406,6 +406,26 @@ class RabbitPipeline:
         self.store.add_event(job_id, event_type, payload)
         try:
             await self.client.publish("ie.events", make_message(job_id=job_id, stage="events", payload={"event_type": event_type, **payload}))
+        except Exception:
+            pass
+
+    async def _handle_message_failure(self, message: QueueMessage, exc: Exception, source_queue: str, target_queue: str) -> None:
+        if target_queue != "ie.dead_letter":
+            return
+        error = f"{message.stage} failed after retry in {source_queue}: {type(exc).__name__}: {exc}"
+        try:
+            self.store.update(message.job_id, status="failed", error=error)
+            self.store.add_event(
+                message.job_id,
+                "job.failed",
+                {
+                    "stage": message.stage,
+                    "source_queue": source_queue,
+                    "target_queue": target_queue,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                },
+            )
         except Exception:
             pass
 

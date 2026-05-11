@@ -10,6 +10,7 @@ from .messages import QUEUE_NAMES, QueueMessage
 
 Handler = Callable[[QueueMessage], Awaitable[None]]
 BatchHandler = Callable[[list[QueueMessage]], Awaitable[None]]
+FailureHandler = Callable[[QueueMessage, Exception, str, str], Awaitable[None]]
 
 
 @dataclass
@@ -25,10 +26,11 @@ class QueueCounters:
 
 
 class RabbitMQClient:
-    def __init__(self, url: str, *, prefetch_count: int = 16, max_attempts: int = 3) -> None:
+    def __init__(self, url: str, *, prefetch_count: int = 16, max_attempts: int = 3, failure_handler: FailureHandler | None = None) -> None:
         self.url = url
         self.prefetch_count = prefetch_count
         self.max_attempts = max_attempts
+        self.failure_handler = failure_handler
         self.connection: Any | None = None
         self.channel: Any | None = None
         self.counters = QueueCounters()
@@ -44,6 +46,8 @@ class RabbitMQClient:
     async def close(self) -> None:
         if self.connection is not None:
             await self.connection.close()
+        self.connection = None
+        self.channel = None
 
     async def publish(self, queue: str, message: QueueMessage) -> None:
         import aio_pika
@@ -77,61 +81,80 @@ class RabbitMQClient:
         }
 
     async def consume_forever(self, queue: str, handler: Handler) -> None:
-        if self.channel is None:
-            await self.connect()
-        assert self.channel is not None
-        q = await self.channel.get_queue(queue)
+        while True:
+            try:
+                if self.channel is None:
+                    await self.connect()
+                assert self.channel is not None
+                q = await self.channel.get_queue(queue)
 
-        async with q.iterator() as queue_iter:
-            async for raw in queue_iter:
-                async with raw.process(requeue=False):
-                    message = QueueMessage.from_json(raw.body)
-                    try:
-                        await handler(message)
-                    except Exception:
-                        target_queue = retry_target(message, queue, self.max_attempts)
-                        if target_queue != "ie.dead_letter":
-                            await self.publish(target_queue, QueueMessage.from_dict({**message.to_dict(), "attempt": message.attempt + 1}))
-                        else:
-                            await self.publish(target_queue, message)
-                        continue
-                    self.counters.inc_consume(queue)
+                async with q.iterator() as queue_iter:
+                    async for raw in queue_iter:
+                        async with raw.process(requeue=False):
+                            message = QueueMessage.from_json(raw.body)
+                            try:
+                                await handler(message)
+                            except Exception as exc:
+                                target_queue = retry_target(message, queue, self.max_attempts)
+                                await self._publish_failure_retry(message, exc, source_queue=queue, target_queue=target_queue)
+                                continue
+                            self.counters.inc_consume(queue)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self.channel = None
+                await asyncio.sleep(1.0)
 
     async def consume_batches_forever(self, queue: str, *, max_batch_size: int, max_wait_ms: int, handler: BatchHandler) -> None:
-        if self.channel is None:
-            await self.connect()
-        assert self.channel is not None
-        q = await self.channel.get_queue(queue)
         max_batch_size = max(1, int(max_batch_size))
         max_wait_sec = max(0.001, float(max_wait_ms) / 1000.0)
-        async with q.iterator() as queue_iter:
-            while True:
-                first = await queue_iter.__anext__()
-                raw_messages = [first]
-                started = time.monotonic()
-                while len(raw_messages) < max_batch_size:
-                    remaining = max(0.001, max_wait_sec - (time.monotonic() - started))
-                    try:
-                        item = await asyncio.wait_for(queue_iter.__anext__(), timeout=remaining)
-                    except asyncio.TimeoutError:
-                        break
-                    raw_messages.append(item)
-                messages = [QueueMessage.from_json(raw.body) for raw in raw_messages]
-                try:
-                    await handler(messages)
-                except Exception:
-                    for raw, message in zip(raw_messages, messages, strict=True):
-                        target_queue = retry_target(message, queue, self.max_attempts)
-                        if target_queue != "ie.dead_letter":
-                            await self.publish(target_queue, QueueMessage.from_dict({**message.to_dict(), "attempt": message.attempt + 1}))
-                        else:
-                            await self.publish(target_queue, message)
-                        await raw.ack()
-                    continue
-                for raw in raw_messages:
-                    await raw.ack()
-                for _ in raw_messages:
-                    self.counters.inc_consume(queue)
+        while True:
+            try:
+                if self.channel is None:
+                    await self.connect()
+                assert self.channel is not None
+                q = await self.channel.get_queue(queue)
+                async with q.iterator() as queue_iter:
+                    while True:
+                        try:
+                            first = await queue_iter.__anext__()
+                        except StopAsyncIteration:
+                            break
+                        raw_messages = [first]
+                        started = time.monotonic()
+                        while len(raw_messages) < max_batch_size:
+                            remaining = max(0.001, max_wait_sec - (time.monotonic() - started))
+                            try:
+                                item = await asyncio.wait_for(queue_iter.__anext__(), timeout=remaining)
+                            except asyncio.TimeoutError:
+                                break
+                            except StopAsyncIteration:
+                                break
+                            raw_messages.append(item)
+                        messages = [QueueMessage.from_json(raw.body) for raw in raw_messages]
+                        try:
+                            await handler(messages)
+                        except Exception as exc:
+                            for raw, message in zip(raw_messages, messages, strict=True):
+                                target_queue = retry_target(message, queue, self.max_attempts)
+                                await self._publish_failure_retry(message, exc, source_queue=queue, target_queue=target_queue)
+                                await raw.ack()
+                            continue
+                        for raw in raw_messages:
+                            await raw.ack()
+                        for _ in raw_messages:
+                            self.counters.inc_consume(queue)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self.channel = None
+                await asyncio.sleep(1.0)
+
+    async def _publish_failure_retry(self, message: QueueMessage, exc: Exception, *, source_queue: str, target_queue: str) -> None:
+        retry_message = message_with_failure(message, exc, source_queue=source_queue, target_queue=target_queue, max_attempts=self.max_attempts)
+        await self.publish(target_queue, retry_message)
+        if self.failure_handler is not None:
+            await self.failure_handler(retry_message, exc, source_queue, target_queue)
 
 
 async def declare_topology(channel: Any) -> None:
@@ -158,3 +181,21 @@ def run_consumer(url: str, queue: str, handler: Handler) -> None:
 
 def retry_target(message: QueueMessage, source_queue: str, max_attempts: int) -> str:
     return source_queue if message.attempt + 1 < int(max_attempts) else "ie.dead_letter"
+
+
+def message_with_failure(message: QueueMessage, exc: Exception, *, source_queue: str, target_queue: str, max_attempts: int) -> QueueMessage:
+    payload = dict(message.payload or {})
+    failures = list(payload.get("failures") or [])
+    failures.append(
+        {
+            "source_queue": source_queue,
+            "target_queue": target_queue,
+            "attempt": int(message.attempt) + 1,
+            "max_attempts": int(max_attempts),
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+        }
+    )
+    payload["failures"] = failures[-5:]
+    payload["last_error"] = failures[-1]
+    return QueueMessage.from_dict({**message.to_dict(), "attempt": int(message.attempt) + 1, "payload": payload})

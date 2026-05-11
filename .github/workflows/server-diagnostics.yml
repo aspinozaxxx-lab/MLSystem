@@ -46,7 +46,7 @@ jobs:
           curl -fsS -u \"\$RABBIT_USER:\$RABBIT_PASS\" -H \"content-type: application/json\" -d '\''{\"count\":5,\"ackmode\":\"ack_requeue_true\",\"encoding\":\"auto\",\"truncate\":10000}'\'' http://127.0.0.1:15672/api/queues/%2F/ie.dead_letter/get; echo
           echo ==== triton ====
           curl -fsS http://127.0.0.1:8000/v2/health/ready; echo
-          curl -fsS http://127.0.0.1:8000/v2/repository/index; echo
+          curl -fsS -X POST -H \"content-type: application/json\" -d \"{}\" http://127.0.0.1:8000/v2/repository/index; echo
           curl -fsS http://127.0.0.1:8000/v2/models/segformer_b2/ready; echo
           echo ==== latest mlsystem api jobs ====
           find /data/mlsystem/api/jobs -maxdepth 2 -name job.json -printf \"%T@ %p\n\" 2>/dev/null | sort -nr | head -10 | cut -d\" \" -f2- | while read -r path; do echo ---- \"\$path\"; cat \"\$path\"; echo; done

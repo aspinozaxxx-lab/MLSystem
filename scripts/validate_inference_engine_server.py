@@ -55,12 +55,19 @@ def main() -> None:
     manifest_scenes = _manifest_scene_count(manifest)
     if manifest_scenes < 20:
         raise RuntimeError(f"Real validation requires an inference_manifest.json with at least 20 scenes; best={manifest} scenes={manifest_scenes}")
+    dead_letter_before = _rabbitmq_queue_counts().get("ie.dead_letter", {})
+    dead_letter_purge_output = ""
+    if _queue_message_total(dead_letter_before):
+        dead_letter_purge_output = _purge_rabbitmq_queue("ie.dead_letter")
 
     summary: dict[str, Any] = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "commit": _run_text("git -C /opt/mlsystem/repo rev-parse HEAD", check=False).strip(),
         "manifest": str(manifest),
         "manifest_scenes": manifest_scenes,
+        "dead_letter_before": dead_letter_before,
+        "dead_letter_purge_output": dead_letter_purge_output,
+        "dead_letter_after_purge": _rabbitmq_queue_counts().get("ie.dead_letter", {}),
         "services": _service_snapshot(),
         "triton": _ensure_triton_model(args.triton, DEFAULT_MODEL),
         "synthetic_baseline_metrics": _safe_get_json(args.api.rstrip("/") + "/metrics", token=ie_token),
@@ -90,6 +97,7 @@ def main() -> None:
     summary["final_queues"] = _safe_get_json(args.api.rstrip("/") + "/queues", token=ie_token)
     summary["final_metrics"] = _safe_get_json(args.api.rstrip("/") + "/metrics", token=ie_token)
     summary["dead_letter"] = _rabbitmq_queues(filter_queue="ie.dead_letter")
+    summary["dead_letter_final"] = _rabbitmq_queue_counts().get("ie.dead_letter", {})
 
     _assert_success(summary)
     out_path = Path(args.out)
@@ -276,15 +284,15 @@ def _assert_success(summary: dict[str, Any]) -> None:
         last = metrics.get("last_tile_inferred_at")
         if not (first and last and float(first) < float(last)):
             raise RuntimeError(f"{label} streaming overlap proof failed: first_block_vectorized_at={first}, last_tile_inferred_at={last}")
-    dead = summary.get("dead_letter") or ""
-    if "\tie.dead_letter\t" in dead and not ("\tie.dead_letter\t0\t0" in dead or "ie.dead_letter\t0\t0" in dead):
-        raise RuntimeError(f"dead_letter queue is not empty: {dead}")
+    final_dead = summary.get("dead_letter_final") or {}
+    if _queue_message_total(final_dead):
+        raise RuntimeError(f"dead_letter queue is not empty after validation run: {summary.get('dead_letter')}")
 
 
 def _ensure_triton_model(triton_url: str, model: str) -> dict[str, Any]:
     triton_url = triton_url.rstrip("/")
     health = _http_text(triton_url + "/v2/health/ready")
-    repository_before = _safe_get_json(triton_url + "/v2/repository/index")
+    repository_before = _safe_post_json(triton_url + "/v2/repository/index", {})
     if not _model_ready(triton_url, model):
         _post_json(triton_url + f"/v2/repository/models/{model}/load", {}, token=None, tolerate_http_error=True)
     if not _wait_model_ready(triton_url, model, timeout_sec=60):
@@ -295,7 +303,7 @@ def _ensure_triton_model(triton_url: str, model: str) -> dict[str, Any]:
     return {
         "health": health,
         "repository_before": repository_before,
-        "repository_after": _safe_get_json(triton_url + "/v2/repository/index"),
+        "repository_after": _safe_post_json(triton_url + "/v2/repository/index", {}),
         "model_ready": _model_ready(triton_url, model),
     }
 
@@ -446,6 +454,29 @@ def _rabbitmq_queues(filter_queue: str | None = None) -> str:
     return "\n".join(lines)
 
 
+def _rabbitmq_queue_counts() -> dict[str, dict[str, int]]:
+    output = _rabbitmq_queues()
+    result: dict[str, dict[str, int]] = {}
+    for line in output.splitlines():
+        parts = line.split()
+        if len(parts) < 4 or parts[0] == "name":
+            continue
+        result[parts[0]] = {
+            "messages_ready": int(parts[1]),
+            "messages_unacknowledged": int(parts[2]),
+            "consumers": int(parts[3]),
+        }
+    return result
+
+
+def _queue_message_total(row: dict[str, Any]) -> int:
+    return int(row.get("messages_ready") or 0) + int(row.get("messages_unacknowledged") or 0)
+
+
+def _purge_rabbitmq_queue(queue: str) -> str:
+    return _run_text(f"docker exec mlsystem-gpu-rabbitmq rabbitmqctl purge_queue {shlex.quote(queue)}", check=False)
+
+
 def _nvidia_smi() -> str:
     return _run_text("nvidia-smi --query-gpu=timestamp,name,utilization.gpu,utilization.memory,memory.used,memory.total --format=csv,noheader,nounits", check=False).strip()
 
@@ -487,6 +518,13 @@ def _get_json(url: str, *, token: str | None = None) -> dict[str, Any]:
 def _safe_get_json(url: str, *, token: str | None = None) -> Any:
     try:
         return _get_json(url, token=token)
+    except Exception as exc:
+        return {"error": str(exc), "url": url}
+
+
+def _safe_post_json(url: str, payload: dict[str, Any], *, token: str | None = None) -> Any:
+    try:
+        return _post_json(url, payload, token=token)
     except Exception as exc:
         return {"error": str(exc), "url": url}
 
