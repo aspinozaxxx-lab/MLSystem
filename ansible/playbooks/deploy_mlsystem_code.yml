@@ -50,6 +50,11 @@
         group: root
         mode: "0755"
 
+    - name: Verify deployed MLSystem config directory exists
+      ansible.builtin.command:
+        cmd: mkdir -p "{{ mlsystem_gpu_repo_root }}/mlsystem/configs"
+      changed_when: false
+
     - name: Install GPU pipeline config into deployed repo
       ansible.builtin.template:
         src: "{{ playbook_dir }}/../roles/gpu_platform/templates/pipeline.server.yaml.j2"
