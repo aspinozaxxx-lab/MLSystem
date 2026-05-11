@@ -7,6 +7,7 @@ InferenceEngine, polls the job, and validates compatibility artifacts.
 """
 
 import os
+from pathlib import Path
 from typing import Any
 
 from ...storage.local_io import read_json, write_json
@@ -28,6 +29,9 @@ COMPATIBILITY_ARTIFACTS = [
     "pseudolabel_scenes.txt",
     "prediction_examples.html",
 ]
+
+AIRFLOW_CONTAINER_RUN_ROOT = Path("/opt/airflow/mlsystem_runs")
+DEFAULT_SHARED_RUN_ROOT = Path("/data/mlsystem/airflow/status")
 
 
 def run(ctx: StageContext) -> StageReport:
@@ -215,6 +219,14 @@ def _cfg_dict(value: Any) -> dict[str, Any]:
     return dict(value or {}) if isinstance(value, dict) else {}
 
 
+def _shared_run_dir_for_inference_engine(run_dir: Path) -> Path:
+    shared_root = Path(os.getenv("MLSYSTEM_AIRFLOW_STATUS_ROOT") or os.getenv("MLSYSTEM_AIRFLOW_STATE_DIR") or DEFAULT_SHARED_RUN_ROOT)
+    try:
+        return shared_root / run_dir.relative_to(AIRFLOW_CONTAINER_RUN_ROOT)
+    except ValueError:
+        return run_dir
+
+
 def _build_payload(ctx: StageContext, inference_manifest: dict[str, Any]) -> dict[str, Any]:
     pseudolabel_cfg = _cfg_dict(ctx.config.pseudolabel)
     vector_cfg = _cfg_dict(pseudolabel_cfg.get("vectorization"))
@@ -223,14 +235,15 @@ def _build_payload(ctx: StageContext, inference_manifest: dict[str, Any]) -> dic
     model_cfg = _cfg_dict(getattr(ctx.config, "model", {}))
     postprocess_cfg = _cfg_dict(getattr(ctx.config, "postprocess", {}))
     scenes = inference_manifest.get("scenes") or []
+    shared_run_dir = _shared_run_dir_for_inference_engine(ctx.store.run_dir)
     return {
         "run_id": ctx.run_id,
         "experiment_id": ctx.config.experiment_id,
         "scenes": scenes,
-        "inference_manifest": str(ctx.store.run_dir / "inference_manifest.json"),
+        "inference_manifest": str(shared_run_dir / "inference_manifest.json"),
         "images_uri": ctx.config.images_uri,
         "layout_uri": ctx.config.layout_uri,
-        "run_dir": str(ctx.store.run_dir),
+        "run_dir": str(shared_run_dir),
         "storage": {
             "source": "airflow",
             "state_dir": str(ctx.status_dir),

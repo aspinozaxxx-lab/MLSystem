@@ -12,7 +12,7 @@ from mlsystem.src.storage.local_io import write_json
 from mlsystem.src.pipeline.airflow_tasks import AirflowRunStore
 from mlsystem.src.pipeline.stages.context import StageContext
 from mlsystem.src.pipeline.stages.inventory_scenes import run as run_inventory_scenes
-from mlsystem.src.pipeline.stages.inference_engine_pipeline import run as run_inference_engine_pipeline
+from mlsystem.src.pipeline.stages.inference_engine_pipeline import _shared_run_dir_for_inference_engine, run as run_inference_engine_pipeline
 from mlsystem.src.pipeline.stages.prepare_dataset import run as run_prepare_dataset
 from mlsystem.src.pipeline.stages.report import StageFailure
 
@@ -243,6 +243,12 @@ class PipelineStagesTests(unittest.TestCase):
             self.assertTrue(report.details["request_submitted_via_http"])
             self.assertEqual(report.counters["backend"], "inference_engine")
             self.assertEqual(report.counters["inference_engine_http_submitted"], 1)
+
+    def test_inference_engine_payload_uses_shared_airflow_status_path(self) -> None:
+        mapped = _shared_run_dir_for_inference_engine(Path("/opt/airflow/mlsystem_runs/unit_run"))
+        self.assertEqual(mapped, Path("/data/mlsystem/airflow/status/unit_run"))
+        unchanged = _shared_run_dir_for_inference_engine(Path("/tmp/unit_run"))
+        self.assertEqual(unchanged, Path("/tmp/unit_run"))
 
     def _context(self, tmp: str, *, preprocess: dict | None = None, pseudolabel: dict | None = None, smoke: bool = False) -> StageContext:
         preprocess = preprocess or {}
