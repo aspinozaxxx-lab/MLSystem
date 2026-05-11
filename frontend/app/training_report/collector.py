@@ -105,7 +105,9 @@ class TrainingReportCollector:
             best = top_runs[0] if top_runs else None
             dataset_objects = _int_or_zero((best or {}).get("dataset_objects"), inventory.get("objects_count"))
             dataset_scenes = _int_or_zero((best or {}).get("dataset_scenes"), inventory.get("scenes_count"))
-            validation_kind = (best or {}).get("validation_kind") or _validation_kind_from_inventory(dataset_scenes)
+            validation_kind = (best or {}).get("validation_kind") or "unknown"
+            if validation_kind == "unknown":
+                validation_kind = _validation_kind_from_inventory(dataset_scenes)
             warning = None
             if not top_runs:
                 warning = "no runs"
