@@ -281,11 +281,12 @@ def _read_manifest_scenes(path: Path, request: JobRequest) -> list[SceneInput]:
     payload = json.loads(path.read_text(encoding="utf-8-sig"))
     scenes: list[SceneInput] = []
     for idx, row in enumerate(payload.get("scenes") or payload.get("scene_results") or []):
+        uri = _manifest_row_uri(row, request)
         scenes.append(
             SceneInput(
                 scene_id=str(row.get("scene_id") or row.get("entry") or row.get("name") or f"scene_{idx:04d}"),
                 name=str(row.get("scene_name") or row.get("name") or row.get("entry") or f"scene_{idx:04d}"),
-                uri=row.get("uri") or row.get("image_uri") or _image_uri_for_key(request.images_uri, row.get("key")),
+                uri=uri,
                 key=row.get("key"),
                 width=row.get("width"),
                 height=row.get("height"),
@@ -295,6 +296,22 @@ def _read_manifest_scenes(path: Path, request: JobRequest) -> list[SceneInput]:
             )
         )
     return scenes
+
+
+def _manifest_row_uri(row: dict[str, Any], request: JobRequest) -> str | None:
+    explicit = row.get("uri") or row.get("image_uri") or row.get("path") or row.get("url")
+    if explicit:
+        return str(explicit)
+    key = row.get("key") or row.get("object_key") or row.get("s3_key")
+    if not key:
+        return None
+    key_text = str(key).lstrip("/")
+    if key_text.startswith(("s3://", "file://", "/")):
+        return str(key)
+    bucket = row.get("bucket") or row.get("s3_bucket")
+    if bucket:
+        return f"s3://{str(bucket).strip('/')}/{key_text}"
+    return _image_uri_for_key(request.images_uri, key_text)
 
 
 def _infer_scene_size(scene: SceneInput) -> tuple[int, int] | None:

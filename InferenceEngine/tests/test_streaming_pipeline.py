@@ -63,6 +63,31 @@ class StreamingPipelineTests(unittest.TestCase):
         self.assertTrue(producer.should_resume(infer_ready=0, infer_unacked=0, spool_bytes=0))
         self.assertEqual(producer.state.preprocess_resumes_total, 1)
 
+    def test_manifest_bucket_key_preferred_over_images_uri(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "inference_manifest.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "scenes": [
+                            {
+                                "entry": "scene.tif",
+                                "name": "scene.tif",
+                                "bucket": "real-bucket",
+                                "key": "real/prefix/scene.tif",
+                                "width": 32,
+                                "height": 32,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            request = JobRequest(experiment_id="manifest", inference_manifest=str(manifest), images_uri="s3://wrong-bucket/wrong-prefix/")
+            plan = build_job_plan("job", request, root / "jobs")[0]
+            self.assertEqual(plan.source["uri"], "s3://real-bucket/real/prefix/scene.tif")
+
 
 def _request() -> JobRequest:
     return JobRequest(
