@@ -118,8 +118,8 @@ def _run_two_scene_via_mlsystem_api(
     timeout_sec: int,
 ) -> dict[str, Any]:
     started = int(time.time())
-    run_id = f"ie_validation_2_{started}"
     experiment_id = f"ie_real_2_{started}"
+    run_id = experiment_id
     run_dir = STATUS_ROOT / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(manifest, run_dir / "inference_manifest.json")
