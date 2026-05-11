@@ -276,7 +276,7 @@
 
 - name: Start Airflow services after MLSystem API is ready
   ansible.builtin.command:
-    cmd: docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}" up -d --remove-orphans airflow-webserver airflow-scheduler airflow-triggerer
+    cmd: docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}" up -d --force-recreate --remove-orphans airflow-webserver airflow-scheduler airflow-triggerer
   changed_when: true
   register: airflow_up
   retries: 6
