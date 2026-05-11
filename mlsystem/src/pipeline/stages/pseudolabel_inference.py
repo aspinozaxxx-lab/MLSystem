@@ -190,7 +190,7 @@ def _run_inference_engine_compat(ctx: StageContext) -> StageReport:
     coverage = read_json(ctx.store.run_dir / "coverage_report.json", default={}) or {}
     probability_index = read_json(ctx.store.run_dir / "pseudolabel_scene_results_manifest.json", default={}) or {}
     probability_index_path = ctx.store.run_dir / "probability_maps_index.json"
-    if probability_index:
+    if probability_index and not probability_index_path.exists():
         write_json(probability_index_path, probability_index)
     inference_results_path = ctx.store.run_dir / "inference_results.json"
     if not inference_results_path.exists():
