@@ -56,7 +56,10 @@ class SceneInput(BaseModel):
     name: str | None = None
     uri: str | None = None
     image_uri: str | None = None
+    bucket: str | None = None
     key: str | None = None
+    object_key: str | None = None
+    s3_key: str | None = None
     path: str | None = None
     width: int | None = None
     height: int | None = None

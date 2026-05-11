@@ -152,8 +152,8 @@ def build_scene_plan(job_id: str, scene_index: int, scene: SceneInput, request: 
     preprocess = request.preprocess
     vector_cfg = request.effective_vectorization()
     source_payload = scene.model_dump()
-    if not (source_payload.get("uri") or source_payload.get("image_uri") or source_payload.get("path")) and scene.key:
-        source_payload["image_uri"] = _image_uri_for_key(request.images_uri, scene.key)
+    if not (source_payload.get("uri") or source_payload.get("image_uri") or source_payload.get("path")):
+        source_payload["image_uri"] = _scene_input_uri(scene, request)
     size_scene = scene.model_copy(update={"image_uri": source_payload.get("image_uri")})
     inferred_size = _infer_scene_size(size_scene)
     width = int(scene.width or (inferred_size[0] if inferred_size else 256))
@@ -309,6 +309,19 @@ def _manifest_row_uri(row: dict[str, Any], request: JobRequest) -> str | None:
     if key_text.startswith(("s3://", "file://", "/")):
         return str(key)
     bucket = row.get("bucket") or row.get("s3_bucket")
+    if bucket:
+        return f"s3://{str(bucket).strip('/')}/{key_text}"
+    return _image_uri_for_key(request.images_uri, key_text)
+
+
+def _scene_input_uri(scene: SceneInput, request: JobRequest) -> str | None:
+    key = scene.key or scene.object_key or scene.s3_key or scene.metadata.get("key") or scene.metadata.get("object_key") or scene.metadata.get("s3_key")
+    if not key:
+        return None
+    key_text = str(key).lstrip("/")
+    if key_text.startswith(("s3://", "file://", "/")):
+        return str(key)
+    bucket = scene.bucket or scene.metadata.get("bucket") or scene.metadata.get("s3_bucket")
     if bucket:
         return f"s3://{str(bucket).strip('/')}/{key_text}"
     return _image_uri_for_key(request.images_uri, key_text)

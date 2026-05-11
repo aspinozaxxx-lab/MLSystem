@@ -88,6 +88,16 @@ class StreamingPipelineTests(unittest.TestCase):
             plan = build_job_plan("job", request, root / "jobs")[0]
             self.assertEqual(plan.source["uri"], "s3://real-bucket/real/prefix/scene.tif")
 
+    def test_inline_scene_bucket_key_preferred_over_images_uri(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            request = JobRequest(
+                experiment_id="inline",
+                images_uri="s3://wrong-bucket/wrong-prefix/",
+                scenes=[SceneInput(name="scene.tif", bucket="real-bucket", key="real/prefix/scene.tif", width=32, height=32)],
+            )
+            plan = build_job_plan("job", request, Path(tmp) / "jobs")[0]
+            self.assertEqual(plan.source["image_uri"], "s3://real-bucket/real/prefix/scene.tif")
+
 
 def _request() -> JobRequest:
     return JobRequest(
