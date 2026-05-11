@@ -121,6 +121,8 @@ def main() -> None:
         },
     )
     summary["twenty_scene"] = twenty_scene
+    summary["mlsystem_stages_after"] = _safe_get_json(args.mlsystem_api.rstrip("/") + "/api/v1/stages")
+    summary["airflow_tasks_after"] = _airflow_tasks()
     summary["final_queues"] = _safe_get_json(args.api.rstrip("/") + "/queues", token=ie_token)
     summary["final_metrics"] = _safe_get_json(args.api.rstrip("/") + "/metrics", token=ie_token)
     summary["dead_letter"] = _rabbitmq_queues(filter_queue="ie.dead_letter")
@@ -333,7 +335,7 @@ def _assert_success(summary: dict[str, Any]) -> None:
     missing_endpoints = sorted(required_endpoints - set(summary.get("openapi_endpoints") or []))
     if missing_endpoints:
         raise RuntimeError(f"InferenceEngine OpenAPI is missing endpoints: {missing_endpoints}")
-    stages = summary.get("mlsystem_stages") or {}
+    stages = _first_successful_payload(summary.get("mlsystem_stages_after"), summary.get("mlsystem_stages"))
     main_stages = set(stages.get("main_dag_stages") or [])
     if "inference_engine_pipeline" not in main_stages:
         raise RuntimeError(f"mlsystem-api /api/v1/stages does not expose inference_engine_pipeline: {stages}")
@@ -347,7 +349,7 @@ def _assert_success(summary: dict[str, Any]) -> None:
     }
     if old_stages & main_stages:
         raise RuntimeError(f"mlsystem-api still exposes old pseudolabel stages in MAIN_DAG_STAGES: {old_stages & main_stages}")
-    airflow_tasks = str(summary.get("airflow_tasks") or "")
+    airflow_tasks = str(summary.get("airflow_tasks_after") or summary.get("airflow_tasks") or "")
     if "inference_engine_pipeline" not in airflow_tasks:
         raise RuntimeError(f"Airflow task list does not contain inference_engine_pipeline: {airflow_tasks}")
     old_in_airflow = [stage for stage in old_stages if stage in airflow_tasks]
@@ -365,6 +367,16 @@ def _assert_success(summary: dict[str, Any]) -> None:
     final_dead = summary.get("dead_letter_final") or {}
     if _queue_message_total(final_dead):
         raise RuntimeError(f"dead_letter queue is not empty after validation run: {summary.get('dead_letter')}")
+
+
+def _first_successful_payload(*payloads: Any) -> dict[str, Any]:
+    for payload in payloads:
+        if isinstance(payload, dict) and not payload.get("error"):
+            return payload
+    for payload in payloads:
+        if isinstance(payload, dict):
+            return payload
+    return {}
 
 
 def _ensure_triton_model(triton_url: str, model: str) -> dict[str, Any]:
@@ -650,7 +662,7 @@ def _read_json(path: Path, default: Any = None) -> Any:
 def _get_json(url: str, *, token: str | None = None) -> dict[str, Any]:
     req = urllib.request.Request(url, headers=_headers(token))
     last_exc: Exception | None = None
-    for attempt in range(6):
+    for attempt in range(10):
         try:
             with urllib.request.urlopen(req, timeout=60) as response:
                 return json.loads(response.read().decode("utf-8"))
@@ -660,7 +672,7 @@ def _get_json(url: str, *, token: str | None = None) -> dict[str, Any]:
                 time.sleep(min(30, 2**attempt))
                 continue
             raise
-        except (ConnectionError, TimeoutError, urllib.error.URLError) as exc:
+        except (ConnectionError, TimeoutError, OSError, urllib.error.URLError) as exc:
             last_exc = exc
             time.sleep(min(30, 2**attempt))
     assert last_exc is not None
