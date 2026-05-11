@@ -15,7 +15,7 @@ Airflow inference_engine_pipeline -> mlsystem-api -> InferenceEngine API -> Rabb
 ```
 
 `InferenceEngine` owns scene planning, tile preprocessing, Triton inference, block/core/halo vectorization, postprocess, merge and export. Airflow exposes this as a single `inference_engine_pipeline` task; the six old internal pseudolabel stages are retired from production DAGs and `/api/v1/stages`.
-The production path is validated on the GPU server with RabbitMQ stage queues, Triton `segformer_b2`, a 2-scene mlsystem-api compatibility run, and a 20-scene InferenceEngine run; see [InferenceEngine validation report](docs/inference_engine_validation_report.md).
+The production path is validated on the GPU server with RabbitMQ stage queues, Triton `segformer_b2`, a 2-scene real Airflow DAG run, and a 20-scene InferenceEngine performance run; see [InferenceEngine validation report](docs/inference_engine_validation_report.md).
 
 Runtime data, API jobs, Airflow stage status, model artifacts, probability maps, reports, caches and heavy geospatial files are not stored in git. They live on the server under paths such as:
 
@@ -38,11 +38,9 @@ GitHub Actions are split by responsibility:
 The retired combined workflow must not be restored. Code/service rollout, infrastructure rollout, frontend code rollout and frontend settings rollout must stay separate.
 
 Frontend lives in `frontend/` and is deployed with `ansible/playbooks/deploy_frontend.yml`.
-It provides login and annotation checks. Annotation checks call `mlsystem-api`
-stages `inventory_scenes` and `prepare_dataset`; they do not trigger Airflow DAGs.
-Public frontend URL is `http://31.192.104.147/`; port `8090` is only the internal
-frontend upstream behind the port 80 reverse proxy.
-The home page includes `Очереди RabbitMQ`, a link to the native RabbitMQ Management UI and compact queue metrics from InferenceEngine `/queues`.
+It provides login, annotation checks, and the authenticated admin gateway for Airflow, MLflow, MinIO artifacts, and RabbitMQ Management. Annotation checks call `mlsystem-api` stages `inventory_scenes` and `prepare_dataset`; they do not trigger Airflow DAGs.
+Public frontend URL is `http://31.192.104.147/`; port `8090` is only the internal frontend upstream behind the port 80 reverse proxy.
+The home page includes cards for `Airflow`, `MLflow`, `MinIO artifacts`, and `Очереди RabbitMQ`. Admin UI paths are `/airflow/`, `/mlflow/`, `/minio-browser/`, and `/rabbitmq/`; they are protected by the frontend session through nginx `auth_request`.
 
 Frontend runtime data is not stored in git:
 

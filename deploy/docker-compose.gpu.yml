@@ -8,7 +8,7 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
     ports:
       - "${MINIO_API_PORT:-9000}:9000"
-      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+      - "${MINIO_CONSOLE_LISTEN_HOST:-127.0.0.1}:${MINIO_CONSOLE_PORT:-9001}:9001"
     volumes:
       - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/minio:/data
     healthcheck:
@@ -55,6 +55,7 @@ services:
       - "${RABBITMQ_MANAGEMENT_LISTEN_HOST:-127.0.0.1}:${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
     volumes:
       - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/rabbitmq:/var/lib/rabbitmq
+      - ${MLSYSTEM_PLATFORM_ROOT:-/data/mlsystem/platform}/rabbitmq.conf:/etc/rabbitmq/conf.d/20-mlsystem-management.conf:ro
     healthcheck:
       test: ["CMD-SHELL", "rabbitmq-diagnostics -q ping"]
       interval: 10s
@@ -98,6 +99,7 @@ services:
       AWS_S3_ADDRESSING_STYLE: path
       AWS_S3_FORCE_PATH_STYLE: "true"
       MLFLOW_SERVER_DISABLE_SECURITY_MIDDLEWARE: "true"
+      MLFLOW_STATIC_PREFIX: /mlflow
     entrypoint: /bin/bash
     command:
       - -lc
@@ -110,9 +112,10 @@ services:
           --artifacts-destination s3://$${MLFLOW_BUCKET:-mlflow-artifacts}/ \
           --host 0.0.0.0 \
           --port 5000 \
+          --static-prefix /mlflow \
           --disable-security-middleware
     ports:
-      - "${MLFLOW_PORT:-5000}:5000"
+      - "${MLFLOW_LISTEN_HOST:-127.0.0.1}:${MLFLOW_PORT:-5000}:5000"
     healthcheck:
       test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:5000/health\")'"]
       interval: 10s
@@ -166,6 +169,7 @@ services:
       - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/airflow/dags:/opt/airflow/dags
       - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/airflow/plugins:/opt/airflow/plugins
       - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/airflow/include:/opt/airflow/include
+      - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/airflow/webserver_config.py:/opt/airflow/webserver_config.py:ro
       - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/mlsystem:/opt/mlsystem
       - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/InferenceEngine:/opt/InferenceEngine
       - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/airflow/logs:/opt/airflow/logs
@@ -450,11 +454,12 @@ services:
       MLSYSTEM_PIPELINE_CONFIG: ${MLSYSTEM_PIPELINE_CONFIG:-/opt/mlsystem/configs/pipeline.server.yaml}
     command: webserver
     ports:
-      - "${AIRFLOW_PORT:-8081}:8080"
+      - "${AIRFLOW_LISTEN_HOST:-127.0.0.1}:${AIRFLOW_PORT:-8081}:8080"
     volumes: &airflow-volumes
       - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/airflow/dags:/opt/airflow/dags
       - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/airflow/plugins:/opt/airflow/plugins
       - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/airflow/include:/opt/airflow/include
+      - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/airflow/webserver_config.py:/opt/airflow/webserver_config.py:ro
       - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/mlsystem:/opt/mlsystem
       - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/InferenceEngine:/opt/InferenceEngine
       - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/airflow/logs:/opt/airflow/logs

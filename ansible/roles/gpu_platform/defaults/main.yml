@@ -12,6 +12,7 @@ mlsystem_gpu_airflow_port: 8081
 mlsystem_gpu_mlflow_port: 5000
 mlsystem_gpu_minio_api_port: 9000
 mlsystem_gpu_minio_console_port: 9001
+mlsystem_gpu_minio_console_listen_host: "127.0.0.1"
 mlsystem_gpu_triton_http_port: 8000
 mlsystem_gpu_triton_grpc_port: 8001
 mlsystem_gpu_triton_metrics_port: 8002
@@ -23,8 +24,10 @@ mlsystem_gpu_triton_image: nvcr.io/nvidia/tritonserver:25.03-py3
 mlsystem_gpu_rabbitmq_image: rabbitmq:3.13-management
 mlsystem_gpu_rabbitmq_port: 5672
 mlsystem_gpu_rabbitmq_management_port: 15672
-mlsystem_gpu_rabbitmq_management_listen_host: "0.0.0.0"
+mlsystem_gpu_rabbitmq_management_listen_host: "127.0.0.1"
 mlsystem_gpu_rabbitmq_user: mlsystem
+mlsystem_gpu_mlflow_listen_host: "127.0.0.1"
+mlsystem_gpu_airflow_listen_host: "127.0.0.1"
 mlsystem_gpu_inference_engine_api_port: 8095
 mlsystem_gpu_inference_engine_image: mlsystem/inference-engine:local
 mlsystem_gpu_inference_engine_use_rabbitmq: "true"

@@ -42,6 +42,8 @@ def main() -> None:
     parser.add_argument("--out", default="/tmp/inference_engine_server_validation.json")
     parser.add_argument("--two-scene-timeout-sec", type=int, default=7200)
     parser.add_argument("--twenty-scene-timeout-sec", type=int, default=14400)
+    parser.add_argument("--run-airflow-dag", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--run-direct-api-stage", action="store_true")
     args = parser.parse_args()
 
     env = _read_env_file(Path("/etc/mlsystem/gpu-platform.env"))
@@ -80,7 +82,9 @@ def main() -> None:
         "mlsystem_ready": _safe_get_json(args.mlsystem_api.rstrip("/") + "/ready"),
         "mlsystem_stages": mlsystem_stages,
         "airflow_tasks": _airflow_tasks(),
+        "airflow_dag_runs_initial": _airflow_list_runs(),
         "airflow_import_errors": _airflow_import_errors(),
+        "frontend_gateway_initial": _frontend_gateway_checks(env),
         "rabbitmq_management": _rabbitmq_management_overview(env),
         "rabbitmq_management_public_url": env.get("RABBITMQ_MANAGEMENT_PUBLIC_URL") or env.get("FRONTEND_RABBITMQ_MANAGEMENT_URL") or "/rabbitmq/",
         "manifest": str(manifest),
@@ -94,14 +98,24 @@ def main() -> None:
         "synthetic_baseline_metrics": _safe_get_json(args.api.rstrip("/") + "/metrics", token=ie_token),
     }
 
-    two_scene = _run_two_scene_via_mlsystem_api(
-        api=args.api.rstrip("/"),
-        mlsystem_api=args.mlsystem_api.rstrip("/"),
-        manifest=manifest,
-        ie_token=ie_token,
-        mlsystem_token=mlsystem_token,
-        timeout_sec=args.two_scene_timeout_sec,
-    )
+    if args.run_airflow_dag:
+        two_scene = _run_two_scene_via_airflow(
+            api=args.api.rstrip("/"),
+            manifest=manifest,
+            ie_token=ie_token,
+            timeout_sec=args.two_scene_timeout_sec,
+        )
+    elif args.run_direct_api_stage:
+        two_scene = _run_two_scene_via_mlsystem_api(
+            api=args.api.rstrip("/"),
+            mlsystem_api=args.mlsystem_api.rstrip("/"),
+            manifest=manifest,
+            ie_token=ie_token,
+            mlsystem_token=mlsystem_token,
+            timeout_sec=args.two_scene_timeout_sec,
+        )
+    else:
+        raise RuntimeError("2-scene validation requires --run-airflow-dag or --run-direct-api-stage")
     summary["two_scene"] = two_scene
 
     twenty_scene = _run_direct_ie_job(
@@ -123,6 +137,8 @@ def main() -> None:
     summary["twenty_scene"] = twenty_scene
     summary["mlsystem_stages_after"] = _safe_get_json(args.mlsystem_api.rstrip("/") + "/api/v1/stages")
     summary["airflow_tasks_after"] = _airflow_tasks()
+    summary["airflow_dag_runs_after"] = _airflow_list_runs()
+    summary["frontend_gateway_after"] = _frontend_gateway_checks(env)
     summary["final_queues"] = _safe_get_json(args.api.rstrip("/") + "/queues", token=ie_token)
     summary["final_metrics"] = _safe_get_json(args.api.rstrip("/") + "/metrics", token=ie_token)
     summary["dead_letter"] = _rabbitmq_queues(filter_queue="ie.dead_letter")
@@ -135,6 +151,73 @@ def main() -> None:
     print("SERVER_VALIDATION_SUMMARY_START")
     print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
     print("SERVER_VALIDATION_SUMMARY_END")
+
+
+def _run_two_scene_via_airflow(
+    *,
+    api: str,
+    manifest: Path,
+    ie_token: str,
+    timeout_sec: int,
+) -> dict[str, Any]:
+    started = int(time.time())
+    experiment_id = f"ie_airflow_real_2_{started}"
+    run_id = experiment_id
+    run_dir = STATUS_ROOT / experiment_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(manifest, run_dir / "inference_manifest.json")
+    _make_tree_container_writable(run_dir)
+    config = _mlsystem_config(experiment_id, max_scenes=2)
+    (run_dir / "airflow_conf.json").write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+    _trigger_airflow_dag_run(run_id, config)
+    samples: list[dict[str, Any]] = []
+    deadline = time.time() + timeout_sec
+    final: dict[str, Any] = {}
+    while time.time() < deadline:
+        snapshot = _airflow_dag_run_snapshot(run_id)
+        samples.append(
+            {
+                "at": datetime.now(timezone.utc).isoformat(),
+                "dag": snapshot,
+                "queues": _safe_get_json(api + "/queues", token=ie_token),
+                "aggregate_metrics": _safe_get_json(api + "/metrics", token=ie_token),
+                "rabbitmq": _rabbitmq_queues(),
+                "gpu": _nvidia_smi(),
+                "docker_stats": _docker_stats(),
+            }
+        )
+        print(f"Airflow DAG run {run_id} state={snapshot.get('state')} tasks={snapshot.get('task_states')}", flush=True)
+        if snapshot.get("state") in {"success", "failed"}:
+            final = snapshot
+            break
+        time.sleep(20)
+    if not final:
+        raise TimeoutError(f"Airflow DAG run {run_id} did not finish in {timeout_sec}s")
+    if final.get("state") != "success":
+        raise RuntimeError(f"Airflow DAG run {run_id} failed: {final}")
+    summary_path = run_dir / "summary.json"
+    stage_report = _read_json(run_dir / "stages" / "inference_engine_pipeline.json", default={}) or {}
+    artifacts = _check_run_dir_artifacts(run_dir, experiment_id)
+    ie_job = ((stage_report.get("stage_report") or {}).get("details") or {}).get("inference_engine_job") or (stage_report.get("details") or {}).get("inference_engine_job") or {}
+    return {
+        "run_id": run_id,
+        "experiment_id": experiment_id,
+        "status": "success",
+        "validation_mode": "airflow_dag",
+        "airflow_dag_id": "mlsystem_experiment_pipeline",
+        "airflow_dag_run_id": run_id,
+        "airflow_dag_state": final.get("state"),
+        "airflow_task_states": final.get("task_states") or {},
+        "airflow_grid_url": f"/airflow/dags/mlsystem_experiment_pipeline/grid?dag_run_id={run_id}",
+        "run_dir": str(run_dir),
+        "summary": _read_json(summary_path, default={}),
+        "stage_report": stage_report,
+        "artifacts_checked": artifacts,
+        "inference_engine_job": ie_job,
+        "samples": _compact_samples(samples),
+        "queues_after": _safe_get_json(api + "/queues", token=ie_token),
+        "metrics_after": _safe_get_json(api + "/metrics", token=ie_token),
+    }
 
 
 def _run_two_scene_via_mlsystem_api(
@@ -356,7 +439,13 @@ def _assert_success(summary: dict[str, Any]) -> None:
     if old_in_airflow:
         raise RuntimeError(f"Airflow task list still contains old pseudolabel stages: {old_in_airflow}")
     if summary["two_scene"].get("status") != "success":
-        raise RuntimeError("2-scene MLSystem API validation failed")
+        raise RuntimeError("2-scene validation failed")
+    if summary["two_scene"].get("validation_mode") == "airflow_dag":
+        if summary["two_scene"].get("airflow_dag_state") != "success":
+            raise RuntimeError(f"2-scene Airflow DAG validation did not succeed: {summary['two_scene']}")
+        task_states = summary["two_scene"].get("airflow_task_states") or {}
+        if task_states.get("inference_engine_pipeline") != "success":
+            raise RuntimeError(f"inference_engine_pipeline task did not succeed in Airflow DAG run: {task_states}")
     if twenty.get("status") != "success":
         raise RuntimeError(f"20-scene InferenceEngine validation failed: {twenty}")
     for label, metrics in [("2-scene", two_job.get("metrics") or {}), ("20-scene", twenty.get("metrics") or {})]:
@@ -546,13 +635,54 @@ def _service_snapshot() -> str:
 
 
 def _airflow_tasks() -> str:
-    compose = "docker compose --env-file /etc/mlsystem/gpu-platform.env -f /data/mlsystem/platform/docker-compose.yml"
-    return _run_text(f"{compose} exec -T airflow-scheduler airflow tasks list mlsystem_experiment_pipeline", check=False)
+    return _run_text(f"{_compose_cmd()} exec -T airflow-scheduler airflow tasks list mlsystem_experiment_pipeline", check=False)
 
 
 def _airflow_import_errors() -> str:
-    compose = "docker compose --env-file /etc/mlsystem/gpu-platform.env -f /data/mlsystem/platform/docker-compose.yml"
-    return _run_text(f"{compose} exec -T airflow-scheduler airflow dags list-import-errors", check=False)
+    return _run_text(f"{_compose_cmd()} exec -T airflow-scheduler airflow dags list-import-errors", check=False)
+
+
+def _airflow_list_runs() -> str:
+    return _run_text(f"{_compose_cmd()} exec -T airflow-scheduler airflow dags list-runs -d mlsystem_experiment_pipeline", check=False)
+
+
+def _trigger_airflow_dag_run(run_id: str, config: dict[str, Any]) -> str:
+    conf = json.dumps(config, ensure_ascii=False, separators=(",", ":"))
+    script = "airflow dags trigger mlsystem_experiment_pipeline --run-id " + shlex.quote(run_id) + " --conf " + shlex.quote(conf)
+    return _run_text(f"{_compose_cmd()} exec -T airflow-scheduler bash -lc {shlex.quote(script)}", timeout_sec=300)
+
+
+def _airflow_dag_run_snapshot(run_id: str) -> dict[str, Any]:
+    script = f"""
+import json
+from airflow.models.dagrun import DagRun
+from airflow.models.taskinstance import TaskInstance
+from airflow.utils.session import create_session
+
+dag_id = "mlsystem_experiment_pipeline"
+run_id = {run_id!r}
+with create_session() as session:
+    dag_run = session.query(DagRun).filter(DagRun.dag_id == dag_id, DagRun.run_id == run_id).one_or_none()
+    tasks = session.query(TaskInstance).filter(TaskInstance.dag_id == dag_id, TaskInstance.run_id == run_id).all()
+    payload = {{
+        "exists": dag_run is not None,
+        "dag_id": dag_id,
+        "run_id": run_id,
+        "state": getattr(dag_run, "state", None) if dag_run else None,
+        "logical_date": dag_run.logical_date.isoformat() if dag_run and dag_run.logical_date else None,
+        "task_states": {{task.task_id: task.state for task in tasks}},
+    }}
+print(json.dumps(payload, sort_keys=True))
+"""
+    output = _run_text(f"{_compose_cmd()} exec -T airflow-scheduler python -c {shlex.quote(script)}", check=False)
+    try:
+        return json.loads(output.strip().splitlines()[-1])
+    except Exception:
+        return {"exists": False, "state": None, "run_id": run_id, "raw": output}
+
+
+def _compose_cmd() -> str:
+    return "docker compose --env-file /etc/mlsystem/gpu-platform.env -f /data/mlsystem/platform/docker-compose.yml"
 
 
 def _openapi_endpoints(openapi: Any) -> list[str]:
@@ -625,6 +755,46 @@ def _rabbitmq_management_overview(env: dict[str, str]) -> dict[str, Any]:
         "rabbitmq_version": payload.get("rabbitmq_version"),
         "auth_required": True,
     }
+
+
+def _frontend_gateway_checks(env: dict[str, str]) -> dict[str, Any]:
+    user = env.get("MLSYSTEM_FRONTEND_USER")
+    password = env.get("MLSYSTEM_FRONTEND_PASSWORD")
+    result: dict[str, Any] = {
+        "public_entrypoint": "http://127.0.0.1/",
+        "without_session": {},
+        "with_session": {},
+    }
+    for path in ["/airflow/", "/mlflow/", "/rabbitmq/", "/minio-browser/"]:
+        result["without_session"][path] = _curl_status(f"http://127.0.0.1{path}")
+    if not user or not password:
+        result["with_session"] = {"status": "skipped", "reason": "frontend credentials are not available in env file"}
+        return result
+    cookie = f"/tmp/mlsystem-frontend-validation-{int(time.time())}.cookie"
+    login_cmd = (
+        "curl -sS -o /dev/null -w '%{http_code}' "
+        f"-c {shlex.quote(cookie)} "
+        "--data-urlencode "
+        + shlex.quote(f"username={user}")
+        + " --data-urlencode "
+        + shlex.quote(f"password={password}")
+        + " http://127.0.0.1/login"
+    )
+    result["login_status"] = _run_text(login_cmd, check=False).strip()
+    result["proxy_check"] = _curl_status("http://127.0.0.1/auth/proxy-check", cookie=cookie)
+    for path in ["/", "/airflow/", "/mlflow/", "/rabbitmq/", "/minio-browser/"]:
+        result["with_session"][path] = _curl_status(f"http://127.0.0.1{path}", cookie=cookie)
+    _run_text(f"rm -f {shlex.quote(cookie)}", check=False)
+    return result
+
+
+def _curl_status(url: str, *, cookie: str | None = None) -> dict[str, Any]:
+    cmd = "curl -sS -o /dev/null -w '%{http_code}' "
+    if cookie:
+        cmd += f"-b {shlex.quote(cookie)} "
+    cmd += shlex.quote(url)
+    output = _run_text(cmd, check=False).strip()
+    return {"url": url, "http_status": output}
 
 
 def _nvidia_smi() -> str:

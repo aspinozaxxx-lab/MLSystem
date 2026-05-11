@@ -4,7 +4,7 @@ storage_root: /data/mlsystem/storage
 logs_root: /data/mlsystem/logs
 mlflow:
   tracking_uri_internal: http://mlflow:5000
-  tracking_uri_external: http://{{ mlsystem_gpu_public_host }}:{{ mlsystem_gpu_mlflow_port }}
+  tracking_uri_external: {{ mlsystem_gpu_frontend_public_url }}/mlflow/
   default_experiment: mlsystem
 s3_endpoint_url: http://minio:9000
 s3_alias: gpu-minio

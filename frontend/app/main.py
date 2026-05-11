@@ -4,6 +4,7 @@ import json
 import logging
 import threading
 import time
+import urllib.error
 import urllib.request
 import uuid
 from datetime import datetime, timezone
@@ -16,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
-from .auth import is_authenticated, login_session, logout_session, redirect_if_unauthorized, require_user, verify_credentials
+from .auth import current_user, is_authenticated, login_session, logout_session, redirect_if_unauthorized, require_user, verify_credentials
 from .config import FrontendConfig, get_config
 from .mlsystem_api import MLSystemApiClient
 from .report_builder import build_annotation_report
@@ -44,6 +45,19 @@ def create_app(config: FrontendConfig | None = None) -> FastAPI:
     @app.get("/health")
     def health() -> dict[str, Any]:
         return {"status": "ok", "service": "mlsystem-frontend", "time": datetime.now(timezone.utc).isoformat()}
+
+    @app.get("/auth/proxy-check")
+    def proxy_check(request: Request) -> Response:
+        user = current_user(request, config)
+        if not user:
+            return Response(status_code=401)
+        return Response(
+            status_code=204,
+            headers={
+                "X-MLSystem-User": user,
+                "X-Remote-User": user,
+            },
+        )
 
     @app.get("/login", response_class=HTMLResponse)
     def login_page(request: Request) -> HTMLResponse:
@@ -81,6 +95,9 @@ def create_app(config: FrontendConfig | None = None) -> FastAPI:
             "index.html",
             {
                 "user": request.session.get("mlsystem_user"),
+                "airflow_ui_url": config.airflow_ui_url,
+                "mlflow_ui_url": config.mlflow_ui_url,
+                "minio_ui_url": config.minio_ui_url,
                 "rabbitmq_management_url": config.rabbitmq_management_url,
             },
         )
@@ -110,6 +127,19 @@ def create_app(config: FrontendConfig | None = None) -> FastAPI:
         path = Path(__file__).resolve().parents[2] / "docs" / "frontend.md"
         text = path.read_text(encoding="utf-8") if path.exists() else "docs/frontend.md is not available in this container."
         return templates.TemplateResponse(request, "docs.html", {"title": "Frontend", "text": text})
+
+    @app.get("/minio-browser/", response_class=HTMLResponse)
+    def minio_browser(request: Request, bucket: str = "", prefix: str = "", _user: str = Depends(require_user)) -> HTMLResponse:
+        listing = _minio_listing(config, bucket=bucket.strip(), prefix=prefix.strip())
+        return templates.TemplateResponse(
+            request,
+            "minio_browser.html",
+            {
+                "bucket": bucket.strip(),
+                "prefix": prefix.strip(),
+                "listing": listing,
+            },
+        )
 
     @app.post("/api/annotation-check")
     async def start_annotation_check(
@@ -205,13 +235,9 @@ def create_app(config: FrontendConfig | None = None) -> FastAPI:
 
     @app.get("/api/inference-engine/queues")
     def inference_engine_queues(_user: str = Depends(require_user)) -> dict[str, Any]:
-        headers = {"Authorization": f"Bearer {config.inference_engine_api_token}"} if config.inference_engine_api_token else {}
-        request = urllib.request.Request(config.inference_engine_api_url + "/queues", headers=headers)
-        try:
-            with urllib.request.urlopen(request, timeout=8) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-        except Exception as exc:  # noqa: BLE001
-            return {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
+        payload = _get_inference_engine_json(config, "/queues", timeout=8)
+        if payload.get("status") == "failed":
+            return payload
         metrics = payload.get("metrics") if isinstance(payload, dict) else []
         ready = sum(int(item.get("messages_ready") or 0) for item in metrics or [])
         unacked = sum(int(item.get("messages_unacked") or 0) for item in metrics or [])
@@ -226,7 +252,87 @@ def create_app(config: FrontendConfig | None = None) -> FastAPI:
             "queues": metrics or [],
         }
 
+    @app.get("/api/services/status")
+    def services_status(_user: str = Depends(require_user)) -> dict[str, Any]:
+        queues = inference_engine_queues(_user)
+        dead_letter = queues.get("dead_letter") if isinstance(queues, dict) else None
+        return {
+            "status": "ok",
+            "services": {
+                "airflow": _url_status("http://airflow-webserver:8080/api/v1/health"),
+                "mlflow": _url_status("http://mlflow:5000/health"),
+                "minio": _url_status(config.s3_endpoint_url.rstrip("/") + "/minio/health/live"),
+                "inference_engine": _service_status_from_payload(_get_inference_engine_json(config, "/health", timeout=5)),
+                "rabbitmq": {
+                    "status": queues.get("status", "failed") if isinstance(queues, dict) else "failed",
+                    "ready": queues.get("ready") if isinstance(queues, dict) else None,
+                    "unacked": queues.get("unacked") if isinstance(queues, dict) else None,
+                    "consumers": queues.get("consumers") if isinstance(queues, dict) else None,
+                    "dead_letter": dead_letter,
+                },
+            },
+        }
+
     return app
+
+
+def _get_inference_engine_json(config: FrontendConfig, path: str, *, timeout: int) -> dict[str, Any]:
+    headers = {"Authorization": f"Bearer {config.inference_engine_api_token}"} if config.inference_engine_api_token else {}
+    request = urllib.request.Request(config.inference_engine_api_url + path, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
+
+
+def _url_status(url: str) -> dict[str, Any]:
+    try:
+        with urllib.request.urlopen(url, timeout=5) as response:
+            body = response.read(2048).decode("utf-8", errors="replace")
+        return {"status": "ok", "http_status": response.status, "url": url, "sample": body[:200]}
+    except urllib.error.HTTPError as exc:
+        return {"status": "failed", "http_status": exc.code, "url": url, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "failed", "url": url, "error": f"{type(exc).__name__}: {exc}"}
+
+
+def _service_status_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    if payload.get("status") == "failed":
+        return payload
+    return {"status": "ok", "payload": payload}
+
+
+def _minio_listing(config: FrontendConfig, *, bucket: str, prefix: str) -> dict[str, Any]:
+    if not (config.aws_access_key_id and config.aws_secret_access_key):
+        return {"status": "failed", "error": "S3 credentials are not configured for the frontend backend."}
+    try:
+        import boto3
+
+        client = boto3.client(
+            "s3",
+            endpoint_url=config.s3_endpoint_url,
+            aws_access_key_id=config.aws_access_key_id,
+            aws_secret_access_key=config.aws_secret_access_key,
+            region_name="us-east-1",
+        )
+        if not bucket:
+            buckets = client.list_buckets().get("Buckets") or []
+            return {"status": "ok", "buckets": [item.get("Name") for item in buckets if item.get("Name")]}
+        payload = client.list_objects_v2(Bucket=bucket, Prefix=prefix, Delimiter="/", MaxKeys=200)
+        prefixes = [item.get("Prefix") for item in payload.get("CommonPrefixes") or [] if item.get("Prefix")]
+        objects = [
+            {
+                "key": item.get("Key"),
+                "size": item.get("Size"),
+                "last_modified": item.get("LastModified").isoformat() if item.get("LastModified") else "",
+            }
+            for item in payload.get("Contents") or []
+            if item.get("Key")
+        ]
+        return {"status": "ok", "bucket": bucket, "prefix": prefix, "prefixes": prefixes, "objects": objects}
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
 
 
 def _run_annotation_check(config: FrontendConfig, run_id: str, experiment_config: dict[str, Any]) -> None:

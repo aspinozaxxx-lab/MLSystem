@@ -3,24 +3,41 @@
 {% block content %}
 <section class="hero">
   <h1>MLSystem</h1>
-  <p>Панель управления и проверки данных</p>
+  <p>Панель запуска и мониторинга ML pipeline</p>
 </section>
+
+<section class="status-strip" id="service-status" aria-label="Статус сервисов">
+  <span data-service="airflow">Airflow: <b>...</b></span>
+  <span data-service="mlflow">MLflow: <b>...</b></span>
+  <span data-service="minio">MinIO: <b>...</b></span>
+  <span data-service="inference_engine">InferenceEngine: <b>...</b></span>
+  <span data-service="rabbitmq">RabbitMQ: <b>...</b></span>
+</section>
+
 <section class="grid">
   <a class="card active" href="/annotation-check">
     <h2>Проверка разметок</h2>
     <p>Загрузка GeoJSON и списка сцен, запуск production stages inventory_scenes и prepare_dataset.</p>
   </a>
-  <div class="card disabled">
-    <h2>Запуски и отчеты</h2>
-    <p>Раздел в подготовке.</p>
-  </div>
-  <div class="card disabled">
-    <h2>Состояние сервисов</h2>
-    <p>Раздел в подготовке.</p>
-  </div>
-  <a class="card active queue-card" href="{{ rabbitmq_management_url }}" target="_blank" rel="noopener">
+
+  <a class="card active" href="{{ airflow_ui_url }}">
+    <h2>Airflow</h2>
+    <p>Запуск и мониторинг DAG runs через authenticated gateway.</p>
+  </a>
+
+  <a class="card active" href="{{ mlflow_ui_url }}">
+    <h2>MLflow</h2>
+    <p>Эксперименты, runs, метрики и артефакты моделей.</p>
+  </a>
+
+  <a class="card active" href="{{ minio_ui_url }}">
+    <h2>MinIO artifacts</h2>
+    <p>Read-only просмотр buckets и artifacts через backend frontend без передачи S3 credentials в браузер.</p>
+  </a>
+
+  <a class="card active queue-card" href="{{ rabbitmq_management_url }}">
     <h2>Очереди RabbitMQ</h2>
-    <p>Мониторинг очередей InferenceEngine</p>
+    <p>Native RabbitMQ Management UI и метрики очередей InferenceEngine.</p>
     <div class="queue-metrics" id="rabbitmq-queue-metrics" aria-label="RabbitMQ queue metrics">
       <span>ready: <b data-field="ready">...</b></span>
       <span>unacked: <b data-field="unacked">...</b></span>
@@ -28,25 +45,43 @@
       <span>dead_letter: <b data-field="dead_letter">...</b></span>
     </div>
   </a>
+
   <a class="card active" href="/docs/frontend">
     <h2>Документация</h2>
-    <p>Описание frontend workflow и проверки данных.</p>
+    <p>Описание frontend gateway, annotation checks и доступа к админским UI.</p>
   </a>
 </section>
+
 <script>
   (function () {
-    const root = document.getElementById("rabbitmq-queue-metrics");
-    if (!root) return;
-    fetch("/api/inference-engine/queues", { credentials: "same-origin" })
+    const queueRoot = document.getElementById("rabbitmq-queue-metrics");
+    if (queueRoot) {
+      fetch("/api/inference-engine/queues", { credentials: "same-origin" })
+        .then((response) => response.ok ? response.json() : Promise.reject(new Error(String(response.status))))
+        .then((data) => {
+          for (const key of ["ready", "unacked", "consumers", "dead_letter"]) {
+            const el = queueRoot.querySelector(`[data-field="${key}"]`);
+            if (el) el.textContent = String(data[key] ?? "n/a");
+          }
+        })
+        .catch(() => {
+          for (const el of queueRoot.querySelectorAll("b")) el.textContent = "n/a";
+        });
+    }
+
+    const statusRoot = document.getElementById("service-status");
+    if (!statusRoot) return;
+    fetch("/api/services/status", { credentials: "same-origin" })
       .then((response) => response.ok ? response.json() : Promise.reject(new Error(String(response.status))))
       .then((data) => {
-        for (const key of ["ready", "unacked", "consumers", "dead_letter"]) {
-          const el = root.querySelector(`[data-field="${key}"]`);
-          if (el) el.textContent = String(data[key] ?? "n/a");
+        const services = data.services || {};
+        for (const [name, item] of Object.entries(services)) {
+          const el = statusRoot.querySelector(`[data-service="${name}"] b`);
+          if (el) el.textContent = item.status || "unknown";
         }
       })
       .catch(() => {
-        for (const el of root.querySelectorAll("b")) el.textContent = "n/a";
+        for (const el of statusRoot.querySelectorAll("b")) el.textContent = "n/a";
       });
   })();
 </script>

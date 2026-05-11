@@ -50,13 +50,30 @@ class FrontendAuthTests(unittest.TestCase):
             response = client.head("/login")
             self.assertEqual(response.status_code, 200)
 
-    def test_home_has_rabbitmq_management_card(self) -> None:
+    def test_proxy_check_requires_valid_session(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            client = TestClient(create_app(test_config(Path(td))))
+            denied = client.get("/auth/proxy-check")
+            self.assertEqual(denied.status_code, 401)
+            client.post("/login", data={"username": "mluser", "password": "qazwsxedc"})
+            allowed = client.get("/auth/proxy-check")
+            self.assertEqual(allowed.status_code, 204)
+            self.assertEqual(allowed.headers["x-remote-user"], "mluser")
+            self.assertEqual(allowed.headers["x-mlsystem-user"], "mluser")
+
+    def test_home_has_admin_gateway_cards(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             client = TestClient(create_app(test_config(Path(td))))
             client.post("/login", data={"username": "mluser", "password": "qazwsxedc"})
             response = client.get("/")
             self.assertEqual(response.status_code, 200)
+            self.assertIn("Airflow", response.text)
+            self.assertIn("MLflow", response.text)
+            self.assertIn("MinIO artifacts", response.text)
             self.assertIn("Очереди RabbitMQ", response.text)
+            self.assertIn('/airflow/"', response.text)
+            self.assertIn('/mlflow/"', response.text)
+            self.assertIn('/minio-browser/"', response.text)
             self.assertIn('/rabbitmq/"', response.text)
 
     def test_queue_metrics_proxy_uses_inference_engine_api(self) -> None:
@@ -67,13 +84,15 @@ class FrontendAuthTests(unittest.TestCase):
             client.post("/login", data={"username": "mluser", "password": "qazwsxedc"})
 
             class FakeResponse:
+                status = 200
+
                 def __enter__(self):
                     return self
 
                 def __exit__(self, *_args):
                     return None
 
-                def read(self) -> bytes:
+                def read(self, *_args) -> bytes:
                     return json.dumps(
                         {
                             "metrics": [
@@ -97,6 +116,49 @@ class FrontendAuthTests(unittest.TestCase):
             self.assertEqual(seen["auth"], "Bearer ie-token")
             self.assertEqual(response.json()["ready"], 3)
             self.assertEqual(response.json()["unacked"], 2)
+
+    def test_services_status_uses_internal_upstreams(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            config = test_config(Path(td))
+            config = FrontendConfig(**{**config.__dict__, "inference_engine_api_url": "http://ie:8095", "inference_engine_api_token": "ie-token"})
+            client = TestClient(create_app(config))
+            client.post("/login", data={"username": "mluser", "password": "qazwsxedc"})
+
+            class FakeResponse:
+                status = 200
+
+                def __init__(self, payload: dict[str, object] | str):
+                    self.payload = payload
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_args):
+                    return None
+
+                def read(self, *_args) -> bytes:
+                    if isinstance(self.payload, str):
+                        return self.payload.encode("utf-8")
+                    return json.dumps(self.payload).encode("utf-8")
+
+            seen: list[str] = []
+
+            def fake_urlopen(request, timeout=8):
+                url = getattr(request, "full_url", request)
+                seen.append(url)
+                if str(url).endswith("/queues"):
+                    return FakeResponse({"metrics": [{"name": "ie.tile.infer", "messages_ready": 1, "messages_unacked": 0, "consumers": 1}]})
+                if str(url).endswith("/health"):
+                    return FakeResponse({"status": "ok"})
+                return FakeResponse("ok")
+
+            with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+                response = client.get("/api/services/status")
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertEqual(payload["services"]["rabbitmq"]["ready"], 1)
+            self.assertIn("http://airflow-webserver:8080/api/v1/health", seen)
+            self.assertIn("http://mlflow:5000/health", seen)
 
 
 if __name__ == "__main__":

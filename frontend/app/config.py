@@ -30,6 +30,9 @@ class FrontendConfig:
     api_token: str | None = os.getenv("MLSYSTEM_API_TOKEN")
     inference_engine_api_url: str = os.getenv("INFERENCE_ENGINE_API_URL", "http://inference-engine-api:8095").rstrip("/")
     inference_engine_api_token: str | None = os.getenv("INFERENCE_ENGINE_API_TOKEN")
+    airflow_ui_url: str = os.getenv("FRONTEND_AIRFLOW_UI_URL", "/airflow/")
+    mlflow_ui_url: str = os.getenv("FRONTEND_MLFLOW_UI_URL", "/mlflow/")
+    minio_ui_url: str = os.getenv("FRONTEND_MINIO_UI_URL", "/minio-browser/")
     rabbitmq_management_url: str = os.getenv(
         "FRONTEND_RABBITMQ_MANAGEMENT_URL",
         os.getenv("RABBITMQ_MANAGEMENT_PUBLIC_URL", "/rabbitmq/"),

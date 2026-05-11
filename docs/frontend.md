@@ -1,8 +1,8 @@
 # MLSystem Frontend
 
-Frontend is a separate FastAPI BFF service for the MLSystem web UI.
+Frontend is a FastAPI BFF and authenticated admin gateway for MLSystem.
 
-## URLs
+## Public URLs
 
 Public entrypoint:
 
@@ -10,26 +10,85 @@ Public entrypoint:
 - `http://31.192.104.147/login`
 - `http://31.192.104.147/health`
 
-Internal frontend backend:
+Admin UI routes are exposed through the same frontend session:
 
-- `http://127.0.0.1:8090/health`
+- `http://31.192.104.147/airflow/`
+- `http://31.192.104.147/mlflow/`
+- `http://31.192.104.147/rabbitmq/`
+- `http://31.192.104.147/minio-browser/`
 
-RabbitMQ Management UI:
+The raw admin UI ports are not the primary public entrypoints. Airflow, MLflow, RabbitMQ Management, and MinIO Console bind to localhost/internal addresses where possible and are reached through the frontend reverse proxy.
 
-- `FRONTEND_RABBITMQ_MANAGEMENT_URL` or `RABBITMQ_MANAGEMENT_PUBLIC_URL`
-- production default: `http://31.192.104.147:15672/`
+## Gateway Auth
 
-RabbitMQ credentials are not rendered in the page. The management UI requires RabbitMQ authentication; unauthenticated API calls to `/api/overview` must return `401`.
+The nginx frontend proxy protects admin UI locations with:
+
+```text
+auth_request /auth/proxy-check
+```
+
+Frontend endpoint:
+
+```text
+GET /auth/proxy-check
+```
+
+Behavior:
+
+- Valid frontend session: `204 No Content`
+- Missing/expired session: `401 Unauthorized`
+- Response headers for valid sessions:
+  - `X-MLSystem-User`
+  - `X-Remote-User`
+
+The proxy forwards user headers to upstream services:
+
+- `X-Forwarded-For`
+- `X-Forwarded-Proto`
+- `X-Forwarded-Host`
+- `X-Forwarded-Prefix`
+- `X-Real-IP`
+- `X-Remote-User`
+- `X-MLSystem-User`
+
+Airflow is configured for reverse-proxy operation under `/airflow/` and uses remote-user auth from the trusted frontend proxy. MLflow has its own security middleware disabled, so it must stay behind frontend auth and should not be exposed directly.
+
+RabbitMQ Management is served under `/rabbitmq/`. Nginx injects the RabbitMQ Basic Authorization header server-side from `/etc/mlsystem/gpu-platform.env`; credentials are not rendered into HTML, JavaScript, docs, or URLs.
+
+## MinIO
+
+Native MinIO Console SSO is not enabled because the current frontend login is a simple session and not an OIDC/LDAP identity provider. The system therefore exposes a safe alternative:
+
+```text
+GET /minio-browser/
+```
+
+This route is frontend-authenticated and performs read-only S3 listing server-side with credentials from container environment. MinIO root credentials are never sent to the browser.
 
 ## Home Page
 
-The home page includes a card titled `Очереди RabbitMQ`. It opens the native RabbitMQ Management UI and shows compact queue metrics fetched through the authenticated frontend session from:
+The home page includes active cards:
+
+- `Airflow`
+- `MLflow`
+- `MinIO artifacts`
+- `Очереди RabbitMQ`
+- `Проверка разметок`
+- `Документация`
+
+Compact service status comes from:
+
+```text
+GET /api/services/status
+```
+
+RabbitMQ queue metrics come from:
 
 ```text
 GET /api/inference-engine/queues
 ```
 
-The frontend server calls InferenceEngine `/queues` internally using `INFERENCE_ENGINE_API_URL` and, if configured, `INFERENCE_ENGINE_API_TOKEN`.
+The frontend backend calls internal services and InferenceEngine; browsers do not call internal Docker DNS names directly.
 
 ## Annotation Check
 
@@ -59,10 +118,13 @@ Uploaded runtime data is outside git:
 - `MLSYSTEM_API_TOKEN`
 - `INFERENCE_ENGINE_API_URL`
 - `INFERENCE_ENGINE_API_TOKEN`
-- `FRONTEND_RABBITMQ_MANAGEMENT_URL`
-- `RABBITMQ_MANAGEMENT_PUBLIC_URL`
+- `FRONTEND_AIRFLOW_UI_URL=/airflow/`
+- `FRONTEND_MLFLOW_UI_URL=/mlflow/`
+- `FRONTEND_MINIO_UI_URL=/minio-browser/`
+- `FRONTEND_RABBITMQ_MANAGEMENT_URL=/rabbitmq/`
+- `RABBITMQ_MANAGEMENT_PROXY_AUTH`
 
-Secrets stay in container/server env and are not sent to the browser.
+Secrets stay in server/container env and are not sent to the browser.
 
 ## Deploy
 
@@ -89,7 +151,7 @@ Validation:
 ```bash
 curl -fsS http://127.0.0.1:8090/health
 curl -fsS http://127.0.0.1/health
-curl -fsSI http://31.192.104.147/login
+curl -fsSI http://127.0.0.1/login
 ```
 
 Deploy and proxy setup are managed only through GitHub Actions and Ansible. Server-side manual edits to compose/env/container state are not part of the deployment process.

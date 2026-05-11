@@ -79,6 +79,21 @@
     - "'Status: active' in rabbitmq_ufw_status.stdout"
     - mlsystem_gpu_rabbitmq_management_listen_host not in ["127.0.0.1", "localhost"]
 
+- name: Remove public admin UI UFW allows when services are proxied through frontend
+  ansible.builtin.command:
+    cmd: "ufw --force delete allow {{ item }}/tcp"
+  loop:
+    - "{{ mlsystem_gpu_rabbitmq_management_port }}"
+    - "{{ mlsystem_gpu_airflow_port }}"
+    - "{{ mlsystem_gpu_mlflow_port }}"
+    - "{{ mlsystem_gpu_minio_console_port }}"
+  register: admin_ui_ufw_delete
+  changed_when: "'Rule deleted' in (admin_ui_ufw_delete.stdout | default(''))"
+  failed_when: false
+  when:
+    - rabbitmq_ufw_status.rc == 0
+    - "'Status: active' in rabbitmq_ufw_status.stdout"
+
 - name: Install GPU platform env
   ansible.builtin.template:
     src: gpu-platform.env.j2
@@ -94,6 +109,15 @@
     owner: root
     group: root
     mode: "0644"
+
+- name: Install RabbitMQ management path prefix config
+  ansible.builtin.copy:
+    dest: "{{ mlsystem_gpu_platform_root }}/rabbitmq.conf"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      management.path_prefix = /rabbitmq
 
 - name: Ensure deployed MLSystem config directory exists
   ansible.builtin.file:
@@ -312,9 +336,10 @@
 - name: Report GPU platform deploy
   ansible.builtin.debug:
     msg:
-      airflow: "http://{{ mlsystem_gpu_public_host }}:{{ mlsystem_gpu_airflow_port }}"
-      mlflow: "http://{{ mlsystem_gpu_public_host }}:{{ mlsystem_gpu_mlflow_port }}"
-      minio_console: "http://{{ mlsystem_gpu_public_host }}:{{ mlsystem_gpu_minio_console_port }}"
+      airflow: "{{ mlsystem_gpu_frontend_public_url }}/airflow/"
+      mlflow: "{{ mlsystem_gpu_frontend_public_url }}/mlflow/"
+      minio_artifacts: "{{ mlsystem_gpu_frontend_public_url }}/minio-browser/"
+      rabbitmq: "{{ mlsystem_gpu_frontend_public_url }}/rabbitmq/"
       triton_ready: "http://{{ mlsystem_gpu_public_host }}:{{ mlsystem_gpu_triton_http_port }}/v2/health/ready"
       mlsystem_api: "ssh tunnel/local only: http://127.0.0.1:{{ mlsystem_gpu_api_port }}"
       torch_cuda: "{{ torch_cuda_check.stdout_lines }}"

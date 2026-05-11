@@ -106,10 +106,8 @@
   changed_when: false
   loop:
     - "22"
-    - "{{ mlsystem_gpu_airflow_port }}"
-    - "{{ mlsystem_gpu_mlflow_port }}"
+    - "{{ mlsystem_gpu_frontend_proxy_port | default(80) }}"
     - "{{ mlsystem_gpu_minio_api_port }}"
-    - "{{ mlsystem_gpu_minio_console_port }}"
     - "{{ mlsystem_gpu_triton_http_port }}"
     - "{{ mlsystem_gpu_triton_grpc_port }}"
     - "{{ mlsystem_gpu_triton_metrics_port }}"

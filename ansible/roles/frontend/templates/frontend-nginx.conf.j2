@@ -4,6 +4,118 @@ server {
 
     client_max_body_size {{ mlsystem_gpu_frontend_max_upload_mb | default(100) + 28 }}m;
 
+    proxy_intercept_errors on;
+    error_page 401 = @frontend_login;
+
+    location @frontend_login {
+        return 302 /login;
+    }
+
+    location = /auth/proxy-check {
+        proxy_intercept_errors off;
+        proxy_pass http://mlsystem-frontend:{{ mlsystem_gpu_frontend_port | default(8090) }}/auth/proxy-check;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Original-URI $request_uri;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+    }
+
+    location /airflow/ {
+        auth_request /auth/proxy-check;
+        auth_request_set $auth_user $upstream_http_x_remote_user;
+
+        proxy_pass http://airflow-webserver:8080/;
+        proxy_http_version 1.1;
+        proxy_redirect http://airflow-webserver:8080/ /airflow/;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Prefix /airflow;
+        proxy_set_header X-Remote-User $auth_user;
+        proxy_set_header X-MLSystem-User $auth_user;
+        proxy_set_header X-Forwarded-User $auth_user;
+        proxy_set_header REMOTE_USER $auth_user;
+
+        proxy_connect_timeout 30s;
+        proxy_send_timeout 600s;
+        proxy_read_timeout 600s;
+    }
+
+    location /mlflow/ {
+        auth_request /auth/proxy-check;
+        auth_request_set $auth_user $upstream_http_x_remote_user;
+
+        proxy_pass http://mlflow:5000/;
+        proxy_http_version 1.1;
+        proxy_redirect / /mlflow/;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Prefix /mlflow;
+        proxy_set_header X-Remote-User $auth_user;
+        proxy_set_header X-MLSystem-User $auth_user;
+
+        proxy_connect_timeout 30s;
+        proxy_send_timeout 600s;
+        proxy_read_timeout 600s;
+    }
+
+    location /rabbitmq/ {
+        auth_request /auth/proxy-check;
+        auth_request_set $auth_user $upstream_http_x_remote_user;
+
+        proxy_pass http://rabbitmq:15672/rabbitmq/;
+        proxy_http_version 1.1;
+        proxy_redirect /rabbitmq/ /rabbitmq/;
+
+{% if frontend_rabbitmq_proxy_basic_auth | default('') %}
+        proxy_set_header Authorization "Basic {{ frontend_rabbitmq_proxy_basic_auth }}";
+{% endif %}
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Prefix /rabbitmq;
+        proxy_set_header X-Remote-User $auth_user;
+        proxy_set_header X-MLSystem-User $auth_user;
+
+        proxy_connect_timeout 30s;
+        proxy_send_timeout 600s;
+        proxy_read_timeout 600s;
+    }
+
+    location /minio-browser/ {
+        auth_request /auth/proxy-check;
+        auth_request_set $auth_user $upstream_http_x_remote_user;
+
+        proxy_pass http://mlsystem-frontend:{{ mlsystem_gpu_frontend_port | default(8090) }};
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Prefix /minio-browser;
+        proxy_set_header X-Remote-User $auth_user;
+        proxy_set_header X-MLSystem-User $auth_user;
+
+        proxy_connect_timeout 30s;
+        proxy_send_timeout 600s;
+        proxy_read_timeout 600s;
+    }
+
     location / {
         proxy_pass http://mlsystem-frontend:{{ mlsystem_gpu_frontend_port | default(8090) }};
         proxy_http_version 1.1;
@@ -12,6 +124,7 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
 
         proxy_connect_timeout 30s;
         proxy_send_timeout 600s;

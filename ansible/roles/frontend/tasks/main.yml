@@ -25,6 +25,8 @@
     frontend_user_resolved: "{{ lookup('env', 'MLSYSTEM_FRONTEND_USER') | default('', true) or (frontend_existing_env | default({})).get('MLSYSTEM_FRONTEND_USER', mlsystem_gpu_frontend_user) }}"
     frontend_password_resolved: "{{ lookup('env', 'MLSYSTEM_FRONTEND_PASSWORD') | default('', true) or (frontend_existing_env | default({})).get('MLSYSTEM_FRONTEND_PASSWORD', mlsystem_gpu_frontend_default_password) }}"
     frontend_session_secret_resolved: "{{ lookup('env', 'MLSYSTEM_FRONTEND_SESSION_SECRET') | default('', true) or (frontend_existing_env | default({})).get('MLSYSTEM_FRONTEND_SESSION_SECRET', lookup('password', '/dev/null length=48 chars=ascii_letters,digits')) }}"
+    frontend_rabbitmq_proxy_basic_auth: "{{ (frontend_existing_env | default({})).get('RABBITMQ_MANAGEMENT_PROXY_AUTH', '') or (((frontend_existing_env | default({})).get('RABBITMQ_DEFAULT_USER', 'mlsystem') ~ ':' ~ (frontend_existing_env | default({})).get('RABBITMQ_DEFAULT_PASS', '')) | b64encode) }}"
+  no_log: true
 
 - name: Ensure frontend upload directory exists
   ansible.builtin.file:
@@ -85,8 +87,11 @@
     - { key: "MLSYSTEM_FRONTEND_DEFAULT_SPLIT_STRATEGY", value: "{{ mlsystem_gpu_frontend_default_split_strategy }}" }
     - { key: "MLSYSTEM_FRONTEND_MAX_UPLOAD_MB", value: "{{ mlsystem_gpu_frontend_max_upload_mb }}" }
     - { key: "MLSYSTEM_FRONTEND_S3_PREFIX", value: "frontend-checks" }
-    - { key: "FRONTEND_RABBITMQ_MANAGEMENT_URL", value: "{{ mlsystem_gpu_frontend_public_url }}:{{ mlsystem_gpu_rabbitmq_management_port }}/" }
-    - { key: "RABBITMQ_MANAGEMENT_PUBLIC_URL", value: "{{ mlsystem_gpu_frontend_public_url }}:{{ mlsystem_gpu_rabbitmq_management_port }}/" }
+    - { key: "FRONTEND_AIRFLOW_UI_URL", value: "/airflow/" }
+    - { key: "FRONTEND_MLFLOW_UI_URL", value: "/mlflow/" }
+    - { key: "FRONTEND_MINIO_UI_URL", value: "/minio-browser/" }
+    - { key: "FRONTEND_RABBITMQ_MANAGEMENT_URL", value: "/rabbitmq/" }
+    - { key: "RABBITMQ_MANAGEMENT_PUBLIC_URL", value: "/rabbitmq/" }
   when: frontend_env_stat.stat.exists
   no_log: true
 
