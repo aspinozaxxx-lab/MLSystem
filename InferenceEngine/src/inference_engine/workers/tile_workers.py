@@ -129,9 +129,12 @@ def _read_or_synthetic_tile(tile: TileDescriptor, scene_plan: ScenePlan, request
         bucket_key = str(path)[5:]
         bucket, _, key = bucket_key.partition("/")
         path = f"/vsis3/{bucket}/{key}"
-    with rasterio.Env(**_rasterio_env_kwargs()):
-        with rasterio.open(str(path)) as ds:
-            return ds.read(request.preprocess.input_bands, window=Window(tile.x, tile.y, tile.patch_size, tile.patch_size), boundless=True, fill_value=0)
+    try:
+        with rasterio.Env(**_rasterio_env_kwargs()):
+            with rasterio.open(str(path)) as ds:
+                return ds.read(request.preprocess.input_bands, window=Window(tile.x, tile.y, tile.patch_size, tile.patch_size), boundless=True, fill_value=0)
+    except Exception as exc:
+        raise RuntimeError(f"Failed to read raster for scene={scene_plan.scene_id} tile={tile.tile_id} path={path}: {type(exc).__name__}: {exc}") from exc
 
 
 def _rasterio_env_kwargs() -> dict[str, str | int]:
