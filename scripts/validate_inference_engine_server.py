@@ -524,8 +524,16 @@ def _read_json(path: Path, default: Any = None) -> Any:
 
 def _get_json(url: str, *, token: str | None = None) -> dict[str, Any]:
     req = urllib.request.Request(url, headers=_headers(token))
-    with urllib.request.urlopen(req, timeout=60) as response:
-        return json.loads(response.read().decode("utf-8"))
+    last_exc: Exception | None = None
+    for attempt in range(6):
+        try:
+            with urllib.request.urlopen(req, timeout=60) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except (ConnectionError, TimeoutError, urllib.error.URLError) as exc:
+            last_exc = exc
+            time.sleep(min(30, 2**attempt))
+    assert last_exc is not None
+    raise last_exc
 
 
 def _safe_get_json(url: str, *, token: str | None = None) -> Any:
@@ -545,14 +553,21 @@ def _safe_post_json(url: str, payload: dict[str, Any], *, token: str | None = No
 def _post_json(url: str, payload: dict[str, Any], *, token: str | None = None, tolerate_http_error: bool = False) -> dict[str, Any]:
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=data, method="POST", headers={**_headers(token), "Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=120) as response:
-            text = response.read().decode("utf-8")
-            return json.loads(text) if text else {}
-    except urllib.error.HTTPError as exc:
-        if tolerate_http_error:
-            return {"http_error": exc.code, "message": exc.read().decode("utf-8", errors="replace")}
-        raise
+    last_exc: Exception | None = None
+    for attempt in range(6):
+        try:
+            with urllib.request.urlopen(req, timeout=120) as response:
+                text = response.read().decode("utf-8")
+                return json.loads(text) if text else {}
+        except urllib.error.HTTPError as exc:
+            if tolerate_http_error:
+                return {"http_error": exc.code, "message": exc.read().decode("utf-8", errors="replace")}
+            raise
+        except (ConnectionError, TimeoutError, urllib.error.URLError) as exc:
+            last_exc = exc
+            time.sleep(min(30, 2**attempt))
+    assert last_exc is not None
+    raise last_exc
 
 
 def _http_text(url: str) -> str:
