@@ -220,7 +220,7 @@ class TuningController:
             "metric_thresholds": [0.3, 0.4, 0.5, 0.6, 0.7],
             "objective_metric": "val/pixel_f1",
             "maximize": True,
-            "cache_samples_on_gpu": True,
+            "cache_samples_on_gpu": config.get("cache_samples_on_gpu", True),
         }
         if BASELINE_CHECKPOINT.exists():
             train["initial_checkpoint_path"] = str(BASELINE_CHECKPOINT)
@@ -336,7 +336,7 @@ class TuningController:
             handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
 
     def stop_requested(self) -> bool:
-        return (Path(self.args.tuning_root) / "STOP_ALL").exists() or (self.root / "STOP").exists()
+        return (self.root / "STOP").exists()
 
     def log(self, message: str) -> None:
         line = f"{utc_now()} {message}"
@@ -353,11 +353,28 @@ def sample_config(class_slug: str, rng: random.Random, *, smoke: bool, epochs: i
         learning_rate = rng.choice([1e-4, 2e-4, 3e-4, 5e-4, 8e-4])
         weight_decay = rng.choice([0.0, 1e-5, 1e-4, 1e-3])
         loss = rng.choice(["bce_dice", "focal_dice", "tversky_dice"])
-        batch_size = rng.choice([2, 4, "auto"])
+        if patch_size >= 1280:
+            batch_size = rng.choice([1, 2, "auto"])
+        elif patch_size >= 1024:
+            batch_size = rng.choice([2, 4, "auto"])
+        else:
+            batch_size = rng.choice([2, 4, "auto"])
         target_val_fraction = 0.2
         default_epochs = rng.choice([15, 20, 25, 40, 60])
         max_train_tiles = 96 if smoke else None
         max_val_tiles = 48 if smoke else None
+    elif class_slug == "wind_erosion":
+        model_name = rng.choice(["segformer_b2", "segformer_b1", "segformer_b2"])
+        patch_size = rng.choice([512, 768, 1024])
+        stride = rng.choice([384, 512, 768])
+        learning_rate = rng.choice([3e-5, 5e-5, 1e-4, 2e-4, 3e-4])
+        weight_decay = rng.choice([1e-5, 1e-4, 1e-3, 0.0015])
+        loss = rng.choice(["focal_dice", "tversky_dice", "bce_dice"])
+        batch_size = rng.choice([1, 2, "auto"])
+        target_val_fraction = 0.5
+        default_epochs = rng.choice([20, 30, 40, 60, 80])
+        max_train_tiles = 64 if smoke else None
+        max_val_tiles = 32 if smoke else None
     else:
         model_name = "segformer_b2"
         patch_size = rng.choice([512, 768, 1024])
@@ -394,6 +411,7 @@ def sample_config(class_slug: str, rng: random.Random, *, smoke: bool, epochs: i
             "noise": True,
             "blur": class_slug != "lakes",
         },
+        "cache_samples_on_gpu": patch_size < 1280,
         "max_train_tiles": max_train_tiles,
         "max_val_tiles": max_val_tiles,
     }

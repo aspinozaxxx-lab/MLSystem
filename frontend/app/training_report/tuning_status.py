@@ -8,12 +8,17 @@ from typing import Any
 
 def read_tuning_status(root: Path) -> dict[str, Any]:
     classes: list[dict[str, Any]] = []
-    for slug in ("lakes", "abrasion"):
+    slugs = ["lakes", "wind_erosion"]
+    for state_path in sorted(root.glob("*/state.json")):
+        slug = state_path.parent.name
+        if slug not in slugs:
+            slugs.append(slug)
+    for slug in slugs:
         state_path = root / slug / "state.json"
         stop_path = root / slug / "STOP"
         payload = _read_json(state_path)
         status = payload.get("status") if payload else "unknown"
-        if (root / "STOP_ALL").exists() or stop_path.exists():
+        if stop_path.exists():
             status = "stopped"
         classes.append(
             {
@@ -30,7 +35,6 @@ def read_tuning_status(root: Path) -> dict[str, Any]:
     return {
         "status": "ok",
         "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "stop_all_path": str(root / "STOP_ALL"),
         "classes": classes,
     }
 
@@ -43,4 +47,3 @@ def _read_json(path: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError):
         return {}
     return payload if isinstance(payload, dict) else {}
-

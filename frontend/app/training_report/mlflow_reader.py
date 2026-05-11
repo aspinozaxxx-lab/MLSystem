@@ -129,9 +129,23 @@ def normalize_run(run: dict[str, Any]) -> dict[str, Any]:
     )
     model_name = _first_value((tags, params), "model.name", "model_name", "model", "architecture", "model.architecture")
     train_date = _date_from_ms(info.get("start_time")) or _date_from_iso(tags.get("mlsystem.train_date") or tags.get("train_date"))
+    duration_sec = _duration_sec(info.get("start_time"), info.get("end_time"))
+    epochs_completed = _first_float(
+        (metrics, params),
+        "epochs_completed",
+        "object_safe_scene_group/epoch",
+        "epoch",
+        "best_epoch",
+        "train.epochs_completed",
+        "train.epochs",
+        "train.epochs_planned",
+    )
+    best_epoch = _first_float((metrics, params), "best_epoch", "best_val_epoch", "object_safe_scene_group/epoch", "epoch")
+    epochs_planned = _first_float((params, metrics), "train.epochs", "train.epochs_planned", "epochs", "max_epochs")
     return {
         "run_id": info.get("run_id") or run.get("run_id"),
         "experiment_id": str(info.get("experiment_id") or ""),
+        "run_status": info.get("status"),
         "run_name": tags.get("mlflow.runName") or info.get("run_name") or "",
         "run_url": run_url(info.get("experiment_id"), info.get("run_id") or run.get("run_id")),
         "class_name": class_name,
@@ -144,6 +158,10 @@ def normalize_run(run: dict[str, Any]) -> dict[str, Any]:
         "validation_kind": validation_kind_from_split(split_strategy),
         "model_name": model_name or "unknown",
         "params_summary": summarize_params(params, model_name=model_name, split_strategy=split_strategy),
+        "training_duration_sec": duration_sec,
+        "epochs_completed": epochs_completed,
+        "epochs_planned": epochs_planned,
+        "best_epoch": best_epoch,
         "metrics": metrics,
         "params": params,
         "tags": tags,
@@ -270,12 +288,36 @@ def _first_value(dicts: tuple[dict[str, Any], ...], *keys: str) -> str | None:
     return None
 
 
+def _first_float(dicts: tuple[dict[str, Any], ...], *keys: str) -> float | None:
+    for key in keys:
+        for item in dicts:
+            value = item.get(key)
+            if value in (None, ""):
+                continue
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
 def _first_from_dict(payload: dict[str, Any], keys: tuple[str, ...]) -> Any:
     for key in keys:
         value = payload.get(key)
         if value not in (None, ""):
             return value
     return None
+
+
+def _duration_sec(start_ms: Any, end_ms: Any) -> float | None:
+    try:
+        start = int(start_ms)
+        end = int(end_ms)
+    except (TypeError, ValueError):
+        return None
+    if start <= 0 or end <= start:
+        return None
+    return round((end - start) / 1000, 3)
 
 
 def _date_from_ms(value: Any) -> str | None:

@@ -56,6 +56,8 @@ def _sample_report() -> dict[str, object]:
                         "split_strategy": "scene_level",
                         "model_name": "segformer_b2",
                         "params_summary": "segformer_b2, lr=0.0002",
+                        "best_epoch": 4,
+                        "training_duration_sec": 123.4,
                     }
                 ],
             },
@@ -95,6 +97,10 @@ class TrainingReportRouteTests(unittest.TestCase):
             self.assertIn("Озера", response.text)
             self.assertIn("Абразия", response.text)
             self.assertIn("training-report-expandable", response.text)
+            self.assertIn("Best epoch", response.text)
+            self.assertIn("Duration", response.text)
+            self.assertNotIn("STOP_ALL", response.text)
+            self.assertNotIn("Run id", response.text)
 
     def test_training_report_api_and_refresh(self) -> None:
         with tempfile.TemporaryDirectory() as td:

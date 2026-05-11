@@ -17,6 +17,12 @@ from .mlflow_reader import MLflowReader, normalize_pixel_f1, run_url, summarize_
 logger = logging.getLogger("mlsystem.frontend.training_report")
 
 
+HIGH_F1_SUSPICIOUS_THRESHOLD = 0.10
+HIGH_F1_MIN_DURATION_SEC = 60.0
+HIGH_F1_MIN_EPOCHS = 7.0
+MIN_RUN_DURATION_SEC = 10.0
+
+
 class TrainingReportCollector:
     def __init__(self, config: FrontendConfig, cache: TrainingReportCache) -> None:
         self.config = config
@@ -97,7 +103,7 @@ class TrainingReportCollector:
             class_runs = [
                 run
                 for run in (_enrich_run(run, inventory) for run in runs_by_class.get(spec.class_slug, []))
-                if not _is_perfect_pixel_f1(run.get("pixel_f1"))
+                if _is_trusted_training_run(run)
             ]
             class_runs.sort(key=lambda item: (_sort_f1(item.get("pixel_f1")), item.get("train_date") or ""))
             top_runs = []
@@ -130,6 +136,19 @@ class TrainingReportCollector:
                     "best_train_date": (best or {}).get("train_date"),
                     "validation_kind": validation_kind,
                     "warning": warning,
+                    "quality_filter": {
+                        "excluded_runs": sum(
+                            1
+                            for run in (_enrich_run(run, inventory) for run in runs_by_class.get(spec.class_slug, []))
+                            if not _is_trusted_training_run(run)
+                        ),
+                        "rules": [
+                            "exclude non-finished runs",
+                            "exclude missing or perfect pixel F1",
+                            "exclude missing dataset stats",
+                            "exclude high F1 from very short low-epoch training",
+                        ],
+                    },
                     "top_runs": top_runs,
                 }
             )
@@ -233,6 +252,10 @@ def _enrich_run(run: dict[str, Any], inventory: dict[str, Any]) -> dict[str, Any
             "validation_kind": validation_kind or "unknown",
             "model_name": model_name or "unknown",
             "params_summary": run.get("params_summary") or summarize_params(params, model_name=model_name, split_strategy=split_strategy),
+            "training_duration_sec": run.get("training_duration_sec") or _first_float(dicts, "duration_sec", "training_duration_sec"),
+            "epochs_completed": run.get("epochs_completed") or _first_float(dicts, "epochs_completed", "train.epochs_completed", "epoch"),
+            "epochs_planned": run.get("epochs_planned") or _first_float(dicts, "train.epochs", "train.epochs_planned", "epochs", "max_epochs"),
+            "best_epoch": run.get("best_epoch") or _first_float(dicts, "best_epoch", "best_val_epoch", "epoch"),
         }
     )
     return enriched
@@ -256,6 +279,10 @@ def _public_run(run: dict[str, Any]) -> dict[str, Any]:
         "params_summary": run.get("params_summary") or "",
         "best_threshold": run.get("best_threshold"),
         "metric_name_source": run.get("metric_name_source"),
+        "training_duration_sec": run.get("training_duration_sec"),
+        "epochs_completed": run.get("epochs_completed"),
+        "epochs_planned": run.get("epochs_planned"),
+        "best_epoch": run.get("best_epoch"),
     }
 
 
@@ -299,6 +326,11 @@ def _read_runtime_report_runs(report_root: Path) -> list[dict[str, Any]]:
                 "validation_kind": _first_existing(item, "validation_kind") or validation_kind_from_split(str(_first_existing(item, "split_strategy") or "")),
                 "model_name": _first_existing(item, "model_name", "model", "architecture") or "unknown",
                 "params_summary": _first_existing(item, "params_summary", "config_summary") or "",
+                "training_duration_sec": _float_or_none(_first_existing(item, "duration_sec", "training_duration_sec")),
+                "epochs_completed": _float_or_none(_first_existing(item, "epochs_completed", "completed_epochs")),
+                "epochs_planned": _float_or_none(_first_existing(item, "epochs_planned", "epochs_planned", "epochs")),
+                "best_epoch": _float_or_none(_first_existing(item, "best_epoch", "best_val_epoch")),
+                "run_status": _first_existing(item, "run_status", "status"),
                 "metrics": metrics,
                 "params": item.get("params") if isinstance(item.get("params"), dict) else {},
                 "tags": item.get("tags") if isinstance(item.get("tags"), dict) else {},
@@ -362,6 +394,16 @@ def _first_number(dicts: tuple[dict[str, Any], ...], *keys: str) -> int | None:
         return None
 
 
+def _first_float(dicts: tuple[dict[str, Any], ...], *keys: str) -> float | None:
+    text = _first_text(dicts, *keys)
+    if text is None:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
 def _int_or_zero(*values: Any) -> int:
     for value in values:
         try:
@@ -420,3 +462,27 @@ def _sort_f1(value: Any) -> float:
 def _is_perfect_pixel_f1(value: Any) -> bool:
     numeric = _float_or_none(value)
     return numeric is not None and abs(numeric - 1.0) <= 1e-12
+
+
+def _is_trusted_training_run(run: dict[str, Any]) -> bool:
+    f1 = _float_or_none(run.get("pixel_f1"))
+    if f1 is None or f1 < 0.0 or f1 > 1.0 or _is_perfect_pixel_f1(f1):
+        return False
+    status = str(run.get("run_status") or "").upper()
+    if status and status not in {"FINISHED", "SUCCEEDED", "SUCCESS", "OK"}:
+        return False
+    if _int_or_zero(run.get("dataset_objects")) <= 0 or _int_or_zero(run.get("dataset_scenes")) <= 0:
+        return False
+    duration = _float_or_none(run.get("training_duration_sec"))
+    epochs = _float_or_none(run.get("epochs_completed")) or _float_or_none(run.get("epochs_planned"))
+    if duration is not None and duration < MIN_RUN_DURATION_SEC:
+        return False
+    if f1 >= HIGH_F1_SUSPICIOUS_THRESHOLD and duration is not None and epochs is not None:
+        if duration < HIGH_F1_MIN_DURATION_SEC and epochs < HIGH_F1_MIN_EPOCHS:
+            return False
+    if f1 >= 0.30 and epochs is not None and epochs <= 3:
+        return False
+    metric_source = str(run.get("metric_name_source") or "").casefold()
+    if metric_source and "object" in metric_source:
+        return False
+    return True

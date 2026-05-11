@@ -41,8 +41,7 @@
   <h2>Тюнинг</h2>
   <div class="status-strip tuning-status-strip" id="training-tuning-status">
     <span>lakes: <b>...</b></span>
-    <span>abrasion: <b>...</b></span>
-    <span>stop: <code>/data/mlsystem/tuning/STOP_ALL</code></span>
+    <span>wind_erosion: <b>...</b></span>
   </div>
 </section>
 
@@ -65,6 +64,20 @@
     function f1(value) {
       const numeric = Number(value);
       return Number.isFinite(numeric) ? numeric.toFixed(4) : "n/a";
+    }
+
+    function duration(value) {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric)) return "n/a";
+      if (numeric < 60) return `${numeric.toFixed(0)}s`;
+      const minutes = Math.floor(numeric / 60);
+      const seconds = Math.round(numeric % 60);
+      return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+    }
+
+    function epoch(value) {
+      const numeric = Number(value);
+      return Number.isFinite(numeric) ? String(Math.round(numeric)) : "n/a";
     }
 
     function escapeHtml(value) {
@@ -121,7 +134,8 @@
             <td>${escapeHtml(run.dataset_scenes)}</td>
             <td>${escapeHtml(run.train_date)}</td>
             <td>${mlflowLink(run.run_url, run.run_id)}</td>
-            <td><code>${escapeHtml(run.run_id)}</code></td>
+            <td>${epoch(run.best_epoch)}</td>
+            <td>${duration(run.training_duration_sec)}</td>
             <td>${escapeHtml(run.split_strategy)}</td>
             <td>${escapeHtml(run.params_summary || run.model_name)}</td>
           </tr>`).join("");
@@ -140,7 +154,8 @@
                       <th>Сцены</th>
                       <th>Дата обучения</th>
                       <th>MLflow run</th>
-                      <th>Run id</th>
+                      <th>Best epoch</th>
+                      <th>Duration</th>
                       <th>Split strategy</th>
                       <th>Model/config</th>
                     </tr>
@@ -185,7 +200,7 @@
           tuningRoot.innerHTML = classes.map((item) => {
             const value = text(item.status) + (item.best_f1 ? ` best=${f1(item.best_f1)}` : "");
             return `<span>${escapeHtml(item.class_slug)}: <b>${escapeHtml(value)}</b></span>`;
-          }).join("") + `<span>stop: <code>${escapeHtml(data.stop_all_path)}</code></span>`;
+          }).join("");
         })
         .catch(() => {});
     }
