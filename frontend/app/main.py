@@ -153,6 +153,13 @@ def create_app(config: FrontendConfig | None = None) -> FastAPI:
             return redirect
         return templates.TemplateResponse(request, "training_report.html", {})
 
+    @app.head("/training-report")
+    def training_report_head(request: Request) -> Response:
+        redirect = redirect_if_unauthorized(request)
+        if redirect:
+            return Response(status_code=303, headers={"Location": "/login"})
+        return Response(status_code=200)
+
     @app.get("/api/training-report")
     def training_report_api(_user: str = Depends(require_user)) -> dict[str, Any]:
         return training_report_service.get_report()

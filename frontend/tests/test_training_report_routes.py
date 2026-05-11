@@ -84,7 +84,11 @@ class TrainingReportRouteTests(unittest.TestCase):
             client = TestClient(app)
             denied = client.get("/training-report", follow_redirects=False)
             self.assertEqual(denied.status_code, 303)
+            denied_head = client.head("/training-report", follow_redirects=False)
+            self.assertEqual(denied_head.status_code, 303)
             client.post("/login", data={"username": "mluser", "password": "qazwsxedc"})
+            allowed_head = client.head("/training-report")
+            self.assertEqual(allowed_head.status_code, 200)
             response = client.get("/training-report")
             self.assertEqual(response.status_code, 200)
             self.assertIn("Отчет об обучении", response.text)
@@ -112,4 +116,3 @@ class TrainingReportRouteTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
