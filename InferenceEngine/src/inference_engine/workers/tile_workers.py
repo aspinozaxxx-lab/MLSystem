@@ -53,32 +53,41 @@ def infer_tile_batch(
             tile = tiles_by_id[str(descriptor["tile_id"])]
             prob = _synthetic_probability(tile, scene_plan).astype(np.float32, copy=False)
             outputs.append(_persist_probability_tile(tile, scene_plan, prob, logits_shape=[1, 1, tile.height, tile.width]))
+            _cleanup_spool_descriptor(descriptor)
         duration_ms = (time.time() - started) * 1000.0
         for item in outputs:
             item["triton_request_duration_ms"] = duration_ms
         return outputs
 
-    arrays = []
-    ordered_tiles = []
+    outputs = []
+    pending_arrays = []
+    pending_tiles = []
+    pending_descriptors = []
     for descriptor in descriptors:
         tile = tiles_by_id[str(descriptor["tile_id"])]
+        if checksum_matches(Path(tile.artifact_path), Path(tile.checksum_path)):
+            outputs.append({"tile_id": tile.tile_id, "artifact_path": tile.artifact_path, "meta_path": tile.meta_path, "idempotent_hit": True, "triton_request_duration_ms": 0.0})
+            _cleanup_spool_descriptor(descriptor)
+            continue
         with np.load(str(descriptor["spool_path"])) as payload:
-            arrays.append(payload["image"].astype(np.float32, copy=False))
-        ordered_tiles.append(tile)
+            pending_arrays.append(payload["image"].astype(np.float32, copy=False))
+        pending_tiles.append(tile)
+        pending_descriptors.append(descriptor)
     if endpoint is None:
         endpoint = TritonEndpoint(
             url=request.storage.get("triton_url") or request.model.model_dump().get("triton_url") or "http://triton:8000",
             model_name=request.model.triton_model_name or request.model.model_name or "segformer_b2",
             model_version=request.model.triton_model_version,
         )
-    logits = infer_segmentation_batch(endpoint, np.stack(arrays))
-    probs = 1.0 / (1.0 + np.exp(-logits[:, 0]))
-    duration_ms = (time.time() - started) * 1000.0
-    outputs = []
-    for tile, prob in zip(ordered_tiles, probs):
-        row = _persist_probability_tile(tile, scene_plan, prob.astype(np.float32, copy=False), logits_shape=list(logits.shape))
-        row["triton_request_duration_ms"] = duration_ms
-        outputs.append(row)
+    if pending_arrays:
+        logits = infer_segmentation_batch(endpoint, np.stack(pending_arrays))
+        probs = 1.0 / (1.0 + np.exp(-logits[:, 0]))
+        duration_ms = (time.time() - started) * 1000.0
+        for tile, prob, descriptor in zip(pending_tiles, probs, pending_descriptors, strict=True):
+            row = _persist_probability_tile(tile, scene_plan, prob.astype(np.float32, copy=False), logits_shape=list(logits.shape))
+            row["triton_request_duration_ms"] = duration_ms
+            outputs.append(row)
+            _cleanup_spool_descriptor(descriptor)
     return outputs
 
 
@@ -144,6 +153,17 @@ def _rasterio_env_kwargs() -> dict[str, str | int]:
         endpoint = endpoint.replace("http://", "").replace("https://", "").rstrip("/")
         kwargs["AWS_S3_ENDPOINT"] = endpoint
     return kwargs
+
+
+def _cleanup_spool_descriptor(descriptor: dict[str, Any]) -> None:
+    for key in ("spool_path", "checksum_path"):
+        value = descriptor.get(key)
+        if not value:
+            continue
+        try:
+            Path(str(value)).unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _scene_has_synthetic_probability(scene_plan: ScenePlan) -> bool:
