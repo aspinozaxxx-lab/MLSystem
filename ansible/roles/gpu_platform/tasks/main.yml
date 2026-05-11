@@ -66,6 +66,24 @@
     - "{{ mlsystem_gpu_data_root }}/storage/system"
     - "{{ mlsystem_gpu_data_root }}/logs"
 
+- name: Ensure Prometheus data directory is writable by container user
+  ansible.builtin.file:
+    path: "{{ mlsystem_gpu_data_root }}/prometheus"
+    state: directory
+    owner: "65534"
+    group: "65534"
+    mode: "0775"
+    recurse: true
+
+- name: Ensure Grafana data directory is writable by container user
+  ansible.builtin.file:
+    path: "{{ mlsystem_gpu_data_root }}/grafana"
+    state: directory
+    owner: "472"
+    group: "472"
+    mode: "0775"
+    recurse: true
+
 - name: Check UFW status for RabbitMQ management UI
   ansible.builtin.command:
     cmd: ufw status
