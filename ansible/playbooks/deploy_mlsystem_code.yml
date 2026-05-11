@@ -133,7 +133,7 @@
         cmd: >-
           docker compose --env-file "{{ mlsystem_gpu_env_path }}"
           -f "{{ mlsystem_gpu_compose_path }}"
-          up -d --no-deps airflow-webserver airflow-scheduler airflow-triggerer
+          up -d --force-recreate --no-deps airflow-webserver airflow-scheduler airflow-triggerer
       changed_when: true
       when:
         - gpu_platform_compose_stat.stat.exists

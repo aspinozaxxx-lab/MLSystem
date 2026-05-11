@@ -466,7 +466,7 @@ services:
       - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/airflow/status:/opt/airflow/mlsystem_runs
       - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}:/data/mlsystem
     healthcheck:
-      test: ["CMD-SHELL", "curl --fail http://localhost:8080/health || exit 1"]
+      test: ["CMD-SHELL", "curl --fail http://localhost:8080/airflow/health || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 8
