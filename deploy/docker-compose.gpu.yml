@@ -552,6 +552,7 @@ services:
       MLSYSTEM_AIRFLOW_STATUS_ROOT: /data/mlsystem/airflow/status
       MLSYSTEM_FRONTEND_UPLOAD_ROOT: /data/mlsystem/frontend/uploads
       MLSYSTEM_FRONTEND_TRAINING_REPORT_ROOT: /data/mlsystem/frontend/training_report
+      MLSYSTEM_TUNING_ROOT: /data/mlsystem/tuning
       MLSYSTEM_MLMARKUP_REPO_PATH: /data/MLMarkup
       FRONTEND_GRAFANA_URL: ${FRONTEND_GRAFANA_URL:-/grafana/}
       FRONTEND_PROMETHEUS_URL: ${FRONTEND_PROMETHEUS_URL:-/prometheus/}
@@ -570,6 +571,7 @@ services:
     volumes:
       - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/frontend/uploads:/data/mlsystem/frontend/uploads
       - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/frontend/training_report:/data/mlsystem/frontend/training_report
+      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/tuning:/data/mlsystem/tuning:ro
       - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/airflow/status:/data/mlsystem/airflow/status:ro
       - ${MLSYSTEM_MLMARKUP_REPO_PATH:-/data/MLMarkup}:/data/MLMarkup:ro
     healthcheck:
