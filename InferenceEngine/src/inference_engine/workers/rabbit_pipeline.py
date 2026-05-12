@@ -279,8 +279,7 @@ class RabbitPipeline:
                 await self.client.publish("ie.block.ready", make_message(job_id=job_id, stage="block.ready", scene_id=scene_id, block_id=block_id, payload={"scene_id": scene_id, "block_id": block_id}))
 
         for job_id, scene_ids in scenes_touched.items():
-            for scene_id in scene_ids:
-                await self._publish_more_preprocess(job_id, scene_id)
+            await self._publish_more_active_preprocess(job_id, scene_ids)
 
     async def _handle_tile_done_single(self, message: QueueMessage) -> None:
         job_id = message.job_id
@@ -324,7 +323,7 @@ class RabbitPipeline:
 
         progress.update(progress_mutate)
         await self._event(job_id, "tile.done", {"scene_id": scene_id, "tile_id": tile_id, "ready_blocks": ready_blocks})
-        await self._publish_more_preprocess(job_id, scene_id)
+        await self._publish_more_active_preprocess(job_id, [scene_id])
         for block_id in ready_blocks:
             await self.client.publish("ie.block.ready", make_message(job_id=job_id, stage="block.ready", scene_id=scene_id, block_id=block_id, payload={"scene_id": scene_id, "block_id": block_id}))
         self.store.update(job_id, metrics=_metrics_from_progress(progress.read()))
@@ -544,6 +543,19 @@ class RabbitPipeline:
         scene_state.update(mutate)
         for tile_id in to_publish:
             await self.client.publish("ie.tile.preprocess", make_message(job_id=job_id, stage="tile.preprocess", scene_id=scene_id, tile_id=tile_id, payload={"scene_id": scene_id, "tile_id": tile_id}))
+
+    async def _publish_more_active_preprocess(self, job_id: str, preferred_scene_ids: list[str] | set[str] | tuple[str, ...] = ()) -> None:
+        job_dir = self.store.job_dir(job_id)
+        progress = ProgressStore(job_dir).read()
+        done = set(progress.get("scene_done") or [])
+        active = [str(scene_id) for scene_id in (progress.get("active_scenes") or []) if str(scene_id) not in done]
+        preferred = [str(scene_id) for scene_id in preferred_scene_ids if str(scene_id) in active]
+        ordered = preferred + [scene_id for scene_id in active if scene_id not in set(preferred)]
+        for scene_id in ordered:
+            scene_dir = job_dir / "scenes" / scene_id
+            if not (scene_dir / "plan.json").exists() or not (scene_dir / "scene_state.json").exists():
+                continue
+            await self._publish_more_preprocess(job_id, scene_id)
 
     async def _event(self, job_id: str, event_type: str, payload: dict[str, Any]) -> None:
         self.store.add_event(job_id, event_type, payload)
