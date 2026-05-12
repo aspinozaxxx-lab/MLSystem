@@ -9,6 +9,7 @@ from typing import Any
 from affine import Affine
 
 from ..api.schemas import JobRequest, SceneInput
+from ..storage.raster_paths import rasterio_path_for_uri
 from ..tiling.windows import tile_insert_slices, window_grid
 from ..vectorization.tile_index import window_bounds
 
@@ -335,13 +336,7 @@ def _infer_scene_metadata(scene: SceneInput) -> dict[str, Any]:
     try:
         import rasterio
 
-        path_text = str(path)
-        if path_text.startswith("file://"):
-            path_text = path_text[7:]
-        elif path_text.startswith("s3://"):
-            bucket_key = path_text[5:]
-            bucket, _, key = bucket_key.partition("/")
-            path_text = f"/vsis3/{bucket}/{key}"
+        path_text = rasterio_path_for_uri(str(path))
         with rasterio.open(path_text) as ds:
             metadata: dict[str, Any] = {
                 "width": int(ds.width),

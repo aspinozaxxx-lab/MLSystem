@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from InferenceEngine.src.inference_engine.api.schemas import JobRequest, ResourceConfig, SceneInput
 from InferenceEngine.src.inference_engine.config.settings import InferenceEngineSettings
 from InferenceEngine.src.inference_engine.planning.planner import build_job_plan
+from InferenceEngine.src.inference_engine.storage.raster_paths import rasterio_path_for_uri
 from InferenceEngine.src.inference_engine.storage.job_store import JobStore
 from InferenceEngine.src.inference_engine.workers.backpressure import AdaptiveProducer
 from InferenceEngine.src.inference_engine.workers.dependency_tracker import DependencyTracker
@@ -162,6 +165,54 @@ class StreamingPipelineTests(unittest.TestCase):
 
             self.assertEqual(plan.width, 8)
             self.assertEqual(plan.height, 6)
+            self.assertEqual(plan.crs, "EPSG:3857")
+            self.assertEqual(plan.transform, tuple(float(v) for v in transform[:6]))
+
+    def test_s3_uri_uses_local_minio_mount_when_present(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            object_path = root / "minio" / "mlsystems" / "images" / "scene.tif"
+            object_path.parent.mkdir(parents=True)
+            object_path.touch()
+
+            with patch.dict(os.environ, {"INFERENCE_ENGINE_LOCAL_S3_ROOT": str(root / "minio")}):
+                self.assertEqual(rasterio_path_for_uri("s3://mlsystems/images/scene.tif"), str(object_path))
+
+    def test_manifest_s3_scene_infers_metadata_from_local_minio_mount(self) -> None:
+        try:
+            import numpy as np
+            import rasterio
+            from rasterio.transform import from_origin
+        except Exception as exc:  # pragma: no cover - optional raster stack in unit envs.
+            self.skipTest(f"rasterio/numpy unavailable: {exc}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            image_path = root / "minio" / "mlsystems" / "images" / "scene.tif"
+            image_path.parent.mkdir(parents=True)
+            transform = from_origin(10.0, 20.0, 1.5, 2.5)
+            with rasterio.open(
+                image_path,
+                "w",
+                driver="GTiff",
+                width=9,
+                height=7,
+                count=1,
+                dtype="uint8",
+                crs="EPSG:3857",
+                transform=transform,
+            ) as ds:
+                ds.write(np.zeros((1, 7, 9), dtype="uint8"))
+
+            manifest = root / "inference_manifest.json"
+            manifest.write_text(json.dumps({"scenes": [{"entry": "scene.tif", "name": "scene.tif", "key": "images/scene.tif"}]}), encoding="utf-8")
+            request = JobRequest(experiment_id="manifest", inference_manifest=str(manifest), images_uri="s3://mlsystems/")
+            with patch.dict(os.environ, {"INFERENCE_ENGINE_LOCAL_S3_ROOT": str(root / "minio")}):
+                plan = build_job_plan("job", request, root / "jobs")[0]
+
+            self.assertEqual(plan.source["uri"], "s3://mlsystems/images/scene.tif")
+            self.assertEqual(plan.width, 9)
+            self.assertEqual(plan.height, 7)
             self.assertEqual(plan.crs, "EPSG:3857")
             self.assertEqual(plan.transform, tuple(float(v) for v in transform[:6]))
 

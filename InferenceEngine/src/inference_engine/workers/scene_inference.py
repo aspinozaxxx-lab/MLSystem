@@ -14,8 +14,9 @@ from shapely.geometry import box, mapping
 
 from ..contracts import ProbabilityMap, TileWindow
 from ..preprocessing.normalization import normalize_image
-from ..tiling.windows import window_grid
 from ..probability.map import ProbabilityMapAccumulator, ProbabilityMapConfig
+from ..storage.raster_paths import rasterio_path_for_uri
+from ..tiling.windows import window_grid
 from ..triton.client import TritonEndpoint, infer_segmentation_batch
 
 
@@ -430,18 +431,14 @@ def _raster_path_for_match(config: Any, match: Any) -> str:
     uri = _match_value(match, "uri") or _match_value(match, "image_uri")
     if uri:
         uri_text = str(uri)
-        if uri_text.startswith("file://"):
-            return uri_text[7:]
         if not uri_text.startswith("s3://"):
-            return uri_text
-        bucket_key = uri_text[5:]
-        bucket, _, key = bucket_key.partition("/")
-        return f"/vsis3/{bucket}/{key}"
+            return rasterio_path_for_uri(uri_text)
+        return rasterio_path_for_uri(uri_text)
     key = _match_value(match, "key")
     if key:
         bucket = _config_value(config, "storage", "s3_bucket") or _config_value(config, "s3_bucket") or _match_value(match, "bucket")
         if bucket:
-            return f"/vsis3/{bucket}/{key}"
+            return rasterio_path_for_uri(f"s3://{bucket}/{key}")
         return str(key)
     raise ValueError(f"Cannot resolve raster path for scene match: {match!r}")
 

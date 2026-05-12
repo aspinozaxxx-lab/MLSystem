@@ -14,6 +14,7 @@ from ..preprocessing.normalization import normalize_image
 from ..storage.artifacts import checksum_matches, write_checksum
 from ..storage.local_io import write_json
 from ..storage.probability_artifacts import write_probability_uint8
+from ..storage.raster_paths import rasterio_path_for_uri
 from ..triton.client import TritonEndpoint, infer_segmentation_batch
 
 
@@ -206,12 +207,7 @@ def _read_or_synthetic_tile(tile: TileDescriptor, scene_plan: ScenePlan, request
     import rasterio
     from rasterio.windows import Window
 
-    if str(path).startswith("file://"):
-        path = str(path)[7:]
-    elif str(path).startswith("s3://"):
-        bucket_key = str(path)[5:]
-        bucket, _, key = bucket_key.partition("/")
-        path = f"/vsis3/{bucket}/{key}"
+    path = rasterio_path_for_uri(str(path))
     try:
         with rasterio.Env(**_rasterio_env_kwargs()):
             with rasterio.open(str(path)) as ds:
