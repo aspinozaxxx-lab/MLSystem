@@ -99,6 +99,9 @@ class TrainingReportRouteTests(unittest.TestCase):
             self.assertIn("training-report-expandable", response.text)
             self.assertIn("Best epoch", response.text)
             self.assertIn("Duration", response.text)
+            self.assertNotIn("training-tuning-status", response.text)
+            self.assertNotIn("<h2>Тюнинг</h2>", response.text)
+            self.assertNotIn("row-toggle", response.text)
             self.assertNotIn("STOP_ALL", response.text)
             self.assertNotIn("Run id", response.text)
 

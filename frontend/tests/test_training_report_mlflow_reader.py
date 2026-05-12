@@ -28,7 +28,7 @@ class TrainingReportMLflowReaderTests(unittest.TestCase):
                     "status": "FINISHED",
                 },
                 "data": {
-                    "metrics": [{"key": "best_val_pixel_f1", "value": 0.55}, {"key": "best_epoch", "value": 7}],
+                    "metrics": [{"key": "best_val_pixel_f1", "value": 0.55, "step": 11}],
                     "params": [{"key": "model_name", "value": "segformer_b2"}, {"key": "train.epochs", "value": 12}],
                     "tags": [{"key": "mlsystem.class_name", "value": "lakes"}],
                 },
@@ -39,7 +39,7 @@ class TrainingReportMLflowReaderTests(unittest.TestCase):
         self.assertEqual(run["pixel_f1"], 0.55)
         self.assertEqual(run["run_status"], "FINISHED")
         self.assertEqual(run["training_duration_sec"], 123.0)
-        self.assertEqual(run["best_epoch"], 7.0)
+        self.assertEqual(run["best_epoch"], 11.0)
         self.assertEqual(run["epochs_planned"], 12.0)
 
     def test_top_runs_sorted_desc(self) -> None:
@@ -47,8 +47,22 @@ class TrainingReportMLflowReaderTests(unittest.TestCase):
         rows = collector._build_class_rows(  # pylint: disable=protected-access
             {"lakes": {"objects_count": 2, "scenes_count": 3, "dataset_date": "2026-05-10"}},
             [
-                {"run_id": "low", "class_slug": "lakes", "pixel_f1": 0.1, "run_url": "/mlflow/#/experiments/1/runs/low"},
-                {"run_id": "high", "class_slug": "lakes", "pixel_f1": 0.9, "run_url": "/mlflow/#/experiments/1/runs/high"},
+                {
+                    "run_id": "low",
+                    "class_slug": "lakes",
+                    "pixel_f1": 0.1,
+                    "run_url": "/mlflow/#/experiments/1/runs/low",
+                    "train_date": "2026-05-10",
+                    "best_epoch": 12,
+                },
+                {
+                    "run_id": "high",
+                    "class_slug": "lakes",
+                    "pixel_f1": 0.9,
+                    "run_url": "/mlflow/#/experiments/1/runs/high",
+                    "train_date": "2026-05-10",
+                    "best_epoch": 12,
+                },
             ],
         )
         lakes = next(item for item in rows if item["class_slug"] == "lakes")
@@ -60,28 +74,49 @@ class TrainingReportMLflowReaderTests(unittest.TestCase):
         rows = collector._build_class_rows(  # pylint: disable=protected-access
             {"lakes": {"objects_count": 2, "scenes_count": 3, "dataset_date": "2026-05-10"}},
             [
-                {"run_id": "perfect", "class_slug": "lakes", "pixel_f1": 1.0, "run_url": "/mlflow/#/experiments/1/runs/perfect"},
-                {"run_id": "real", "class_slug": "lakes", "pixel_f1": 0.42, "run_url": "/mlflow/#/experiments/1/runs/real"},
+                {
+                    "run_id": "perfect",
+                    "class_slug": "lakes",
+                    "pixel_f1": 1.0,
+                    "run_url": "/mlflow/#/experiments/1/runs/perfect",
+                    "train_date": "2026-05-10",
+                    "best_epoch": 12,
+                },
+                {
+                    "run_id": "real",
+                    "class_slug": "lakes",
+                    "pixel_f1": 0.42,
+                    "run_url": "/mlflow/#/experiments/1/runs/real",
+                    "train_date": "2026-05-10",
+                    "best_epoch": 12,
+                },
             ],
         )
         lakes = next(item for item in rows if item["class_slug"] == "lakes")
         self.assertEqual([run["run_id"] for run in lakes["top_runs"]], ["real"])
         self.assertEqual(lakes["best_pixel_f1"], 0.42)
 
-    def test_short_low_epoch_high_f1_runs_are_excluded(self) -> None:
+    def test_runs_before_cutoff_or_before_epoch_10_are_excluded(self) -> None:
         collector = object.__new__(TrainingReportCollector)
         rows = collector._build_class_rows(  # pylint: disable=protected-access
             {"wind_erosion": {"objects_count": 21, "scenes_count": 2, "dataset_date": "2026-05-10"}},
             [
                 {
-                    "run_id": "suspicious",
+                    "run_id": "old",
                     "class_slug": "wind_erosion",
                     "pixel_f1": 0.31,
-                    "run_url": "/mlflow/#/experiments/1/runs/suspicious",
-                    "training_duration_sec": 16,
-                    "epochs_completed": 4,
-                    "dataset_objects": 21,
-                    "dataset_scenes": 2,
+                    "run_url": "/mlflow/#/experiments/1/runs/old",
+                    "train_date": "2026-05-05",
+                    "best_epoch": 12,
+                    "run_status": "FINISHED",
+                },
+                {
+                    "run_id": "early_best",
+                    "class_slug": "wind_erosion",
+                    "pixel_f1": 0.28,
+                    "run_url": "/mlflow/#/experiments/1/runs/early_best",
+                    "train_date": "2026-05-10",
+                    "best_epoch": 9,
                     "run_status": "FINISHED",
                 },
                 {
@@ -89,17 +124,15 @@ class TrainingReportMLflowReaderTests(unittest.TestCase):
                     "class_slug": "wind_erosion",
                     "pixel_f1": 0.18,
                     "run_url": "/mlflow/#/experiments/1/runs/trusted",
-                    "training_duration_sec": 95,
-                    "epochs_completed": 20,
-                    "dataset_objects": 21,
-                    "dataset_scenes": 2,
+                    "train_date": "2026-05-10",
+                    "best_epoch": 10,
                     "run_status": "FINISHED",
                 },
             ],
         )
         wind = next(item for item in rows if item["class_slug"] == "wind_erosion")
         self.assertEqual([run["run_id"] for run in wind["top_runs"]], ["trusted"])
-        self.assertEqual(wind["quality_filter"]["excluded_runs"], 1)
+        self.assertEqual(wind["quality_filter"]["excluded_runs"], 2)
 
 
 if __name__ == "__main__":

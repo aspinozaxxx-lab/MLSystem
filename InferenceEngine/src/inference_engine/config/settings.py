@@ -15,6 +15,7 @@ class InferenceEngineSettings:
     rabbitmq_url: str = "amqp://guest:guest@rabbitmq:5672/"
     triton_url: str = "http://triton:8000"
     use_rabbitmq: bool = False
+    publish_rabbitmq_events: bool = False
     max_wait_ms: int = 50
     default_triton_batch_size: int = 8
     default_worker_concurrency: int = 1
@@ -30,6 +31,7 @@ class InferenceEngineSettings:
             rabbitmq_url=os.getenv("INFERENCE_ENGINE_RABBITMQ_URL", "amqp://guest:guest@rabbitmq:5672/"),
             triton_url=os.getenv("INFERENCE_ENGINE_TRITON_URL", "http://triton:8000"),
             use_rabbitmq=str(os.getenv("INFERENCE_ENGINE_USE_RABBITMQ", "")).lower() in {"1", "true", "yes", "on"},
+            publish_rabbitmq_events=str(os.getenv("INFERENCE_ENGINE_PUBLISH_RABBITMQ_EVENTS", "")).lower() in {"1", "true", "yes", "on"},
             max_wait_ms=int(os.getenv("INFERENCE_ENGINE_MAX_WAIT_MS", "50")),
             default_triton_batch_size=int(os.getenv("INFERENCE_ENGINE_DEFAULT_TRITON_BATCH_SIZE", "8")),
             default_worker_concurrency=int(os.getenv("INFERENCE_ENGINE_WORKER_CONCURRENCY", "1")),

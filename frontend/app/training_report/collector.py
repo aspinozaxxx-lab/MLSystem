@@ -17,10 +17,8 @@ from .mlflow_reader import MLflowReader, normalize_pixel_f1, run_url, summarize_
 logger = logging.getLogger("mlsystem.frontend.training_report")
 
 
-HIGH_F1_SUSPICIOUS_THRESHOLD = 0.10
-HIGH_F1_MIN_DURATION_SEC = 60.0
-HIGH_F1_MIN_EPOCHS = 7.0
-MIN_RUN_DURATION_SEC = 10.0
+MIN_TRUSTED_TRAIN_DATE = "2026-05-06"
+MIN_TRUSTED_BEST_EPOCH = 10.0
 
 
 class TrainingReportCollector:
@@ -143,10 +141,9 @@ class TrainingReportCollector:
                             if not _is_trusted_training_run(run)
                         ),
                         "rules": [
-                            "exclude non-finished runs",
                             "exclude missing or perfect pixel F1",
-                            "exclude missing dataset stats",
-                            "exclude high F1 from very short low-epoch training",
+                            f"exclude runs before {MIN_TRUSTED_TRAIN_DATE}",
+                            f"exclude runs whose best epoch is before {int(MIN_TRUSTED_BEST_EPOCH)}",
                         ],
                     },
                     "top_runs": top_runs,
@@ -469,18 +466,13 @@ def _is_trusted_training_run(run: dict[str, Any]) -> bool:
     if f1 is None or f1 < 0.0 or f1 > 1.0 or _is_perfect_pixel_f1(f1):
         return False
     status = str(run.get("run_status") or "").upper()
-    if status and status not in {"FINISHED", "SUCCEEDED", "SUCCESS", "OK"}:
+    if status and status not in {"FINISHED", "SUCCEEDED", "SUCCESS", "OK", "KILLED"}:
         return False
-    if _int_or_zero(run.get("dataset_objects")) <= 0 or _int_or_zero(run.get("dataset_scenes")) <= 0:
+    train_date = _date_only(run.get("train_date"))
+    if not train_date or train_date < MIN_TRUSTED_TRAIN_DATE:
         return False
-    duration = _float_or_none(run.get("training_duration_sec"))
-    epochs = _float_or_none(run.get("epochs_completed")) or _float_or_none(run.get("epochs_planned"))
-    if duration is not None and duration < MIN_RUN_DURATION_SEC:
-        return False
-    if f1 >= HIGH_F1_SUSPICIOUS_THRESHOLD and duration is not None and epochs is not None:
-        if duration < HIGH_F1_MIN_DURATION_SEC and epochs < HIGH_F1_MIN_EPOCHS:
-            return False
-    if f1 >= 0.30 and epochs is not None and epochs <= 3:
+    best_epoch = _float_or_none(run.get("best_epoch"))
+    if best_epoch is None or best_epoch < MIN_TRUSTED_BEST_EPOCH:
         return False
     metric_source = str(run.get("metric_name_source") or "").casefold()
     if metric_source and "object" in metric_source:

@@ -26,22 +26,13 @@
           <th>Дата датасета</th>
           <th>Объекты</th>
           <th>Сцены</th>
-          <th>MLflow run</th>
           <th>Дата обучения</th>
         </tr>
       </thead>
       <tbody id="training-report-body">
-        <tr><td colspan="7">Загрузка...</td></tr>
+        <tr><td colspan="6">Загрузка...</td></tr>
       </tbody>
     </table>
-  </div>
-</section>
-
-<section class="panel tuning-status-panel">
-  <h2>Тюнинг</h2>
-  <div class="status-strip tuning-status-strip" id="training-tuning-status">
-    <span>lakes: <b>...</b></span>
-    <span>wind_erosion: <b>...</b></span>
   </div>
 </section>
 
@@ -55,7 +46,6 @@
     const updated = document.getElementById("training-report-updated");
     const statusBadge = document.getElementById("training-report-status");
     const refreshButton = document.getElementById("training-report-refresh");
-    const tuningRoot = document.getElementById("training-tuning-status");
 
     function text(value) {
       return value === null || value === undefined || value === "" ? "n/a" : String(value);
@@ -107,23 +97,21 @@
       statusBadge.className = "badge " + (data.status === "stale" ? "warning" : "ok");
       const rows = data.classes || [];
       if (!rows.length) {
-        body.innerHTML = '<tr><td colspan="7">Нет данных</td></tr>';
+        body.innerHTML = '<tr><td colspan="6">Нет данных</td></tr>';
         return;
       }
       body.innerHTML = rows.map((item) => {
         const slug = escapeHtml(item.class_slug);
         const warning = item.warning ? badge(item.warning) : "";
         const mainRow = `
-          <tr class="training-main-row training-report-expandable" data-slug="${slug}">
+          <tr class="training-main-row training-report-expandable" data-slug="${slug}" aria-expanded="false">
             <td>
-              <button type="button" class="row-toggle" data-slug="${slug}" aria-expanded="false">+</button>
               <b>${escapeHtml(item.class_name)}</b> ${warning}
             </td>
             <td>${f1(item.best_pixel_f1)}</td>
             <td>${escapeHtml(item.dataset_date)}</td>
             <td>${escapeHtml(item.dataset_objects)}</td>
             <td>${escapeHtml(item.dataset_scenes)}</td>
-            <td>${mlflowLink(item.best_run_url, item.best_run_id)}</td>
             <td>${escapeHtml(item.best_train_date)}</td>
           </tr>`;
         const topRows = (item.top_runs || []).map((run) => `
@@ -139,43 +127,45 @@
             <td>${escapeHtml(run.split_strategy)}</td>
             <td>${escapeHtml(run.params_summary || run.model_name)}</td>
           </tr>`).join("");
-        const empty = '<tr><td colspan="9">Нет run\u2019ов</td></tr>';
+        const empty = '<tr><td colspan="10">Нет run\u2019ов</td></tr>';
         const detailRow = `
-          <tr class="training-detail-row hidden" data-detail-for="${slug}">
-            <td colspan="7">
-              <div class="subtable-title">Лучшие 10 экспериментов</div>
-              <div class="table-wrap subtable-wrap">
-                <table class="training-subtable">
-                  <thead>
-                    <tr>
-                      <th>pixel F1</th>
-                      <th>Дата датасета</th>
-                      <th>Объекты</th>
-                      <th>Сцены</th>
-                      <th>Дата обучения</th>
-                      <th>MLflow run</th>
-                      <th>Best epoch</th>
-                      <th>Duration</th>
-                      <th>Split strategy</th>
-                      <th>Model/config</th>
-                    </tr>
-                  </thead>
-                  <tbody>${topRows || empty}</tbody>
-                </table>
+          <tr class="training-detail-row" data-detail-for="${slug}">
+            <td colspan="6">
+              <div class="detail-collapse">
+                <div class="subtable-title">Лучшие 10 экспериментов</div>
+                <div class="table-wrap subtable-wrap">
+                  <table class="training-subtable">
+                    <thead>
+                      <tr>
+                        <th>pixel F1</th>
+                        <th>Дата датасета</th>
+                        <th>Объекты</th>
+                        <th>Сцены</th>
+                        <th>Дата обучения</th>
+                        <th>MLflow run</th>
+                        <th>Best epoch</th>
+                        <th>Duration</th>
+                        <th>Split strategy</th>
+                        <th>Model/config</th>
+                      </tr>
+                    </thead>
+                    <tbody>${topRows || empty}</tbody>
+                  </table>
+                </div>
               </div>
             </td>
           </tr>`;
         return mainRow + detailRow;
       }).join("");
-      for (const button of body.querySelectorAll(".row-toggle")) {
-        button.addEventListener("click", () => {
-          const slug = button.getAttribute("data-slug");
-          const detail = body.querySelector(`[data-detail-for="${slug}"]`);
+      for (const row of body.querySelectorAll(".training-main-row")) {
+        row.addEventListener("click", () => {
+          const slug = row.getAttribute("data-slug");
+          const detail = row.nextElementSibling || body.querySelector(`[data-detail-for="${slug}"]`);
           if (!detail) return;
-          const expanded = !detail.classList.contains("hidden");
-          detail.classList.toggle("hidden", expanded);
-          button.textContent = expanded ? "+" : "-";
-          button.setAttribute("aria-expanded", expanded ? "false" : "true");
+          const expanded = detail.classList.contains("expanded");
+          detail.classList.toggle("expanded", !expanded);
+          row.classList.toggle("expanded", !expanded);
+          row.setAttribute("aria-expanded", expanded ? "false" : "true");
         });
       }
     }
@@ -192,19 +182,6 @@
         });
     }
 
-    function loadTuningStatus() {
-      fetch("/api/training-tuning/status", { credentials: "same-origin" })
-        .then((response) => response.ok ? response.json() : Promise.reject(new Error(String(response.status))))
-        .then((data) => {
-          const classes = data.classes || [];
-          tuningRoot.innerHTML = classes.map((item) => {
-            const value = text(item.status) + (item.best_f1 ? ` best=${f1(item.best_f1)}` : "");
-            return `<span>${escapeHtml(item.class_slug)}: <b>${escapeHtml(value)}</b></span>`;
-          }).join("");
-        })
-        .catch(() => {});
-    }
-
     refreshButton.addEventListener("click", () => {
       refreshButton.disabled = true;
       fetch("/api/training-report/refresh", { method: "POST", credentials: "same-origin" })
@@ -214,7 +191,6 @@
     });
 
     loadReport();
-    loadTuningStatus();
   })();
 </script>
 {% endblock %}

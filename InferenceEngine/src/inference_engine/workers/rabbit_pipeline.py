@@ -431,6 +431,8 @@ class RabbitPipeline:
 
     async def _event(self, job_id: str, event_type: str, payload: dict[str, Any]) -> None:
         self.store.add_event(job_id, event_type, payload)
+        if not self.settings.publish_rabbitmq_events:
+            return
         try:
             await self.client.publish("ie.events", make_message(job_id=job_id, stage="events", payload={"event_type": event_type, **payload}))
         except Exception:

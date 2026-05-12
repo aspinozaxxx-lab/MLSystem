@@ -114,12 +114,14 @@ class MLflowReader:
 def normalize_run(run: dict[str, Any]) -> dict[str, Any]:
     info = run.get("info") or {}
     data = run.get("data") or {}
-    metrics = _kv_list_to_dict(data.get("metrics") or [])
+    raw_metrics = data.get("metrics") or []
+    metrics = _kv_list_to_dict(raw_metrics)
+    metric_steps = _metric_steps(raw_metrics)
     params = _kv_list_to_dict(data.get("params") or [])
     tags = _kv_list_to_dict(data.get("tags") or [])
     class_slug = _detect_class_slug(tags=tags, params=params, info=info)
     class_name = _class_name_for_slug(class_slug) if class_slug else None
-    f1 = normalize_pixel_f1(metrics)
+    f1 = normalize_pixel_f1(metrics, metric_steps=metric_steps)
     split_strategy = _first_value(
         (tags, params),
         "validation.split_strategy",
@@ -141,9 +143,14 @@ def normalize_run(run: dict[str, Any]) -> dict[str, Any]:
         "train.epochs_planned",
     )
     best_epoch = _first_float((metrics, params), "best_epoch", "best_val_epoch", "object_safe_scene_group/epoch", "epoch")
+    metric_best_epoch = _float_or_none(f1.get("best_epoch"))
     epochs_planned = _first_float((params, metrics), "train.epochs", "train.epochs_planned", "epochs", "max_epochs")
+    if best_epoch is None and metric_best_epoch is not None and metric_best_epoch > 0:
+        best_epoch = metric_best_epoch
     if best_epoch is None:
         best_epoch = epochs_completed
+    if best_epoch is None:
+        best_epoch = epochs_planned
     return {
         "run_id": info.get("run_id") or run.get("run_id"),
         "experiment_id": str(info.get("experiment_id") or ""),
@@ -170,7 +177,8 @@ def normalize_run(run: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def normalize_pixel_f1(metrics: dict[str, Any]) -> dict[str, Any]:
+def normalize_pixel_f1(metrics: dict[str, Any], *, metric_steps: dict[str, Any] | None = None) -> dict[str, Any]:
+    steps = metric_steps or {}
     normalized = {_normalize_metric_name(key): (key, _float_or_none(value)) for key, value in metrics.items()}
     threshold_candidates: list[tuple[float, float, str]] = []
     for key, value in metrics.items():
@@ -186,15 +194,25 @@ def normalize_pixel_f1(metrics: dict[str, Any]) -> dict[str, Any]:
             threshold_candidates.append((numeric, threshold, key))
     if threshold_candidates:
         value, threshold, source = max(threshold_candidates, key=lambda item: item[0])
-        return {"pixel_f1": value, "metric_name_source": source, "best_threshold": threshold}
+        return {
+            "pixel_f1": value,
+            "metric_name_source": source,
+            "best_threshold": threshold,
+            "best_epoch": _metric_epoch(source, steps),
+        }
 
     for candidate in PIXEL_F1_PRIORITY:
         normalized_candidate = _normalize_metric_name(candidate)
         item = normalized.get(normalized_candidate)
         if item and item[1] is not None:
             source, value = item
-            return {"pixel_f1": value, "metric_name_source": source, "best_threshold": None}
-    return {"pixel_f1": None, "metric_name_source": None, "best_threshold": None}
+            return {
+                "pixel_f1": value,
+                "metric_name_source": source,
+                "best_threshold": None,
+                "best_epoch": _metric_epoch(source, steps),
+            }
+    return {"pixel_f1": None, "metric_name_source": None, "best_threshold": None, "best_epoch": None}
 
 
 def run_url(experiment_id: Any, run_id: Any) -> str | None:
@@ -268,6 +286,25 @@ def _kv_list_to_dict(items: list[dict[str, Any]]) -> dict[str, Any]:
             continue
         result[str(key)] = item.get("value")
     return result
+
+
+def _metric_steps(items: list[dict[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for item in items:
+        key = item.get("key")
+        if not key:
+            continue
+        result[str(key)] = item.get("step")
+    return result
+
+
+def _metric_epoch(source: str | None, steps: dict[str, Any]) -> float | None:
+    if not source:
+        return None
+    step = _float_or_none(steps.get(source))
+    if step is None or step <= 0:
+        return None
+    return step
 
 
 def _normalize_metric_name(key: str) -> str:
