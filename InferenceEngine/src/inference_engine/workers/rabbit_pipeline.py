@@ -39,6 +39,7 @@ class RabbitPipeline:
         self.settings = settings
         self.store = JobStore(settings.job_root)
         self.client = RabbitMQClient(settings.rabbitmq_url, failure_handler=self._handle_message_failure)
+        self._directory_size_cache: dict[str, tuple[float, int]] = {}
 
     async def run_role(self, role: str) -> None:
         role = role.replace("_", "-")
@@ -220,7 +221,7 @@ class RabbitPipeline:
             if new_tile_done:
                 payload["tiles_done"] = int(payload.get("tiles_done") or 0) + 1
                 payload["last_tile_inferred_at"] = time.time()
-            payload["spool_bytes"] = directory_size_bytes(self.settings.spool_root / job_id)
+            payload["spool_bytes"] = self._directory_size_bytes_cached(self.settings.spool_root / job_id)
 
         progress.update(progress_mutate)
         await self._event(job_id, "tile.done", {"scene_id": scene_id, "tile_id": tile_id, "ready_blocks": ready_blocks})
@@ -395,7 +396,7 @@ class RabbitPipeline:
         low_watermark = max(1, min(target, queue_reserve // 2))
         infer_metrics = await self.client.queue_metrics("ie.tile.infer") if hasattr(self.client, "queue_metrics") else {"messages_ready": 0}
         infer_depth = int(infer_metrics.get("messages_ready") or 0)
-        spool_bytes = directory_size_bytes(self.settings.spool_root / job_id)
+        spool_bytes = self._directory_size_bytes_cached(self.settings.spool_root / job_id)
         progress = ProgressStore(job_dir)
         if infer_depth >= high_watermark or spool_bytes > int(request.resource.max_spool_bytes):
             def pause(payload: dict[str, Any]) -> None:
@@ -475,6 +476,16 @@ class RabbitPipeline:
 
     def _default_batch_size(self) -> int:
         return int(self.settings.default_triton_batch_size)
+
+    def _directory_size_bytes_cached(self, path: Path, *, ttl_sec: float = 5.0) -> int:
+        key = str(path)
+        now = time.monotonic()
+        cached = self._directory_size_cache.get(key)
+        if cached is not None and now - cached[0] <= ttl_sec:
+            return cached[1]
+        size = directory_size_bytes(path)
+        self._directory_size_cache[key] = (now, size)
+        return size
 
     def _job_is_terminal(self, job_id: str) -> bool:
         try:
