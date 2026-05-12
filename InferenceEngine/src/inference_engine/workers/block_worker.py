@@ -16,6 +16,7 @@ from ..planning.planner import BlockDescriptor, ScenePlan, TileDescriptor
 from ..postprocessing.vectorization import vectorize_probability_map
 from ..storage.artifacts import checksum_matches, write_checksum
 from ..storage.local_io import write_json
+from ..storage.probability_artifacts import load_probability_array
 
 
 def materialize_expanded_block(block: BlockDescriptor, plan: ScenePlan, tiles_by_id: dict[str, TileDescriptor]) -> dict[str, Any]:
@@ -29,8 +30,7 @@ def materialize_expanded_block(block: BlockDescriptor, plan: ScenePlan, tiles_by
     weight = np.zeros((exp_h, exp_w), dtype=np.float32)
     for tile_id in block.dependency_tile_ids:
         tile = tiles_by_id[tile_id]
-        with np.load(tile.artifact_path) as payload:
-            tile_prob = payload["prob_uint8"].astype(np.float32) / 255.0 if "prob_uint8" in payload.files else payload["prob"].astype(np.float32)
+        tile_prob, _band = load_probability_array(tile.artifact_path, probability_band="prob_uint8", as_float=True)
         tx0, ty0, tw, th = tile.x, tile.y, tile.width, tile.height
         ix0 = max(exp_x, tx0)
         iy0 = max(exp_y, ty0)

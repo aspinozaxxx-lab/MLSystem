@@ -4,10 +4,10 @@ import json
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 from affine import Affine
 
 from ..storage.local_io import write_json
+from ..storage.probability_artifacts import load_probability_array, probability_artifact_info
 from .contracts import PredictionTileInfo
 
 
@@ -23,9 +23,7 @@ def build_prediction_tile_index(manifest_path: str | Path, output_dir: str | Pat
         npz_path = Path(str(row.get("npz_path") or meta_path.with_suffix(".npz")))
         if not npz_path.exists():
             continue
-        with np.load(npz_path) as payload:
-            band_name = "prob_uint8" if "prob_uint8" in payload.files else "prob"
-            height, width = payload[band_name].shape[:2]
+        height, width, band_name = probability_artifact_info(npz_path, probability_band=meta.get("probability_band"))
         transform_values = meta.get("transform")
         if not transform_values:
             continue
@@ -64,7 +62,5 @@ def window_bounds(transform: Affine, col_off: int, row_off: int, width: int, hei
 
 
 def load_tile_probability(tile: PredictionTileInfo) -> np.ndarray:
-    with np.load(tile.npz_path) as payload:
-        if tile.probability_band == "prob_uint8" and "prob_uint8" in payload.files:
-            return payload["prob_uint8"].astype(np.float32) / 255.0
-        return payload[tile.probability_band].astype(np.float32)
+    probability, _band = load_probability_array(tile.npz_path, probability_band=tile.probability_band, as_float=True)
+    return probability

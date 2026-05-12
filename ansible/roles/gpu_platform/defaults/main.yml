@@ -50,9 +50,12 @@ mlsystem_gpu_inference_engine_use_rabbitmq: "true"
 mlsystem_gpu_inference_engine_default_triton_batch_size: 8
 mlsystem_gpu_inference_engine_max_wait_ms: 500
 mlsystem_gpu_inference_engine_preprocess_concurrency: 48
-mlsystem_gpu_inference_engine_triton_concurrency: 32
+mlsystem_gpu_inference_engine_triton_concurrency: 16
 mlsystem_gpu_inference_engine_aggregator_concurrency: 32
 mlsystem_gpu_inference_engine_block_concurrency: 16
+mlsystem_gpu_api_http_retries: 120
+mlsystem_gpu_api_http_retry_delay_sec: 5
+mlsystem_gpu_api_http_timeout_sec: 30
 mlsystem_gpu_airflow_uid: "50000"
 mlsystem_gpu_airflow_pip_requirements: "pydantic==2.8.2 pydantic-core==2.20.1 PyYAML fastapi uvicorn requests mlflow boto3 numpy shapely rasterio pillow onnx onnxscript tritonclient[http] segmentation-models-pytorch torch torchvision --index-url https://download.pytorch.org/whl/cu128 --extra-index-url https://pypi.org/simple"
 mlsystem_gpu_airflow_gpu_slots: 1

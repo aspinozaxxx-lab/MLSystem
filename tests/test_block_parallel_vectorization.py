@@ -53,6 +53,31 @@ class BlockParallelVectorizationTests(unittest.TestCase):
         self.assertEqual(summary["final_objects"], 1)
         self.assertEqual(len(accepted_payload["features"]), 1)
 
+    def test_block_parallel_reads_npy_probability_payload_with_npz_suffix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = _write_synthetic_scene(root, npy_payload=True)
+            accepted = root / "accepted.geojson"
+            summary = run_block_parallel_vectorization(
+                run_id="unit",
+                manifest_path=manifest,
+                output_dir=root / "vectorization",
+                accepted_geojson=accepted,
+                threshold=0.5,
+                class_name="deforest",
+                core_size_px=8,
+                halo_px=2,
+                workers_requested=1,
+                memory_guard_enabled=True,
+                local_min_area=0,
+                final_min_area=0,
+                merge_epsilon=0,
+            )
+            accepted_payload = json.loads(accepted.read_text(encoding="utf-8"))
+        self.assertEqual(summary["blocks_failed"], 0)
+        self.assertEqual(summary["final_objects"], 1)
+        self.assertEqual(len(accepted_payload["features"]), 1)
+
     def test_block_job_contract_is_json_serializable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             manifest = _write_synthetic_scene(Path(tmp))
@@ -65,13 +90,17 @@ class BlockParallelVectorizationTests(unittest.TestCase):
         self.assertEqual(decoded.tiles[0].scene_id, "scene_a")
 
 
-def _write_synthetic_scene(root: Path) -> Path:
+def _write_synthetic_scene(root: Path, *, npy_payload: bool = False) -> Path:
     results_dir = root / "pseudolabel_scene_results"
     results_dir.mkdir(parents=True, exist_ok=True)
     prob = np.zeros((8, 16), dtype=np.uint8)
     prob[2:6, 6:11] = 255
     npz_path = results_dir / "scene_0000.npz"
-    np.savez(npz_path, prob_uint8=prob)
+    if npy_payload:
+        with npz_path.open("wb") as handle:
+            np.save(handle, prob)
+    else:
+        np.savez(npz_path, prob_uint8=prob)
     meta_path = results_dir / "scene_0000.json"
     meta = {
         "scene_index": 0,
@@ -81,6 +110,7 @@ def _write_synthetic_scene(root: Path) -> Path:
         "transform": [1, 0, 0, 0, -1, 0],
         "crs": "EPSG:3857",
         "coverage_fraction": 1.0,
+        "probability_band": "prob_uint8",
     }
     meta_path.write_text(json.dumps(meta), encoding="utf-8")
     manifest = {

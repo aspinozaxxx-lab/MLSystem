@@ -13,6 +13,7 @@ from ..planning.planner import ScenePlan, TileDescriptor
 from ..preprocessing.normalization import normalize_image
 from ..storage.artifacts import checksum_matches, write_checksum
 from ..storage.local_io import write_json
+from ..storage.probability_artifacts import write_probability_uint8
 from ..triton.client import TritonEndpoint, infer_segmentation_batch
 
 
@@ -159,7 +160,7 @@ def _persist_probability_tile(tile: TileDescriptor, scene_plan: ScenePlan, prob:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     prob = prob[: tile.height, : tile.width]
     prob_uint8 = np.rint(np.clip(prob, 0.0, 1.0) * 255.0).astype(np.uint8, copy=False)
-    np.savez(out_path, prob_uint8=prob_uint8)
+    write_probability_uint8(out_path, prob_uint8)
     meta = {
         "schema_version": 1,
         "tile_id": tile.tile_id,
@@ -171,6 +172,8 @@ def _persist_probability_tile(tile: TileDescriptor, scene_plan: ScenePlan, prob:
         "height": tile.height,
         "insert": tile.insert,
         "npz_path": str(out_path),
+        "probability_band": "prob_uint8",
+        "probability_storage": "npy_uint8",
         "transform": list(scene_plan.transform),
         "crs": scene_plan.crs,
         "logits_shape": logits_shape,
