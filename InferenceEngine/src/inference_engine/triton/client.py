@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import threading
 from typing import Any
 
 import numpy as np
@@ -14,6 +15,7 @@ class TritonEndpoint:
 
 
 _READY_MODELS: set[tuple[str, str, str]] = set()
+_CLIENTS = threading.local()
 
 
 def triton_ready(url: str = "http://triton:8000", timeout_sec: float = 5.0) -> bool:
@@ -89,7 +91,7 @@ def infer_segmentation_batch(endpoint: TritonEndpoint, batch: np.ndarray) -> np.
     if payload.ndim != 4:
         raise ValueError(f"Triton segmentation input must be BCHW, got shape={payload.shape}")
     ensure_model_ready(endpoint)
-    client = httpclient.InferenceServerClient(url=endpoint.url.replace("http://", "").replace("https://", ""))
+    client = _client_for_endpoint(endpoint)
     infer_input = httpclient.InferInput("INPUT__0", payload.shape, "FP32")
     infer_input.set_data_from_numpy(payload)
     output = httpclient.InferRequestedOutput("OUTPUT__0")
@@ -98,6 +100,21 @@ def infer_segmentation_batch(endpoint: TritonEndpoint, batch: np.ndarray) -> np.
     if logits is None:
         raise RuntimeError(f"Triton model {endpoint.model_name} did not return OUTPUT__0")
     return np.asarray(logits, dtype=np.float32)
+
+
+def _client_for_endpoint(endpoint: TritonEndpoint):
+    import tritonclient.http as httpclient
+
+    url = endpoint.url.replace("http://", "").replace("https://", "")
+    clients = getattr(_CLIENTS, "http", None)
+    if clients is None:
+        clients = {}
+        _CLIENTS.http = clients
+    client = clients.get(url)
+    if client is None:
+        client = httpclient.InferenceServerClient(url=url)
+        clients[url] = client
+    return client
 
 
 def build_triton_config(job_predict: dict[str, Any] | None = None) -> TritonEndpoint | None:

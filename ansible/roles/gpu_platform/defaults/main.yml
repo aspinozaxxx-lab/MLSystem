@@ -50,7 +50,7 @@ mlsystem_gpu_inference_engine_use_rabbitmq: "true"
 mlsystem_gpu_inference_engine_default_triton_batch_size: 8
 mlsystem_gpu_inference_engine_max_wait_ms: 75
 mlsystem_gpu_inference_engine_preprocess_concurrency: 24
-mlsystem_gpu_inference_engine_triton_concurrency: 2
+mlsystem_gpu_inference_engine_triton_concurrency: 8
 mlsystem_gpu_inference_engine_aggregator_concurrency: 8
 mlsystem_gpu_inference_engine_block_concurrency: 8
 mlsystem_gpu_airflow_uid: "50000"
