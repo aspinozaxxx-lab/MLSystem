@@ -130,6 +130,41 @@ class StreamingPipelineTests(unittest.TestCase):
             plan = build_job_plan("job", request, Path(tmp) / "jobs")[0]
             self.assertEqual(plan.source["image_uri"], "s3://mlsystems/images/kanopus/scene.tif")
 
+    def test_manifest_scene_infers_raster_transform_and_crs(self) -> None:
+        try:
+            import numpy as np
+            import rasterio
+            from rasterio.transform import from_origin
+        except Exception as exc:  # pragma: no cover - optional raster stack in unit envs.
+            self.skipTest(f"rasterio/numpy unavailable: {exc}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            image_path = root / "scene.tif"
+            transform = from_origin(1000.0, 2000.0, 2.0, 3.0)
+            with rasterio.open(
+                image_path,
+                "w",
+                driver="GTiff",
+                width=8,
+                height=6,
+                count=1,
+                dtype="uint8",
+                crs="EPSG:3857",
+                transform=transform,
+            ) as ds:
+                ds.write(np.zeros((1, 6, 8), dtype="uint8"))
+
+            manifest = root / "inference_manifest.json"
+            manifest.write_text(json.dumps({"scenes": [{"entry": "scene.tif", "name": "scene.tif", "path": str(image_path)}]}), encoding="utf-8")
+            request = JobRequest(experiment_id="manifest", inference_manifest=str(manifest))
+            plan = build_job_plan("job", request, root / "jobs")[0]
+
+            self.assertEqual(plan.width, 8)
+            self.assertEqual(plan.height, 6)
+            self.assertEqual(plan.crs, "EPSG:3857")
+            self.assertEqual(plan.transform, tuple(float(v) for v in transform[:6]))
+
 
 def _request() -> JobRequest:
     return JobRequest(

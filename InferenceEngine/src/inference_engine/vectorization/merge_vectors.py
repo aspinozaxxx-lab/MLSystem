@@ -17,6 +17,7 @@ def merge_block_vectors(
     output_geojson: str | Path,
     final_min_area: float = 0.0,
     merge_epsilon: float = 0.0,
+    crs_name: str | None = None,
 ) -> dict[str, Any]:
     started = time.time()
     geometries = []
@@ -43,8 +44,11 @@ def merge_block_vectors(
         }
         for idx, geom in enumerate(filtered, start=1)
     ]
+    output_payload: dict[str, Any] = {"type": "FeatureCollection", "features": features}
+    if crs_name:
+        output_payload["crs"] = {"type": "name", "properties": {"name": crs_name}}
     output_path = Path(output_geojson)
-    output_path.write_text(json.dumps({"type": "FeatureCollection", "features": features}, ensure_ascii=False), encoding="utf-8")
+    output_path.write_text(json.dumps(output_payload, ensure_ascii=False), encoding="utf-8")
     summary = {
         "total_polygons_before_merge": before_merge,
         "total_polygons_after_dissolve": len(merged_geoms),

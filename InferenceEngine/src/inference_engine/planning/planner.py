@@ -155,13 +155,14 @@ def build_scene_plan(job_id: str, scene_index: int, scene: SceneInput, request: 
     if not (source_payload.get("uri") or source_payload.get("image_uri") or source_payload.get("path")):
         source_payload["image_uri"] = _scene_input_uri(scene, request)
     size_scene = scene.model_copy(update={"image_uri": source_payload.get("image_uri")})
-    inferred_size = _infer_scene_size(size_scene)
-    width = int(scene.width or (inferred_size[0] if inferred_size else 256))
-    height = int(scene.height or (inferred_size[1] if inferred_size else 256))
+    inferred_metadata = _infer_scene_metadata(size_scene)
+    width = int(scene.width or (inferred_metadata.get("width") if inferred_metadata else 256))
+    height = int(scene.height or (inferred_metadata.get("height") if inferred_metadata else 256))
     scene_id = str(scene.scene_id or scene.name or f"scene_{scene_index:04d}")
     scene_name = str(scene.name or scene_id)
-    transform_values = scene.transform or [1, 0, 0, 0, -1, float(height)]
+    transform_values = scene.transform or inferred_metadata.get("transform") or [1, 0, 0, 0, -1, float(height)]
     transform = tuple(float(v) for v in transform_values[:6])  # type: ignore[assignment]
+    crs = scene.crs or inferred_metadata.get("crs")
     affine = Affine(*transform)
     scene_dir = job_dir / "scenes" / scene_id
     tiles_dir = scene_dir / "tiles"
@@ -232,7 +233,7 @@ def build_scene_plan(job_id: str, scene_index: int, scene: SceneInput, request: 
                     expanded_window=expanded,
                     core_bbox=window_bounds(affine, col_off, row_off, core_w, core_h),
                     expanded_bbox=window_bounds(affine, exp_col, exp_row, exp_end_col - exp_col, exp_end_row - exp_row),
-                    crs=scene.crs,
+                    crs=crs,
                     dependency_tile_ids=dependencies,
                     artifact_path=str(blocks_dir / f"{block_id}.npz"),
                     vector_path=str(blocks_dir / f"{block_id}.geojson"),
@@ -245,7 +246,7 @@ def build_scene_plan(job_id: str, scene_index: int, scene: SceneInput, request: 
         scene_name=scene_name,
         width=width,
         height=height,
-        crs=scene.crs,
+        crs=crs,
         transform=transform,
         tiles=tile_descriptors,
         blocks=block_descriptors,
@@ -290,7 +291,7 @@ def _read_manifest_scenes(path: Path, request: JobRequest) -> list[SceneInput]:
                 key=row.get("key"),
                 width=row.get("width"),
                 height=row.get("height"),
-                crs=row.get("crs") or "EPSG:3857",
+                crs=row.get("crs"),
                 transform=row.get("transform"),
                 metadata=dict(row),
             )
@@ -327,10 +328,10 @@ def _scene_input_uri(scene: SceneInput, request: JobRequest) -> str | None:
     return _image_uri_for_key(request.images_uri, key_text)
 
 
-def _infer_scene_size(scene: SceneInput) -> tuple[int, int] | None:
+def _infer_scene_metadata(scene: SceneInput) -> dict[str, Any]:
     path = scene.path or scene.uri or scene.image_uri
     if not path:
-        return None
+        return {}
     try:
         import rasterio
 
@@ -342,9 +343,16 @@ def _infer_scene_size(scene: SceneInput) -> tuple[int, int] | None:
             bucket, _, key = bucket_key.partition("/")
             path_text = f"/vsis3/{bucket}/{key}"
         with rasterio.open(path_text) as ds:
-            return int(ds.width), int(ds.height)
+            metadata: dict[str, Any] = {
+                "width": int(ds.width),
+                "height": int(ds.height),
+                "transform": [float(v) for v in ds.transform[:6]],
+            }
+            if ds.crs:
+                metadata["crs"] = str(ds.crs)
+            return metadata
     except Exception:
-        return None
+        return {}
 
 
 def _image_uri_for_key(images_uri: str | None, key: Any) -> str | None:
