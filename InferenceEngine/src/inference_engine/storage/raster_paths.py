@@ -32,7 +32,7 @@ def local_minio_path_for_s3_uri(uri: str, *, roots: Iterable[str | os.PathLike[s
     for root in _candidate_roots(roots):
         candidate = root / bucket / key
         try:
-            if candidate.exists():
+            if candidate.is_file():
                 return candidate
         except OSError:
             continue

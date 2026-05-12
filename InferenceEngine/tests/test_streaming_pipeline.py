@@ -178,6 +178,16 @@ class StreamingPipelineTests(unittest.TestCase):
             with patch.dict(os.environ, {"INFERENCE_ENGINE_LOCAL_S3_ROOT": str(root / "minio")}):
                 self.assertEqual(rasterio_path_for_uri("s3://mlsystems/images/scene.tif"), str(object_path))
 
+    def test_s3_uri_ignores_minio_erasure_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            object_dir = root / "minio" / "mlsystems" / "images" / "scene.tif"
+            object_dir.mkdir(parents=True)
+            (object_dir / "xl.meta").write_text("minio metadata", encoding="utf-8")
+
+            with patch.dict(os.environ, {"INFERENCE_ENGINE_LOCAL_S3_ROOT": str(root / "minio")}):
+                self.assertEqual(rasterio_path_for_uri("s3://mlsystems/images/scene.tif"), "/vsis3/mlsystems/images/scene.tif")
+
     def test_manifest_s3_scene_infers_metadata_from_local_minio_mount(self) -> None:
         try:
             import numpy as np
