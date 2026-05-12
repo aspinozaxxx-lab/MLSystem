@@ -277,7 +277,7 @@ class RabbitPipeline:
             lock_paths = [_tile_infer_lock_path(job_dir, str(row.payload["scene_id"]), str(row.payload["tile_id"])) for row in rows]
             with ExitStack() as locks:
                 for lock_path in lock_paths:
-                    locks.enter_context(file_lock(lock_path, timeout_sec=300.0))
+                    locks.enter_context(file_lock(lock_path, timeout_sec=60.0))
                 with ThreadPoolExecutor(max_workers=max(1, int(self.settings.fused_read_workers))) as executor:
                     prepared_rows = list(executor.map(prepare, rows))
                 in_memory_bytes = sum(int(row["array"].nbytes) for row in prepared_rows if row.get("array") is not None)
