@@ -440,9 +440,16 @@ def read_run_record(status_root: Path, run_id: str) -> dict[str, Any] | None:
     stable_gap = None
     if metrics["best_val_pixel_f1"] is not None and metrics["last_val_pixel_f1"] is not None:
         stable_gap = float(metrics["best_val_pixel_f1"]) - float(metrics["last_val_pixel_f1"])
+    usable_training_result = bool(
+        metrics["best_val_pixel_f1"] is not None
+        and checkpoint
+        and Path(checkpoint).exists()
+        and training.get("epochs_completed") is not None
+    )
     return {
         "run_id": run_id,
         "status": status,
+        "usable_training_result": usable_training_result,
         "summary_status": summary.get("status"),
         "class_name": config.get("class_name") or (config.get("params") or {}).get("class_name"),
         "config": config,
@@ -468,6 +475,7 @@ def summarize_record(record: dict[str, Any] | None) -> dict[str, Any]:
     return {
         "run_id": record.get("run_id"),
         "status": record.get("status"),
+        "usable_training_result": record.get("usable_training_result"),
         "f1": metrics.get("best_val_pixel_f1"),
         "last_f1": metrics.get("last_val_pixel_f1"),
         "precision": metrics.get("precision"),
@@ -693,7 +701,7 @@ class AirflowTuningController:
             (
                 record
                 for record in leaderboard
-                if record.get("status") == "success"
+                if (record.get("status") == "success" or record.get("usable_training_result"))
                 and (record.get("metrics") or {}).get("best_val_pixel_f1") is not None
                 and record.get("checkpoint_exists")
             ),
@@ -971,8 +979,13 @@ class AirflowTuningController:
         findings: list[str] = []
         next_focus = "balanced"
         if record.get("status") != "success":
-            findings.append("Run failed; keep current best checkpoint and avoid treating this config as a valid branch.")
-            next_focus = "pipeline_or_config_recovery"
+            if record.get("usable_training_result"):
+                findings.append(
+                    "DAG did not finish cleanly, but training metrics and checkpoint are present; result is usable for model tuning while pipeline failure remains a separate issue."
+                )
+            else:
+                findings.append("Run failed without a usable checkpoint/metric; keep current best checkpoint and avoid treating this config as a valid branch.")
+                next_focus = "pipeline_or_config_recovery"
         elif precision is not None and recall is not None and precision > recall + 0.08:
             findings.append("Precision is materially higher than recall; next experiment should target recall and false negatives.")
             next_focus = "increase_recall"
