@@ -1,0 +1,21 @@
+--index-url https://download.pytorch.org/whl/cu128
+--extra-index-url https://pypi.org/simple
+
+pydantic==2.8.2
+pydantic-core==2.20.1
+PyYAML
+fastapi
+uvicorn
+requests
+mlflow
+boto3
+numpy
+shapely
+rasterio
+pillow
+onnx
+onnxscript
+tritonclient[http]
+segmentation-models-pytorch
+torch
+torchvision

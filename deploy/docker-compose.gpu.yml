@@ -291,7 +291,12 @@ services:
     networks: [mlsystem-gpu]
 
   airflow-init:
-    image: ${AIRFLOW_IMAGE:-apache/airflow:2.9.3-python3.11}
+    image: ${MLSYSTEM_RUNTIME_IMAGE:-mlsystem/runtime:local}
+    build:
+      context: ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}
+      dockerfile: mlsystem/Dockerfile
+      args:
+        AIRFLOW_BASE_IMAGE: ${AIRFLOW_IMAGE:-apache/airflow:2.9.3-python3.11}
     container_name: mlsystem-gpu-airflow-init
     depends_on:
       airflow-postgres:
@@ -333,7 +338,12 @@ services:
     networks: [mlsystem-gpu]
 
   mlsystem-api:
-    image: ${AIRFLOW_IMAGE:-apache/airflow:2.9.3-python3.11}
+    image: ${MLSYSTEM_RUNTIME_IMAGE:-mlsystem/runtime:local}
+    build:
+      context: ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}
+      dockerfile: mlsystem/Dockerfile
+      args:
+        AIRFLOW_BASE_IMAGE: ${AIRFLOW_IMAGE:-apache/airflow:2.9.3-python3.11}
     container_name: mlsystem-gpu-api
     depends_on:
       minio:
@@ -350,19 +360,18 @@ services:
       MLSYSTEM_API_JOB_ROOT: ${MLSYSTEM_API_JOB_ROOT:-/data/mlsystem/api/jobs}
       MLSYSTEM_AIRFLOW_STATE_DIR: ${MLSYSTEM_AIRFLOW_STATE_DIR:-/data/mlsystem/airflow/status}
       MLSYSTEM_PIPELINE_CONFIG: ${MLSYSTEM_PIPELINE_CONFIG:-/opt/mlsystem/configs/pipeline.server.yaml}
+      _PIP_ADDITIONAL_REQUIREMENTS: ""
     command:
       - bash
       - -lc
       - |
         export PATH="/home/airflow/.local/bin:/usr/local/bin:$${PATH}"
-        if ! python - <<'PY'
+        python - <<'PY'
         import importlib.util
         missing = [name for name in ("mlflow", "boto3", "torch", "rasterio", "shapely", "tritonclient") if importlib.util.find_spec(name) is None]
-        raise SystemExit(1 if missing else 0)
+        if missing:
+            raise SystemExit("Missing runtime dependencies in mlsystem runtime image: " + ", ".join(missing))
         PY
-        then
-          python -m pip install $${_PIP_ADDITIONAL_REQUIREMENTS}
-        fi
         python -m uvicorn src.api.app:app --host 0.0.0.0 --port 8088
     gpus: all
     ports:
@@ -605,7 +614,12 @@ services:
     networks: [mlsystem-gpu]
 
   airflow-webserver:
-    image: ${AIRFLOW_IMAGE:-apache/airflow:2.9.3-python3.11}
+    image: ${MLSYSTEM_RUNTIME_IMAGE:-mlsystem/runtime:local}
+    build:
+      context: ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}
+      dockerfile: mlsystem/Dockerfile
+      args:
+        AIRFLOW_BASE_IMAGE: ${AIRFLOW_IMAGE:-apache/airflow:2.9.3-python3.11}
     container_name: mlsystem-gpu-airflow-webserver
     depends_on:
       airflow-postgres:
@@ -645,7 +659,12 @@ services:
     networks: [mlsystem-gpu]
 
   airflow-scheduler:
-    image: ${AIRFLOW_IMAGE:-apache/airflow:2.9.3-python3.11}
+    image: ${MLSYSTEM_RUNTIME_IMAGE:-mlsystem/runtime:local}
+    build:
+      context: ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}
+      dockerfile: mlsystem/Dockerfile
+      args:
+        AIRFLOW_BASE_IMAGE: ${AIRFLOW_IMAGE:-apache/airflow:2.9.3-python3.11}
     container_name: mlsystem-gpu-airflow-scheduler
     depends_on:
       airflow-postgres:
@@ -672,7 +691,12 @@ services:
     networks: [mlsystem-gpu]
 
   airflow-triggerer:
-    image: ${AIRFLOW_IMAGE:-apache/airflow:2.9.3-python3.11}
+    image: ${MLSYSTEM_RUNTIME_IMAGE:-mlsystem/runtime:local}
+    build:
+      context: ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}
+      dockerfile: mlsystem/Dockerfile
+      args:
+        AIRFLOW_BASE_IMAGE: ${AIRFLOW_IMAGE:-apache/airflow:2.9.3-python3.11}
     container_name: mlsystem-gpu-airflow-triggerer
     depends_on:
       airflow-postgres:
