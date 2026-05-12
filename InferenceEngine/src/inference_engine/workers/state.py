@@ -14,11 +14,22 @@ from ..storage.local_io import read_json, write_json
 def file_lock(path: Path, *, timeout_sec: float = 60.0) -> Iterator[None]:
     lock_dir = path.with_suffix(path.suffix + ".lock")
     deadline = time.time() + timeout_sec
+    stale_after_sec = max(60.0, timeout_sec)
     while True:
         try:
             lock_dir.mkdir(parents=True)
             break
         except FileExistsError:
+            try:
+                lock_age = time.time() - lock_dir.stat().st_mtime
+            except OSError:
+                lock_age = 0.0
+            if lock_age > stale_after_sec:
+                try:
+                    lock_dir.rmdir()
+                    continue
+                except OSError:
+                    pass
             if time.time() > deadline:
                 raise TimeoutError(f"Timed out waiting for lock {lock_dir}")
             time.sleep(0.05)

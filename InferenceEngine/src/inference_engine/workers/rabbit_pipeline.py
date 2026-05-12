@@ -255,12 +255,14 @@ class RabbitPipeline:
         block = _block_by_id(plan, block_id)
         summary = vectorize_expanded_block(block, plan, request.effective_vectorization())
         progress = ProgressStore(job_dir)
+        try:
+            def progress_mutate(payload: dict[str, Any]) -> None:
+                payload.setdefault("first_block_vectorized_at", time.time())
+                payload["last_block_vectorized_at"] = time.time()
 
-        def progress_mutate(payload: dict[str, Any]) -> None:
-            payload.setdefault("first_block_vectorized_at", time.time())
-            payload["last_block_vectorized_at"] = time.time()
-
-        progress.update(progress_mutate)
+            progress.update(progress_mutate)
+        except TimeoutError:
+            pass
         await self._event(job_id, "block.vectorize", {"scene_id": scene_id, "block_id": block_id, "summary": summary})
         await self.client.publish("ie.block.done", make_message(job_id=job_id, stage="block.done", scene_id=scene_id, block_id=block_id, payload={"scene_id": scene_id, "block_id": block_id, "summary": summary}))
         self.store.update(job_id, metrics=_metrics_from_progress(progress.read()))
