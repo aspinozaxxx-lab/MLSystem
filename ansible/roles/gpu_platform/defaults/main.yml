@@ -48,7 +48,7 @@ mlsystem_gpu_inference_engine_api_port: 8095
 mlsystem_gpu_inference_engine_image: mlsystem/inference-engine:local
 mlsystem_gpu_inference_engine_use_rabbitmq: "true"
 mlsystem_gpu_inference_engine_default_triton_batch_size: 8
-mlsystem_gpu_inference_engine_max_wait_ms: 75
+mlsystem_gpu_inference_engine_max_wait_ms: 500
 mlsystem_gpu_inference_engine_preprocess_concurrency: 48
 mlsystem_gpu_inference_engine_triton_concurrency: 32
 mlsystem_gpu_inference_engine_aggregator_concurrency: 32

@@ -48,7 +48,7 @@ class ResourceConfig(BaseModel):
     max_scenes_inflight: int = 32
     max_blocks_inflight: int = 32
     triton_instance_count: int = 1
-    max_wait_ms: int = 50
+    max_wait_ms: int = 500
 
 
 class SceneInput(BaseModel):
