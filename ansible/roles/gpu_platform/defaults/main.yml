@@ -55,6 +55,7 @@ mlsystem_gpu_inference_engine_hotpath_mode: fused_memory
 mlsystem_gpu_inference_engine_fused_max_in_memory_tiles: 8
 mlsystem_gpu_inference_engine_aggregator_concurrency: 32
 mlsystem_gpu_inference_engine_block_concurrency: 16
+mlsystem_gpu_inference_engine_merger_concurrency: 4
 mlsystem_gpu_api_http_retries: 120
 mlsystem_gpu_api_http_retry_delay_sec: 5
 mlsystem_gpu_api_http_timeout_sec: 30
