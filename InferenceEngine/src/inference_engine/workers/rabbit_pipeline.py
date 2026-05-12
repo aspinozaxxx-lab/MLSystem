@@ -148,6 +148,8 @@ class RabbitPipeline:
         scene_id = str(message.payload["scene_id"])
         tile_id = str(message.payload["tile_id"])
         job_dir = self.store.job_dir(job_id)
+        if _scene_is_done(job_dir, scene_id):
+            return
         request = JobRequest.model_validate(self.store.read_request(job_id))
         plan = read_scene_plan(job_dir, scene_id)
         tile = _tile_by_id(plan, tile_id)
@@ -752,12 +754,18 @@ def _merge_scene_and_cleanup(job_id: str, scene_id: str, job_dir: Path, request:
 
 def _filter_unfinished_tile_messages(job_dir: Path, rows: list[QueueMessage]) -> list[QueueMessage]:
     done_by_scene: dict[str, set[str]] = {}
+    try:
+        done_scenes = set(ProgressStore(job_dir).read().get("scene_done") or [])
+    except Exception:
+        done_scenes = set()
     filtered: list[QueueMessage] = []
     for row in rows:
         scene_id = str(row.payload.get("scene_id") or row.scene_id or "")
         tile_id = str(row.payload.get("tile_id") or row.tile_id or "")
         if not scene_id or not tile_id:
             filtered.append(row)
+            continue
+        if scene_id in done_scenes:
             continue
         if scene_id not in done_by_scene:
             try:
@@ -769,6 +777,13 @@ def _filter_unfinished_tile_messages(job_dir: Path, rows: list[QueueMessage]) ->
             continue
         filtered.append(row)
     return filtered
+
+
+def _scene_is_done(job_dir: Path, scene_id: str) -> bool:
+    try:
+        return scene_id in set(ProgressStore(job_dir).read().get("scene_done") or [])
+    except Exception:
+        return False
 
 
 def _tile_infer_lock_path(job_dir: Path, scene_id: str, tile_id: str) -> Path:

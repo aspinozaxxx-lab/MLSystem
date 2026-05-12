@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,6 +11,7 @@ from InferenceEngine.src.inference_engine.config.settings import InferenceEngine
 from InferenceEngine.src.inference_engine.queues.messages import QueueMessage, make_message
 from InferenceEngine.src.inference_engine.storage.job_store import JobStore
 from InferenceEngine.src.inference_engine.workers.rabbit_pipeline import ROLE_QUEUES, RabbitPipeline, _add_inference_progress_metrics
+from InferenceEngine.src.inference_engine.workers.state import ProgressStore
 
 
 class FakeClient:
@@ -142,6 +144,25 @@ class RabbitPipelineWorkerTests(unittest.TestCase):
             metrics = pipeline.store.read(job_id)["metrics"]
             self.assertEqual(metrics["ie_hotpath_mode"], "fused_memory")
             self.assertGreaterEqual(metrics["ie_tiles_inferred"], 1)
+
+    def test_late_tile_preprocess_after_scene_cleanup_is_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pipeline, fake = _pipeline(root)
+            job_id = "job"
+            pipeline.store.create(_request().model_dump(), job_id=job_id)
+
+            asyncio.run(pipeline.handle_submit(make_message(job_id=job_id, stage="jobs.submit")))
+            scene_plan_msg = fake.pop("ie.scene.plan")
+            asyncio.run(pipeline.handle_scene_plan(scene_plan_msg))
+            preprocess = fake.pop("ie.tile.preprocess")
+            job_dir = root / "jobs" / job_id
+            ProgressStore(job_dir).update(lambda payload: payload.update({"scene_done": ["scene_a"]}))
+            shutil.rmtree(job_dir / "scenes" / "scene_a")
+
+            asyncio.run(pipeline.handle_tile_fused_batch([preprocess]))
+
+            self.assertEqual(fake.count("ie.tile.done"), 0)
 
     def test_idempotent_probability_hits_do_not_inflate_inference_metrics(self) -> None:
         progress: dict[str, object] = {}
