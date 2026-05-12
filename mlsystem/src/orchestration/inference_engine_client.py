@@ -28,12 +28,22 @@ class InferenceEngineClient:
 
     def wait(self, job_id: str, *, poll_sec: float = 10.0, timeout_sec: float = 24 * 3600) -> dict[str, Any]:
         deadline = time.time() + timeout_sec
+        last_error: Exception | None = None
         while True:
-            state = self.get_job(job_id)
+            try:
+                state = self.get_job(job_id)
+                last_error = None
+            except (TimeoutError, OSError, urllib.error.URLError) as exc:
+                last_error = exc
+                if time.time() >= deadline:
+                    raise TimeoutError(f"InferenceEngine job {job_id} polling failed until timeout: {exc}") from exc
+                time.sleep(poll_sec)
+                continue
             if str(state.get("status")) in TERMINAL:
                 return state
             if time.time() >= deadline:
-                raise TimeoutError(f"InferenceEngine job {job_id} did not finish within {timeout_sec} sec")
+                suffix = f"; last polling error: {last_error}" if last_error else ""
+                raise TimeoutError(f"InferenceEngine job {job_id} did not finish within {timeout_sec} sec{suffix}")
             time.sleep(poll_sec)
 
     def _json(self, method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
