@@ -191,6 +191,8 @@ class RabbitPipeline:
             )
             descriptors = [dict(row.payload) for row in rows]
             outputs = infer_tile_batch_multi_scene(descriptors=descriptors, tiles_by_scene=tiles_by_scene, scene_plans=scene_plans, request=request, endpoint=endpoint)
+            if self._job_is_terminal(job_id):
+                continue
             duration_ms = max([float(item.get("triton_request_duration_ms") or 0.0) for item in outputs] or [0.0])
             fill_ratio = len(outputs) / max(1, int(request.resource.triton_batch_size or len(outputs)))
             progress = ProgressStore(job_dir)
@@ -271,6 +273,8 @@ class RabbitPipeline:
                 max_bytes=int(self.settings.fused_max_in_memory_bytes),
             ):
                 outputs.extend(infer_prepared_tile_batch_multi_scene(prepared_rows=chunk, request=request, endpoint=endpoint))
+            if self._job_is_terminal(job_id):
+                continue
             duration_ms = max([float(item.get("triton_request_duration_ms") or 0.0) for item in outputs] or [0.0])
             fill_ratio = len(outputs) / max(1, int(request.resource.triton_batch_size or len(outputs)))
             progress = ProgressStore(job_dir)
