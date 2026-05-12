@@ -210,10 +210,18 @@ class RabbitPipeline:
     async def _run_fused_consumer(self) -> None:
         await self.client.consume_batches_forever(
             "ie.tile.preprocess",
-            max_batch_size=int(self._default_batch_size()),
+            max_batch_size=int(self._fused_batch_size()),
             max_wait_ms=int(self.settings.max_wait_ms),
             handler=self.handle_tile_fused_batch,
         )
+
+    def _fused_batch_size(self) -> int:
+        batch_size = int(self._default_batch_size())
+        if self.settings.fused_max_in_memory_tiles:
+            batch_size = min(batch_size, int(self.settings.fused_max_in_memory_tiles))
+        estimated_tile_bytes = 4 * 1024 * 1024 * 4
+        byte_cap = max(1, int(self.settings.fused_max_in_memory_bytes) // estimated_tile_bytes)
+        return max(1, min(batch_size, byte_cap))
 
     async def handle_tile_fused_batch(self, messages: list[QueueMessage]) -> None:
         if not messages:
@@ -256,7 +264,13 @@ class RabbitPipeline:
             with ThreadPoolExecutor(max_workers=max(1, int(self.settings.fused_read_workers))) as executor:
                 prepared_rows = list(executor.map(prepare, rows))
             in_memory_bytes = sum(int(row["array"].nbytes) for row in prepared_rows if row.get("array") is not None)
-            outputs = infer_prepared_tile_batch_multi_scene(prepared_rows=prepared_rows, request=request, endpoint=endpoint)
+            outputs: list[dict[str, Any]] = []
+            for chunk in _chunk_prepared_rows_by_memory(
+                prepared_rows,
+                max_tiles=int(self._fused_batch_size()),
+                max_bytes=int(self.settings.fused_max_in_memory_bytes),
+            ):
+                outputs.extend(infer_prepared_tile_batch_multi_scene(prepared_rows=chunk, request=request, endpoint=endpoint))
             duration_ms = max([float(item.get("triton_request_duration_ms") or 0.0) for item in outputs] or [0.0])
             fill_ratio = len(outputs) / max(1, int(request.resource.triton_batch_size or len(outputs)))
             progress = ProgressStore(job_dir)
@@ -739,6 +753,25 @@ def _add_inference_progress_metrics(payload: dict[str, Any], outputs: list[dict[
             if isinstance(value, (int, float)):
                 payload[f"ie_{key}_sum"] = float(payload.get(f"ie_{key}_sum") or 0.0) + float(value)
                 payload[f"ie_{key}_count"] = int(payload.get(f"ie_{key}_count") or 0) + 1
+
+
+def _chunk_prepared_rows_by_memory(rows: list[dict[str, Any]], *, max_tiles: int, max_bytes: int) -> list[list[dict[str, Any]]]:
+    chunks: list[list[dict[str, Any]]] = []
+    chunk: list[dict[str, Any]] = []
+    chunk_bytes = 0
+    tile_cap = max(1, int(max_tiles))
+    byte_cap = max(1, int(max_bytes))
+    for row in rows:
+        row_bytes = int(getattr(row.get("array"), "nbytes", 0) or 0)
+        if chunk and (len(chunk) >= tile_cap or chunk_bytes + row_bytes > byte_cap):
+            chunks.append(chunk)
+            chunk = []
+            chunk_bytes = 0
+        chunk.append(row)
+        chunk_bytes += row_bytes
+    if chunk:
+        chunks.append(chunk)
+    return chunks
 
 
 def _metrics_from_progress(progress: dict[str, Any]) -> dict[str, Any]:

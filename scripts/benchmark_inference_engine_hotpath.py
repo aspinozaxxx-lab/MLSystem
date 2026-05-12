@@ -166,12 +166,11 @@ def benchmark_perf_analyzer(args: argparse.Namespace, *, batch_sizes: list[int],
     results: list[dict[str, Any]] = []
     if not _command_exists("docker"):
         return [{"status": "skipped", "reason": "docker command is unavailable"}]
+    sdk_image = os.getenv("TRITON_PERF_ANALYZER_IMAGE", "nvcr.io/nvidia/tritonserver:24.08-py3-sdk")
+    sdk_network = os.getenv("TRITON_PERF_ANALYZER_NETWORK", "container:mlsystem-gpu-triton")
     for batch_size in batch_sizes:
         for concurrency in concurrencies:
-            cmd = [
-                "docker",
-                "exec",
-                "mlsystem-gpu-triton",
+            analyzer_args = [
                 "perf_analyzer",
                 "-m",
                 args.model_name,
@@ -184,13 +183,32 @@ def benchmark_perf_analyzer(args: argparse.Namespace, *, batch_sizes: list[int],
                 "--measurement-interval",
                 "5000",
             ]
+            cmd = ["docker", "exec", "mlsystem-gpu-triton", *analyzer_args]
             started = time.monotonic()
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120, check=False)
+            command_source = "docker_exec_triton"
+            if proc.returncode in {126, 127} or "executable file not found" in proc.stderr or "not found" in proc.stderr.lower():
+                cmd = [
+                    "docker",
+                    "run",
+                    "--rm",
+                    "--network",
+                    sdk_network,
+                    sdk_image,
+                    *analyzer_args,
+                    "-u",
+                    "127.0.0.1:8000",
+                ]
+                started = time.monotonic()
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=240, check=False)
+                command_source = "docker_run_triton_sdk"
             results.append(
                 {
                     "mode": "triton_perf_analyzer",
                     "batch_size": batch_size,
                     "concurrency": concurrency,
+                    "command_source": command_source,
+                    "command": " ".join(cmd),
                     "returncode": proc.returncode,
                     "duration_sec": time.monotonic() - started,
                     "stdout_tail": proc.stdout[-4000:],
