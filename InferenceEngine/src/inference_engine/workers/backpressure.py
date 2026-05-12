@@ -17,9 +17,9 @@ class AdaptiveProducer:
         self.resource = resource
         self.state = BackpressureState()
         target = resource.triton_batch_size * max(2, resource.triton_instance_count * resource.batches_ahead)
-        self.target_ready_tiles = int(target)
-        self.high_watermark = max(1, int(resource.max_preprocess_queue))
-        self.low_watermark = max(1, self.high_watermark // 2)
+        self.target_ready_tiles = max(1, int(target))
+        self.high_watermark = max(1, int(resource.max_preprocess_queue), self.target_ready_tiles)
+        self.low_watermark = max(1, min(self.target_ready_tiles, self.high_watermark // 2))
 
     def should_pause(self, *, infer_ready: int, infer_unacked: int, spool_bytes: int) -> bool:
         depth = int(infer_ready) + int(infer_unacked)

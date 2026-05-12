@@ -43,7 +43,7 @@ class PseudolabelConfig(BaseModel):
 class ResourceConfig(BaseModel):
     triton_batch_size: int = 8
     batches_ahead: int = 4
-    max_preprocess_queue: int = 512
+    max_preprocess_queue: int = 1024
     max_spool_bytes: int = 20 * 1024 * 1024 * 1024
     max_scenes_inflight: int = 1
     max_blocks_inflight: int = 8

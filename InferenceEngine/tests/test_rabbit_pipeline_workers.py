@@ -106,6 +106,20 @@ class RabbitPipelineWorkerTests(unittest.TestCase):
             second_metrics = dict(pipeline.store.read(job_id)["metrics"])
             self.assertEqual(first_metrics["tiles_done"], second_metrics["tiles_done"])
 
+    def test_preprocess_publishes_to_configured_gpu_queue_reserve(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            pipeline, fake = _pipeline(Path(tmp))
+            job_id = "job"
+            pipeline.store.create(_request(max_preprocess_queue=1024, width=9000).model_dump(), job_id=job_id)
+
+            asyncio.run(pipeline.handle_submit(make_message(job_id=job_id, stage="jobs.submit")))
+            scene_plan_msg = fake.pop("ie.scene.plan")
+            asyncio.run(pipeline.handle_scene_plan(scene_plan_msg))
+
+            self.assertEqual(fake.count("ie.tile.preprocess"), 1024)
+            progress = (Path(tmp) / "jobs" / job_id / "progress.json").read_text(encoding="utf-8")
+            self.assertIn('"infer_queue_target": 1024', progress)
+
 
 def _pipeline(root: Path) -> tuple[RabbitPipeline, FakeClient]:
     settings = InferenceEngineSettings(job_root=root / "jobs", spool_root=root / "spool", artifact_root=root / "artifacts", logs_root=root / "logs")
@@ -117,22 +131,22 @@ def _pipeline(root: Path) -> tuple[RabbitPipeline, FakeClient]:
     return pipeline, fake
 
 
-def _request() -> JobRequest:
+def _request(*, max_preprocess_queue: int = 2, width: int = 64) -> JobRequest:
     return JobRequest(
         experiment_id="rabbit_unit",
         scenes=[
             SceneInput(
                 scene_id="scene_a",
                 name="scene_a",
-                width=64,
+                width=width,
                 height=16,
                 transform=[1, 0, 0, 0, -1, 16],
-                probability_rects=[[6, 2, 58, 14, 1.0]],
+                probability_rects=[[6, 2, max(7, width - 6), 14, 1.0]],
             )
         ],
         preprocess={"patch_size": 8, "stride": 8},
         pseudolabel={"threshold": 0.5, "core_size_px": 16, "halo_px": 2, "local_min_area": 0, "final_min_area": 0, "merge_epsilon": 0},
-        resource={"triton_batch_size": 1, "batches_ahead": 2, "max_preprocess_queue": 2, "max_spool_bytes": 10_000_000},
+        resource={"triton_batch_size": 1, "batches_ahead": 2, "max_preprocess_queue": max_preprocess_queue, "max_spool_bytes": 10_000_000},
     )
 
 

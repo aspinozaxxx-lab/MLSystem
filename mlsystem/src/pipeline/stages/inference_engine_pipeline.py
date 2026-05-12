@@ -277,10 +277,10 @@ def _build_payload(ctx: StageContext, inference_manifest: dict[str, Any]) -> dic
         },
         "resource": {
             "triton_batch_size": inference_cfg.get("triton_batch_size") or pseudolabel_cfg.get("batch_size") or 8,
-            "batches_ahead": inference_cfg.get("batches_ahead") or 4,
-            "max_preprocess_queue": inference_cfg.get("max_preprocess_queue") or 512,
+            "batches_ahead": inference_cfg.get("batches_ahead") or 16,
+            "max_preprocess_queue": inference_cfg.get("max_preprocess_queue") or 1024,
             "max_spool_bytes": inference_cfg.get("max_spool_bytes") or 20 * 1024 * 1024 * 1024,
-            "max_scenes_inflight": inference_cfg.get("max_scenes_inflight") or 1,
+            "max_scenes_inflight": inference_cfg.get("max_scenes_inflight") or 4,
             "max_blocks_inflight": inference_cfg.get("max_blocks_inflight") or 8,
         },
         "max_scenes": pseudolabel_cfg.get("max_scenes") or pseudolabel_cfg.get("max_debug_scenes"),

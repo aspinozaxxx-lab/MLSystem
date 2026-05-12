@@ -388,9 +388,11 @@ class RabbitPipeline:
         request = JobRequest.model_validate(self.store.read_request(job_id))
         plan = read_scene_plan(job_dir, scene_id)
         scene_state = SceneStateStore(job_dir, scene_id)
-        target = int(request.resource.triton_batch_size) * max(2, int(request.resource.triton_instance_count) * int(request.resource.batches_ahead))
-        high_watermark = max(target, min(int(request.resource.max_preprocess_queue), target * 2))
-        low_watermark = max(1, target)
+        batch_target = int(request.resource.triton_batch_size) * max(2, int(request.resource.triton_instance_count) * int(request.resource.batches_ahead))
+        target = max(1, int(batch_target))
+        queue_reserve = max(target, int(request.resource.max_preprocess_queue))
+        high_watermark = queue_reserve
+        low_watermark = max(1, min(target, queue_reserve // 2))
         infer_metrics = await self.client.queue_metrics("ie.tile.infer") if hasattr(self.client, "queue_metrics") else {"messages_ready": 0}
         infer_depth = int(infer_metrics.get("messages_ready") or 0)
         spool_bytes = directory_size_bytes(self.settings.spool_root / job_id)
@@ -401,6 +403,9 @@ class RabbitPipeline:
                     payload["preprocess_pauses_total"] = int(payload.get("preprocess_pauses_total") or 0) + 1
                 payload["preprocess_paused"] = True
                 payload["infer_queue_depth"] = infer_depth
+                payload["infer_queue_target"] = queue_reserve
+                payload["infer_queue_low_watermark"] = low_watermark
+                payload["infer_queue_high_watermark"] = high_watermark
                 payload["spool_bytes"] = spool_bytes
 
             progress.update(pause)
@@ -411,10 +416,13 @@ class RabbitPipeline:
                     payload["preprocess_resumes_total"] = int(payload.get("preprocess_resumes_total") or 0) + 1
                 payload["preprocess_paused"] = False
                 payload["infer_queue_depth"] = infer_depth
+                payload["infer_queue_target"] = queue_reserve
+                payload["infer_queue_low_watermark"] = low_watermark
+                payload["infer_queue_high_watermark"] = high_watermark
                 payload["spool_bytes"] = spool_bytes
 
             progress.update(resume)
-        max_publish = max(0, min(int(request.resource.max_preprocess_queue), target - infer_depth))
+        max_publish = max(0, queue_reserve - infer_depth)
         if max_publish <= 0:
             return
         to_publish = []
@@ -517,6 +525,9 @@ def _metrics_from_progress(progress: dict[str, Any]) -> dict[str, Any]:
         "last_tile_inferred_at": last_tile,
         "streaming_overlap_sec": overlap,
         "infer_queue_depth": int(progress.get("infer_queue_depth") or 0),
+        "infer_queue_target": int(progress.get("infer_queue_target") or 0),
+        "infer_queue_low_watermark": int(progress.get("infer_queue_low_watermark") or 0),
+        "infer_queue_high_watermark": int(progress.get("infer_queue_high_watermark") or 0),
         "spool_bytes": int(progress.get("spool_bytes") or 0),
         "preprocess_pauses_total": int(progress.get("preprocess_pauses_total") or 0),
         "preprocess_resumes_total": int(progress.get("preprocess_resumes_total") or 0),

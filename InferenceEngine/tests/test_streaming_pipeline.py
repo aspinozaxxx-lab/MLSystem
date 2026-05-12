@@ -80,7 +80,7 @@ class StreamingPipelineTests(unittest.TestCase):
 
     def test_adaptive_backpressure_pauses_and_resumes(self) -> None:
         producer = AdaptiveProducer(ResourceConfig(triton_batch_size=2, batches_ahead=1, max_preprocess_queue=2, max_spool_bytes=100))
-        self.assertTrue(producer.should_pause(infer_ready=3, infer_unacked=0, spool_bytes=0))
+        self.assertTrue(producer.should_pause(infer_ready=5, infer_unacked=0, spool_bytes=0))
         self.assertEqual(producer.state.preprocess_pauses_total, 1)
         self.assertTrue(producer.should_resume(infer_ready=0, infer_unacked=0, spool_bytes=0))
         self.assertEqual(producer.state.preprocess_resumes_total, 1)
