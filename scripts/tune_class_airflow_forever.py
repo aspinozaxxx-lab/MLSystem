@@ -857,7 +857,13 @@ class AirflowTuningController:
                     "early_stopping_patience": 12,
                 },
             )
-        index = 0 if last_status == "failed" else max(1, trial_index) - 1
+        base_index = max(1, trial_index) - 1
+        if overfit:
+            index = (base_index // len(scenarios)) * len(scenarios)
+        elif last_status == "failed":
+            index = 0
+        else:
+            index = base_index
         scenario = scenarios[index % len(scenarios)]
         cycle = index // len(scenarios)
         trial = {**base}
