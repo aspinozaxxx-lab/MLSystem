@@ -219,9 +219,13 @@ class RabbitPipeline:
         progress_increments: dict[str, int] = {}
         scenes_touched: dict[str, set[str]] = {}
         ready_by_scene: dict[tuple[str, str], list[str]] = {}
+        progress_cache: dict[str, dict[str, Any]] = {}
 
         for (job_id, scene_id), rows in by_scene.items():
             job_dir = self.store.job_dir(job_id)
+            progress_cache.setdefault(job_id, ProgressStore(job_dir).read())
+            if scene_id in set(progress_cache[job_id].get("scene_done") or []):
+                continue
             scene_state = SceneStateStore(job_dir, scene_id)
             tile_ids = [str(row.payload["tile_id"]) for row in rows]
             ready_blocks: list[str] = []
@@ -229,6 +233,8 @@ class RabbitPipeline:
 
             def mutate(payload: dict[str, Any]) -> None:
                 nonlocal ready_blocks, new_count
+                if not payload.get("blocks_by_tile"):
+                    return
                 done_tiles = set(payload.get("tiles_done") or [])
                 published = set(payload.get("blocks_ready_published") or [])
                 for tile_id in tile_ids:
