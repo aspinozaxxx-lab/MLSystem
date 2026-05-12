@@ -939,10 +939,21 @@ def _load_prepared_dataset_split(
     train_ids = {_scene_match_identity(match) for match in train_matches}
     val_ids = {_scene_match_identity(match) for match in val_matches}
     overlap = sorted(train_ids & val_ids)
-    if overlap:
-        raise RuntimeError(f"Prepared dataset split overlap: {overlap[:10]}")
-    selected_ids = train_ids | val_ids
     available_ids = {_scene_match_identity(match) for match in matches}
+    if overlap:
+        validation_kind = str(job.params.get("validation.kind") or job.preprocess.get("validation_kind") or "").lower()
+        allow_sample_fallback = bool(job.train.get("allow_train_val_sample_fallback", False))
+        limited_single_scene = (
+            len(available_ids) <= 1
+            or validation_kind in {"single_scene_tile_holdout_limited", "tile_holdout_limited", "limited"}
+            or str(payload.get("split_strategy") or "").lower() == "legacy_75_25"
+        )
+        if allow_sample_fallback and limited_single_scene:
+            val_matches = []
+            val_ids = set()
+        else:
+            raise RuntimeError(f"Prepared dataset split overlap: {overlap[:10]}")
+    selected_ids = train_ids | val_ids
     lost = sorted(available_ids - selected_ids)
     if lost:
         raise RuntimeError(f"Prepared dataset split lost {len(lost)} matched scenes: {lost[:10]}")
