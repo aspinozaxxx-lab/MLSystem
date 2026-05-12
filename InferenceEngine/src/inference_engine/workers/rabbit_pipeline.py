@@ -11,6 +11,7 @@ from ..planning.planner import build_scene_plan, read_scene_plan, resolve_scene_
 from ..queues.messages import QueueMessage, make_message
 from ..queues.rabbitmq import RabbitMQClient
 from ..storage.job_store import JobStore, TERMINAL_STATUSES
+from ..storage.runtime_cleanup import cleanup_scene_runtime, cleanup_terminal_job_runtime
 from ..telemetry.metrics import directory_size_bytes, gpu_util_snapshot
 from ..triton.client import TritonEndpoint
 from .block_worker import materialize_expanded_block, vectorize_expanded_block
@@ -310,6 +311,7 @@ class RabbitPipeline:
 
                 block_summaries.append(json.loads(summary_path.read_text(encoding="utf-8-sig")))
         summary = merge_scene_blocks(job_dir=job_dir, plan=plan, request=request, block_summaries=block_summaries)
+        cleanup_report = cleanup_scene_runtime(job_id, scene_id, settings=self.settings, job_dir=job_dir)
         publish_finalize = False
         progress = ProgressStore(job_dir)
 
@@ -324,6 +326,8 @@ class RabbitPipeline:
 
         progress.update(mutate)
         await self._event(job_id, "scene.merge", {"scene_id": scene_id, "summary": summary})
+        if cleanup_report.get("enabled"):
+            await self._event(job_id, "scene.cleanup", {"scene_id": scene_id, "deleted_mb": cleanup_report.get("deleted_mb"), "deleted_files": cleanup_report.get("deleted_files")})
         await self._publish_more_scene_plans(job_id)
         if publish_finalize:
             await self.client.publish("ie.job.finalize", make_message(job_id=job_id, stage="job.finalize", payload={"job_id": job_id}))
@@ -346,10 +350,12 @@ class RabbitPipeline:
             error = "Streaming acceptance failed: first_block_vectorized_at must be less than last_tile_inferred_at"
             self.store.update(job_id, status="failed", error=error, metrics=metrics)
             await self._event(job_id, "job.failed", {"error": error})
+            self._cleanup_terminal_job(job_id)
             return
         artifacts = finalize_job_artifacts(job_id=job_id, job_dir=job_dir, request=request, plans=plans, scene_summaries=scene_summaries, metrics=metrics)
         self.store.update(job_id, status="success", metrics=metrics, artifacts=artifacts, counters={"scenes_processed": len(plans)})
         await self._event(job_id, "job.finalize", {"artifacts": artifacts})
+        self._cleanup_terminal_job(job_id)
 
     async def _publish_more_scene_plans(self, job_id: str) -> None:
         job_dir = self.store.job_dir(job_id)
@@ -455,6 +461,7 @@ class RabbitPipeline:
                     "error": str(exc),
                 },
             )
+            self._cleanup_terminal_job(message.job_id)
         except Exception:
             pass
 
@@ -466,6 +473,14 @@ class RabbitPipeline:
             return str(self.store.read(job_id).get("status")) in TERMINAL_STATUSES
         except Exception:
             return False
+
+    def _cleanup_terminal_job(self, job_id: str) -> None:
+        report = cleanup_terminal_job_runtime(job_id, settings=self.settings, job_dir=self.store.job_dir(job_id))
+        if report.get("enabled"):
+            try:
+                self.store.update(job_id, cleanup=report)
+            except Exception:
+                pass
 
 
 def _tile_by_id(plan, tile_id: str):

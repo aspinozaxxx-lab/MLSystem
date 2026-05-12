@@ -42,6 +42,9 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(status.json()["status"], "success")
             artifacts = client.get(f"/api/v1/jobs/{job_id}/artifacts").json()["artifacts"]
             self.assertIn("accepted_geojson", artifacts)
+            self.assertFalse((root / "jobs" / job_id / "scenes").exists())
+            self.assertFalse((root / "spool" / job_id).exists())
+            self.assertTrue((root / "jobs" / job_id / "cleanup.json").exists())
 
             prometheus = client.get("/metrics/prometheus")
             self.assertEqual(prometheus.status_code, 200)

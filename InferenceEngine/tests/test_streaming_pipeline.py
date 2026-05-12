@@ -42,6 +42,9 @@ class StreamingPipelineTests(unittest.TestCase):
             accepted = Path(final["artifacts"]["accepted_geojson"])
             payload = json.loads(accepted.read_text(encoding="utf-8"))
             self.assertEqual(len(payload["features"]), 1)
+            self.assertFalse((root / "jobs" / "job" / "scenes").exists())
+            self.assertFalse((root / "spool" / "job").exists())
+            self.assertTrue((root / "jobs" / "job" / "cleanup.json").exists())
 
     def test_idempotent_duplicate_local_run_keeps_result(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -55,6 +58,24 @@ class StreamingPipelineTests(unittest.TestCase):
             self.assertEqual(first["status"], "success")
             self.assertEqual(second["status"], "success")
             self.assertEqual(first["artifacts"]["accepted_geojson"], second["artifacts"]["accepted_geojson"])
+
+    def test_failed_local_run_cleans_intermediates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = JobStore(root / "jobs")
+            request = JobRequest(
+                experiment_id="bad",
+                scenes=[SceneInput(scene_id="bad_scene", name="bad_scene", path=str(root / "missing.tif"), width=16, height=16)],
+                preprocess={"patch_size": 8, "stride": 8},
+                pseudolabel={"threshold": 0.5, "core_size_px": 16, "halo_px": 2},
+            )
+            store.create(request.model_dump(), job_id="bad_job")
+            settings = InferenceEngineSettings(job_root=root / "jobs", spool_root=root / "spool", artifact_root=root / "artifacts", logs_root=root / "logs")
+            final = run_job_local("bad_job", store=store, settings=settings)
+            self.assertEqual(final["status"], "failed")
+            self.assertFalse((root / "jobs" / "bad_job" / "scenes").exists())
+            self.assertFalse((root / "spool" / "bad_job").exists())
+            self.assertTrue((root / "jobs" / "bad_job" / "cleanup.json").exists())
 
     def test_adaptive_backpressure_pauses_and_resumes(self) -> None:
         producer = AdaptiveProducer(ResourceConfig(triton_batch_size=2, batches_ahead=1, max_preprocess_queue=2, max_spool_bytes=100))

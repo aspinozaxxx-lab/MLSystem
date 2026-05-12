@@ -71,12 +71,20 @@ class RabbitPipelineWorkerTests(unittest.TestCase):
 
             scene_merge = fake.pop("ie.scene.merge")
             asyncio.run(pipeline.handle_scene_merge(scene_merge))
+            scene_dir = Path(tmp) / "jobs" / job_id / "scenes" / "scene_a"
+            self.assertTrue((scene_dir / "scene_a.accepted.geojson").exists())
+            self.assertTrue((scene_dir / "plan.json").exists())
+            self.assertFalse((scene_dir / "tiles").exists())
+            self.assertFalse((scene_dir / "blocks").exists())
             finalize = fake.pop("ie.job.finalize")
             asyncio.run(pipeline.handle_job_finalize(finalize))
             state = pipeline.store.read(job_id)
             self.assertEqual(state["status"], "success")
             self.assertLess(state["metrics"]["first_block_vectorized_at"], state["metrics"]["last_tile_inferred_at"])
             self.assertIn("accepted_geojson", state["artifacts"])
+            self.assertFalse((Path(tmp) / "jobs" / job_id / "scenes").exists())
+            self.assertFalse((Path(tmp) / "spool" / job_id).exists())
+            self.assertTrue((Path(tmp) / "jobs" / job_id / "cleanup.json").exists())
 
     def test_duplicate_tile_done_and_block_done_are_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

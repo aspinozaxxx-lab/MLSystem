@@ -57,6 +57,7 @@ def vectorize_expanded_block(block: BlockDescriptor, plan: ScenePlan, vector_cfg
     vector_path = Path(block.vector_path)
     summary_path = Path(block.summary_path)
     if vector_path.exists() and summary_path.exists():
+        _cleanup_block_probability_artifact(block)
         return {"block_id": block.block_id, "status": "success", "vector_path": str(vector_path), "summary_path": str(summary_path), "idempotent_hit": True}
 
     with np.load(block.artifact_path) as payload:
@@ -98,7 +99,16 @@ def vectorize_expanded_block(block: BlockDescriptor, plan: ScenePlan, vector_cfg
         "duration_sec": round(time.time() - started, 3),
     }
     write_json(summary_path, summary)
+    _cleanup_block_probability_artifact(block)
     return summary
+
+
+def _cleanup_block_probability_artifact(block: BlockDescriptor) -> None:
+    for path in (Path(block.artifact_path), Path(block.artifact_path).with_suffix(Path(block.artifact_path).suffix + ".sha256")):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _clip_features_to_core(features: list[dict[str, Any]], core_box: Any, block: BlockDescriptor) -> tuple[list[dict[str, Any]], int]:

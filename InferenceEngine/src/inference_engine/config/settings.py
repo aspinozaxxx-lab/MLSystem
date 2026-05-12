@@ -19,6 +19,8 @@ class InferenceEngineSettings:
     max_wait_ms: int = 50
     default_triton_batch_size: int = 8
     default_worker_concurrency: int = 1
+    cleanup_intermediates_enabled: bool = True
+    cleanup_events_max_bytes: int = 5 * 1024 * 1024
 
     @classmethod
     def from_env(cls) -> "InferenceEngineSettings":
@@ -35,6 +37,11 @@ class InferenceEngineSettings:
             max_wait_ms=int(os.getenv("INFERENCE_ENGINE_MAX_WAIT_MS", "50")),
             default_triton_batch_size=int(os.getenv("INFERENCE_ENGINE_DEFAULT_TRITON_BATCH_SIZE", "8")),
             default_worker_concurrency=int(os.getenv("INFERENCE_ENGINE_WORKER_CONCURRENCY", "1")),
+            cleanup_intermediates_enabled=str(
+                os.getenv("INFERENCE_ENGINE_CLEANUP_INTERMEDIATES", os.getenv("INFERENCE_ENGINE_CLEANUP_INTERMEDIATES_ON_TERMINAL", "true"))
+            ).lower()
+            in {"1", "true", "yes", "on"},
+            cleanup_events_max_bytes=int(os.getenv("INFERENCE_ENGINE_CLEANUP_EVENTS_MAX_BYTES", str(5 * 1024 * 1024))),
         )
 
     def ensure_dirs(self) -> None:

@@ -9,6 +9,7 @@ from ..config.settings import InferenceEngineSettings
 from ..planning.planner import ScenePlan, build_job_plan, write_plan
 from ..queues.messages import make_message
 from ..storage.job_store import JobStore
+from ..storage.runtime_cleanup import cleanup_scene_runtime, cleanup_terminal_job_runtime
 from ..telemetry.metrics import RuntimeMetrics, directory_size_bytes, gpu_util_snapshot
 from ..triton.client import TritonEndpoint
 from .backpressure import AdaptiveProducer
@@ -66,10 +67,19 @@ def run_job_local(job_id: str, *, store: JobStore, settings: InferenceEngineSett
                 raise RuntimeError("Streaming acceptance failed: first_block_vectorized_at must be less than last_tile_inferred_at")
         store.add_event(job_id, "job.finalize", {"artifacts": artifacts, "acceptance": acceptance})
         state = store.update(job_id, status="success", metrics=metrics.snapshot(), artifacts=artifacts, counters={"scenes_processed": len(plans)})
+        cleanup_report = cleanup_terminal_job_runtime(job_id, settings=settings, job_dir=job_dir)
+        if cleanup_report.get("enabled"):
+            store.update(job_id, cleanup=cleanup_report)
+            state["cleanup"] = cleanup_report
         return state
     except Exception as exc:  # noqa: BLE001 - errors are persisted for API consumers.
         store.add_event(job_id, "job.failed", {"error": f"{type(exc).__name__}: {exc}"})
-        return store.update(job_id, status="failed", error=f"{type(exc).__name__}: {exc}", metrics=metrics.snapshot())
+        state = store.update(job_id, status="failed", error=f"{type(exc).__name__}: {exc}", metrics=metrics.snapshot())
+        cleanup_report = cleanup_terminal_job_runtime(job_id, settings=settings, job_dir=job_dir)
+        if cleanup_report.get("enabled"):
+            store.update(job_id, cleanup=cleanup_report)
+            state["cleanup"] = cleanup_report
+        return state
 
 
 def _run_scene(
@@ -152,6 +162,9 @@ def _run_scene(
     drain_infer(force=True)
     store.add_event(job_id, "scene.merge", {"scene_id": plan.scene_id, "blocks_done": len(block_summaries)})
     scene_summary = merge_scene_blocks(job_dir=job_dir, plan=plan, request=request, block_summaries=block_summaries)
+    cleanup_report = cleanup_scene_runtime(job_id, plan.scene_id, settings=settings, job_dir=job_dir)
+    if cleanup_report.get("enabled"):
+        store.add_event(job_id, "scene.cleanup", {"scene_id": plan.scene_id, "deleted_mb": cleanup_report.get("deleted_mb"), "deleted_files": cleanup_report.get("deleted_files")})
     metrics.counters.update(producer.state.__dict__)
     metrics.counters["gpu_util_snapshot_count"] = float(len(gpu_util_snapshot()))
     return scene_summary, first_block_vectorized_at, last_tile_inferred_at
