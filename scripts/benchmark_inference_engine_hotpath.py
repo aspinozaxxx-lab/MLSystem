@@ -89,11 +89,12 @@ def main() -> None:
     if "current" in modes or "nodisk" in modes:
         with tempfile.TemporaryDirectory(prefix="ie-hotpath-") as tmp:
             root = Path(tmp)
-            request, plan = _benchmark_plan(root, args)
             if "current" in modes:
+                request, plan = _benchmark_plan(root / "disk", args)
                 report["results"]["current_ie_disk_spool"] = benchmark_current_disk_spool(root, request, plan, args)
                 _write_reports(output_dir, timestamp, report)
             if "nodisk" in modes:
+                request, plan = _benchmark_plan(root / "nodisk", args)
                 report["results"]["ie_no_disk_input_spool"] = benchmark_no_disk(root, request, plan, args)
                 _write_reports(output_dir, timestamp, report)
 
@@ -106,6 +107,7 @@ def benchmark_direct_triton(args: argparse.Namespace, *, batch_size: int, concur
     endpoint = _endpoint(args, transport=transport)
     sampler = GpuSampler()
     latencies: list[float] = []
+    error_messages: list[str] = []
     lock = threading.Lock()
     stop_at = time.monotonic() + float(args.warmup_sec) + float(args.duration_sec)
     measure_at = time.monotonic() + float(args.warmup_sec)
@@ -127,7 +129,9 @@ def benchmark_direct_triton(args: argparse.Namespace, *, batch_size: int, concur
             except Exception:
                 with lock:
                     counters["errors"] += 1
-                raise
+                    if len(error_messages) < 5:
+                        error_messages.append(str(sys.exc_info()[1]))
+                break
 
     started = time.monotonic()
     sampler.start()
@@ -153,6 +157,7 @@ def benchmark_direct_triton(args: argparse.Namespace, *, batch_size: int, concur
         "latency_ms_p95": _percentile(latencies, 95),
         "latency_ms_mean": statistics.mean(latencies) if latencies else None,
         "errors": counters["errors"],
+        "error_messages": error_messages,
         "gpu": gpu,
     }
 
@@ -306,8 +311,10 @@ def _benchmark_plan(root: Path, args: argparse.Namespace) -> tuple[JobRequest, A
     except Exception as exc:
         raise RuntimeError(f"rasterio is required for IE path benchmarks: {exc}") from exc
     image_path = root / "benchmark_scene.tif"
-    width = max(int(args.tile_size) * 4, int(args.tile_size) + 1)
-    height = max(int(args.tile_size) * 4, int(args.tile_size) + 1)
+    root.mkdir(parents=True, exist_ok=True)
+    side_tiles = max(4, int(np.ceil(np.sqrt(max(1, int(args.bench_tiles))))))
+    width = max(int(args.tile_size) * side_tiles, int(args.tile_size) + 1)
+    height = max(int(args.tile_size) * side_tiles, int(args.tile_size) + 1)
     rng = np.random.default_rng(123)
     with rasterio.open(
         image_path,
