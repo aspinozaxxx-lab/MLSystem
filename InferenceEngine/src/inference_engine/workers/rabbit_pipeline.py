@@ -174,6 +174,9 @@ class RabbitPipeline:
             request = JobRequest.model_validate(self.store.read_request(job_id))
             scene_plans: dict[str, Any] = {}
             tiles_by_scene: dict[str, dict[str, Any]] = {}
+            rows = _filter_unfinished_tile_messages(job_dir, rows)
+            if not rows:
+                continue
             for row in rows:
                 scene_id = str(row.payload["scene_id"])
                 if scene_id in scene_plans:
@@ -239,6 +242,9 @@ class RabbitPipeline:
             request = JobRequest.model_validate(self.store.read_request(job_id))
             scene_plans: dict[str, Any] = {}
             tiles_by_scene: dict[str, dict[str, Any]] = {}
+            rows = _filter_unfinished_tile_messages(job_dir, rows)
+            if not rows:
+                continue
             for row in rows:
                 scene_id = str(row.payload["scene_id"])
                 if scene_id in scene_plans:
@@ -730,14 +736,39 @@ def _block_by_id(plan, block_id: str):
     raise KeyError(block_id)
 
 
+def _filter_unfinished_tile_messages(job_dir: Path, rows: list[QueueMessage]) -> list[QueueMessage]:
+    done_by_scene: dict[str, set[str]] = {}
+    filtered: list[QueueMessage] = []
+    for row in rows:
+        scene_id = str(row.payload.get("scene_id") or row.scene_id or "")
+        tile_id = str(row.payload.get("tile_id") or row.tile_id or "")
+        if not scene_id or not tile_id:
+            filtered.append(row)
+            continue
+        if scene_id not in done_by_scene:
+            try:
+                scene_state = SceneStateStore(job_dir, scene_id).read()
+                done_by_scene[scene_id] = set(scene_state.get("tiles_done") or [])
+            except Exception:
+                done_by_scene[scene_id] = set()
+        if tile_id in done_by_scene[scene_id]:
+            continue
+        filtered.append(row)
+    return filtered
+
+
 def _add_inference_progress_metrics(payload: dict[str, Any], outputs: list[dict[str, Any]], *, fill_ratio: float, duration_ms: float, mode: str) -> None:
-    payload["triton_batches"] = int(payload.get("triton_batches") or 0) + 1
-    payload["triton_batch_fill_sum"] = float(payload.get("triton_batch_fill_sum") or 0.0) + fill_ratio
-    payload["triton_request_duration_ms_sum"] = float(payload.get("triton_request_duration_ms_sum") or 0.0) + duration_ms
-    payload["triton_request_count"] = int(payload.get("triton_request_count") or 0) + 1
     payload["ie_hotpath_mode"] = mode
-    payload["ie_tiles_inferred"] = int(payload.get("ie_tiles_inferred") or 0) + len(outputs)
-    payload[f"ie_{mode}_batches"] = int(payload.get(f"ie_{mode}_batches") or 0) + 1
+    inferred_outputs = [output for output in outputs if not output.get("idempotent_hit")]
+    if inferred_outputs:
+        payload["triton_batches"] = int(payload.get("triton_batches") or 0) + 1
+        payload["triton_batch_fill_sum"] = float(payload.get("triton_batch_fill_sum") or 0.0) + fill_ratio
+        payload["triton_request_duration_ms_sum"] = float(payload.get("triton_request_duration_ms_sum") or 0.0) + duration_ms
+        payload["triton_request_count"] = int(payload.get("triton_request_count") or 0) + 1
+        payload["ie_tiles_inferred"] = int(payload.get("ie_tiles_inferred") or 0) + len(inferred_outputs)
+        payload[f"ie_{mode}_batches"] = int(payload.get(f"ie_{mode}_batches") or 0) + 1
+    if len(inferred_outputs) != len(outputs):
+        payload["ie_idempotent_tiles"] = int(payload.get("ie_idempotent_tiles") or 0) + (len(outputs) - len(inferred_outputs))
     timing_keys = (
         "input_read_ms",
         "normalize_ms",
@@ -748,7 +779,7 @@ def _add_inference_progress_metrics(payload: dict[str, Any], outputs: list[dict[
         "cpu_sigmoid_ms",
         "probability_persist_ms",
     )
-    for output in outputs:
+    for output in inferred_outputs:
         timings = output.get("timings") or {}
         if not isinstance(timings, dict):
             continue

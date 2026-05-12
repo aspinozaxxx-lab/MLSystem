@@ -9,7 +9,7 @@ from InferenceEngine.src.inference_engine.api.schemas import JobRequest, SceneIn
 from InferenceEngine.src.inference_engine.config.settings import InferenceEngineSettings
 from InferenceEngine.src.inference_engine.queues.messages import QueueMessage, make_message
 from InferenceEngine.src.inference_engine.storage.job_store import JobStore
-from InferenceEngine.src.inference_engine.workers.rabbit_pipeline import ROLE_QUEUES, RabbitPipeline
+from InferenceEngine.src.inference_engine.workers.rabbit_pipeline import ROLE_QUEUES, RabbitPipeline, _add_inference_progress_metrics
 
 
 class FakeClient:
@@ -139,6 +139,27 @@ class RabbitPipelineWorkerTests(unittest.TestCase):
             metrics = pipeline.store.read(job_id)["metrics"]
             self.assertEqual(metrics["ie_hotpath_mode"], "fused_memory")
             self.assertGreaterEqual(metrics["ie_tiles_inferred"], 1)
+
+    def test_idempotent_probability_hits_do_not_inflate_inference_metrics(self) -> None:
+        progress: dict[str, object] = {}
+        _add_inference_progress_metrics(
+            progress,
+            [{"tile_id": "tile_1", "timings": {"triton_request_ms": 10.0}}],
+            fill_ratio=1.0,
+            duration_ms=10.0,
+            mode="fused_memory",
+        )
+        _add_inference_progress_metrics(
+            progress,
+            [{"tile_id": "tile_1", "idempotent_hit": True, "timings": {"triton_request_ms": 0.0}}],
+            fill_ratio=1.0,
+            duration_ms=0.0,
+            mode="fused_memory",
+        )
+
+        self.assertEqual(progress["ie_tiles_inferred"], 1)
+        self.assertEqual(progress["triton_batches"], 1)
+        self.assertEqual(progress["ie_idempotent_tiles"], 1)
 
 
 def _pipeline(root: Path) -> tuple[RabbitPipeline, FakeClient]:
