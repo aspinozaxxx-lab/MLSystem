@@ -87,6 +87,13 @@ class JobStore:
         write_json(self.state_path(job_id), state)
         return state
 
+    def replace_artifacts(self, job_id: str, artifacts: dict[str, str]) -> dict[str, Any]:
+        state = self.read(job_id)
+        state["artifacts"] = dict(artifacts or {})
+        state["updated_at"] = utc_now()
+        write_json(self.state_path(job_id), state)
+        return state
+
     def add_event(self, job_id: str, event_type: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         event = {
             "ts": utc_now(),

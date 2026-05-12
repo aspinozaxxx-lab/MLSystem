@@ -12,7 +12,7 @@ from ..queues.messages import QUEUE_NAMES, make_message, validate_queue_contract
 from ..queues.rabbitmq import RabbitMQClient
 from ..queues.telemetry import rabbitmq_queue_metrics
 from ..storage.job_store import JobStore
-from ..storage.runtime_cleanup import cleanup_terminal_job_runtime
+from ..storage.runtime_cleanup import cleanup_terminal_job_runtime, prune_missing_local_artifacts
 from ..workers.local_pipeline import run_job_local
 from .schemas import JobCreated, JobRequest, JobStatus
 
@@ -227,7 +227,8 @@ def cancel_job(job_id: str) -> dict[str, Any]:
         state = store.cancel(job_id)
         cleanup_report = cleanup_terminal_job_runtime(job_id, settings=settings, job_dir=store.job_dir(job_id))
         if cleanup_report.get("enabled"):
-            store.update(job_id, cleanup=cleanup_report)
+            store.replace_artifacts(job_id, prune_missing_local_artifacts(store.read(job_id).get("artifacts") or {}))
+            state = store.update(job_id, cleanup=cleanup_report)
             state["cleanup"] = cleanup_report
         return state
     except KeyError as exc:

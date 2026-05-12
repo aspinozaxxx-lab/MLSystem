@@ -11,6 +11,20 @@ from ..config.settings import InferenceEngineSettings
 from .local_io import write_json
 
 
+def prune_missing_local_artifacts(artifacts: dict[str, Any]) -> dict[str, str]:
+    pruned: dict[str, str] = {}
+    for key, value in (artifacts or {}).items():
+        if not isinstance(value, str):
+            continue
+        if value.startswith(("s3://", "http://", "https://")):
+            pruned[key] = value
+            continue
+        path = Path(value)
+        if path.exists():
+            pruned[key] = value
+    return pruned
+
+
 def cleanup_scene_runtime(job_id: str, scene_id: str, *, settings: InferenceEngineSettings, job_dir: Path | None = None) -> dict[str, Any]:
     """Remove per-scene tile/block intermediates as soon as the scene is merged."""
     if not settings.cleanup_intermediates_enabled:

@@ -11,7 +11,7 @@ from ..planning.planner import build_scene_plan, read_scene_plan, resolve_scene_
 from ..queues.messages import QueueMessage, make_message
 from ..queues.rabbitmq import RabbitMQClient
 from ..storage.job_store import JobStore, TERMINAL_STATUSES
-from ..storage.runtime_cleanup import cleanup_scene_runtime, cleanup_terminal_job_runtime
+from ..storage.runtime_cleanup import cleanup_scene_runtime, cleanup_terminal_job_runtime, prune_missing_local_artifacts
 from ..telemetry.metrics import directory_size_bytes, gpu_util_snapshot
 from ..triton.client import TritonEndpoint
 from .block_worker import materialize_expanded_block, vectorize_expanded_block
@@ -478,6 +478,7 @@ class RabbitPipeline:
         report = cleanup_terminal_job_runtime(job_id, settings=self.settings, job_dir=self.store.job_dir(job_id))
         if report.get("enabled"):
             try:
+                self.store.replace_artifacts(job_id, prune_missing_local_artifacts(self.store.read(job_id).get("artifacts") or {}))
                 self.store.update(job_id, cleanup=report)
             except Exception:
                 pass

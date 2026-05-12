@@ -82,6 +82,7 @@ class RabbitPipelineWorkerTests(unittest.TestCase):
             self.assertEqual(state["status"], "success")
             self.assertLess(state["metrics"]["first_block_vectorized_at"], state["metrics"]["last_tile_inferred_at"])
             self.assertIn("accepted_geojson", state["artifacts"])
+            self.assertNotIn("scene_a.plan.json", state["artifacts"])
             self.assertFalse((Path(tmp) / "jobs" / job_id / "scenes").exists())
             self.assertFalse((Path(tmp) / "spool" / job_id).exists())
             self.assertTrue((Path(tmp) / "jobs" / job_id / "cleanup.json").exists())

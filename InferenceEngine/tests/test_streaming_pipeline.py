@@ -39,6 +39,7 @@ class StreamingPipelineTests(unittest.TestCase):
             self.assertEqual(final["status"], "success")
             metrics = final["metrics"]
             self.assertLess(metrics["first_block_vectorized_at"], metrics["last_tile_inferred_at"])
+            self.assertNotIn("plan.json", final["artifacts"])
             accepted = Path(final["artifacts"]["accepted_geojson"])
             payload = json.loads(accepted.read_text(encoding="utf-8"))
             self.assertEqual(len(payload["features"]), 1)

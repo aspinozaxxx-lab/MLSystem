@@ -9,7 +9,7 @@ from ..config.settings import InferenceEngineSettings
 from ..planning.planner import ScenePlan, build_job_plan, write_plan
 from ..queues.messages import make_message
 from ..storage.job_store import JobStore
-from ..storage.runtime_cleanup import cleanup_scene_runtime, cleanup_terminal_job_runtime
+from ..storage.runtime_cleanup import cleanup_scene_runtime, cleanup_terminal_job_runtime, prune_missing_local_artifacts
 from ..telemetry.metrics import RuntimeMetrics, directory_size_bytes, gpu_util_snapshot
 from ..triton.client import TritonEndpoint
 from .backpressure import AdaptiveProducer
@@ -69,7 +69,8 @@ def run_job_local(job_id: str, *, store: JobStore, settings: InferenceEngineSett
         state = store.update(job_id, status="success", metrics=metrics.snapshot(), artifacts=artifacts, counters={"scenes_processed": len(plans)})
         cleanup_report = cleanup_terminal_job_runtime(job_id, settings=settings, job_dir=job_dir)
         if cleanup_report.get("enabled"):
-            store.update(job_id, cleanup=cleanup_report)
+            state = store.replace_artifacts(job_id, prune_missing_local_artifacts(store.read(job_id).get("artifacts") or {}))
+            state = store.update(job_id, cleanup=cleanup_report)
             state["cleanup"] = cleanup_report
         return state
     except Exception as exc:  # noqa: BLE001 - errors are persisted for API consumers.
@@ -77,7 +78,8 @@ def run_job_local(job_id: str, *, store: JobStore, settings: InferenceEngineSett
         state = store.update(job_id, status="failed", error=f"{type(exc).__name__}: {exc}", metrics=metrics.snapshot())
         cleanup_report = cleanup_terminal_job_runtime(job_id, settings=settings, job_dir=job_dir)
         if cleanup_report.get("enabled"):
-            store.update(job_id, cleanup=cleanup_report)
+            state = store.replace_artifacts(job_id, prune_missing_local_artifacts(store.read(job_id).get("artifacts") or {}))
+            state = store.update(job_id, cleanup=cleanup_report)
             state["cleanup"] = cleanup_report
         return state
 
