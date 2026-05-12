@@ -35,14 +35,21 @@ class MLSystemApiClient:
             request.add_header("Content-Type", "application/json")
         if self.token:
             request.add_header("Authorization", f"Bearer {self.token}")
-        try:
-            with urllib.request.urlopen(request, timeout=float(os.getenv("MLSYSTEM_API_HTTP_TIMEOUT_SEC", "30"))) as response:
-                return json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            text = exc.read().decode("utf-8", errors="replace")
-            raise AirflowApiStageError(f"MLSystem API HTTP {exc.code}: {text}") from exc
-        except urllib.error.URLError as exc:
-            raise AirflowApiStageError(f"MLSystem API request failed: {exc}") from exc
+        attempts = max(1, int(os.getenv("MLSYSTEM_API_HTTP_RETRIES", "12")))
+        retry_delay_sec = max(0.1, float(os.getenv("MLSYSTEM_API_HTTP_RETRY_DELAY_SEC", "5")))
+        timeout_sec = float(os.getenv("MLSYSTEM_API_HTTP_TIMEOUT_SEC", "30"))
+        for attempt in range(1, attempts + 1):
+            try:
+                with urllib.request.urlopen(request, timeout=timeout_sec) as response:
+                    return json.loads(response.read().decode("utf-8"))
+            except urllib.error.HTTPError as exc:
+                text = exc.read().decode("utf-8", errors="replace")
+                raise AirflowApiStageError(f"MLSystem API HTTP {exc.code}: {text}") from exc
+            except urllib.error.URLError as exc:
+                if attempt >= attempts:
+                    raise AirflowApiStageError(f"MLSystem API request failed after {attempts} attempts: {exc}") from exc
+                time.sleep(retry_delay_sec)
+        raise AirflowApiStageError("MLSystem API request failed unexpectedly")
 
 
 def run_stage_via_api(stage: str, dag_run_conf: dict[str, Any], airflow_run_id: str, state_dir: Path | str) -> dict[str, Any]:
