@@ -24,14 +24,14 @@ def preprocess_tile_descriptor(
     spool_dir: Path,
 ) -> dict[str, Any]:
     spool_dir.mkdir(parents=True, exist_ok=True)
-    out_path = spool_dir / f"{tile.tile_id}.npz"
+    out_path = spool_dir / f"{tile.tile_id}.npy"
     checksum_path = spool_dir / f"{tile.tile_id}.sha256"
     if checksum_matches(out_path, checksum_path):
         return {"tile_id": tile.tile_id, "spool_path": str(out_path), "checksum_path": str(checksum_path), "idempotent_hit": True}
 
     arr = _read_or_synthetic_tile(tile, scene_plan, request)
     arr = normalize_image(arr).astype(np.float32, copy=False)
-    np.savez(out_path, image=arr)
+    np.save(out_path, arr)
     checksum = write_checksum(out_path, checksum_path)
     return {"tile_id": tile.tile_id, "spool_path": str(out_path), "checksum_path": str(checksum_path), "checksum": checksum}
 
@@ -69,8 +69,7 @@ def infer_tile_batch(
             outputs.append({"tile_id": tile.tile_id, "artifact_path": tile.artifact_path, "meta_path": tile.meta_path, "idempotent_hit": True, "triton_request_duration_ms": 0.0})
             _cleanup_spool_descriptor(descriptor)
             continue
-        with np.load(str(descriptor["spool_path"])) as payload:
-            pending_arrays.append(payload["image"].astype(np.float32, copy=False))
+        pending_arrays.append(_load_spooled_image(descriptor))
         pending_tiles.append(tile)
         pending_descriptors.append(descriptor)
     if endpoint is None:
@@ -85,6 +84,67 @@ def infer_tile_batch(
         duration_ms = (time.time() - started) * 1000.0
         for tile, prob, descriptor in zip(pending_tiles, probs, pending_descriptors, strict=True):
             row = _persist_probability_tile(tile, scene_plan, prob.astype(np.float32, copy=False), logits_shape=list(logits.shape))
+            row["triton_request_duration_ms"] = duration_ms
+            outputs.append(row)
+            _cleanup_spool_descriptor(descriptor)
+    return outputs
+
+
+def infer_tile_batch_multi_scene(
+    *,
+    descriptors: list[dict[str, Any]],
+    tiles_by_scene: dict[str, dict[str, TileDescriptor]],
+    scene_plans: dict[str, ScenePlan],
+    request: JobRequest,
+    endpoint: TritonEndpoint | None,
+) -> list[dict[str, Any]]:
+    started = time.time()
+    if not descriptors:
+        return []
+
+    outputs: list[dict[str, Any]] = []
+    pending_arrays = []
+    pending_rows: list[tuple[TileDescriptor, ScenePlan, dict[str, Any]]] = []
+    for descriptor in descriptors:
+        scene_id = str(descriptor["scene_id"])
+        tile = tiles_by_scene[scene_id][str(descriptor["tile_id"])]
+        scene_plan = scene_plans[scene_id]
+        if _scene_has_synthetic_probability(scene_plan):
+            prob = _synthetic_probability(tile, scene_plan).astype(np.float32, copy=False)
+            row = _persist_probability_tile(tile, scene_plan, prob, logits_shape=[1, 1, tile.height, tile.width])
+            row["scene_id"] = scene_id
+            outputs.append(row)
+            _cleanup_spool_descriptor(descriptor)
+            continue
+        if checksum_matches(Path(tile.artifact_path), Path(tile.checksum_path)):
+            outputs.append(
+                {
+                    "scene_id": scene_id,
+                    "tile_id": tile.tile_id,
+                    "artifact_path": tile.artifact_path,
+                    "meta_path": tile.meta_path,
+                    "idempotent_hit": True,
+                    "triton_request_duration_ms": 0.0,
+                }
+            )
+            _cleanup_spool_descriptor(descriptor)
+            continue
+        pending_arrays.append(_load_spooled_image(descriptor))
+        pending_rows.append((tile, scene_plan, descriptor))
+
+    if endpoint is None:
+        endpoint = TritonEndpoint(
+            url=request.storage.get("triton_url") or request.model.model_dump().get("triton_url") or "http://triton:8000",
+            model_name=request.model.triton_model_name or request.model.model_name or "segformer_b2",
+            model_version=request.model.triton_model_version,
+        )
+    if pending_arrays:
+        logits = infer_segmentation_batch(endpoint, np.stack(pending_arrays))
+        probs = 1.0 / (1.0 + np.exp(-logits[:, 0]))
+        duration_ms = (time.time() - started) * 1000.0
+        for (tile, scene_plan, descriptor), prob in zip(pending_rows, probs, strict=True):
+            row = _persist_probability_tile(tile, scene_plan, prob.astype(np.float32, copy=False), logits_shape=list(logits.shape))
+            row["scene_id"] = str(descriptor["scene_id"])
             row["triton_request_duration_ms"] = duration_ms
             outputs.append(row)
             _cleanup_spool_descriptor(descriptor)
@@ -118,6 +178,17 @@ def _persist_probability_tile(tile: TileDescriptor, scene_plan: ScenePlan, prob:
     write_json(Path(tile.meta_path), meta)
     checksum = write_checksum(out_path, checksum_path)
     return {"tile_id": tile.tile_id, "artifact_path": str(out_path), "meta_path": tile.meta_path, "checksum": checksum}
+
+
+def _load_spooled_image(descriptor: dict[str, Any]) -> np.ndarray:
+    path = str(descriptor["spool_path"])
+    payload = np.load(path)
+    if isinstance(payload, np.lib.npyio.NpzFile):
+        try:
+            return payload["image"].astype(np.float32, copy=False)
+        finally:
+            payload.close()
+    return np.asarray(payload, dtype=np.float32)
 
 
 def _read_or_synthetic_tile(tile: TileDescriptor, scene_plan: ScenePlan, request: JobRequest) -> np.ndarray:

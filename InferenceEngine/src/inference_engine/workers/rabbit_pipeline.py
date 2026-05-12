@@ -17,7 +17,7 @@ from ..triton.client import TritonEndpoint
 from .block_worker import materialize_expanded_block, vectorize_expanded_block
 from .finalizer import finalize_job_artifacts, merge_scene_blocks
 from .state import ProgressStore, SceneStateStore, initialize_progress, initialize_scene_state
-from .tile_workers import infer_tile_batch, preprocess_tile_descriptor
+from .tile_workers import infer_tile_batch_multi_scene, preprocess_tile_descriptor
 
 
 ROLE_QUEUES = {
@@ -60,7 +60,12 @@ class RabbitPipeline:
                 handler=self.handle_tile_infer_batch,
             )
         elif role == "aggregator":
-            await self.client.consume_forever("ie.tile.done", self.handle_tile_done)
+            await self.client.consume_batches_forever(
+                "ie.tile.done",
+                max_batch_size=max(16, int(self._default_batch_size()) * 8),
+                max_wait_ms=int(self.settings.max_wait_ms),
+                handler=self.handle_tile_done_batch,
+            )
         elif role == "block":
             await asyncio.gather(
                 RabbitPipeline(self.settings).run_role("block-ready"),
@@ -151,21 +156,28 @@ class RabbitPipeline:
         messages = active_messages
         if not messages:
             return
-        by_scene: dict[tuple[str, str], list[QueueMessage]] = {}
+        by_job: dict[str, list[QueueMessage]] = {}
         for message in messages:
-            by_scene.setdefault((message.job_id, str(message.payload["scene_id"])), []).append(message)
-        for (job_id, scene_id), rows in by_scene.items():
+            by_job.setdefault(message.job_id, []).append(message)
+        for job_id, rows in by_job.items():
             job_dir = self.store.job_dir(job_id)
             request = JobRequest.model_validate(self.store.read_request(job_id))
-            plan = read_scene_plan(job_dir, scene_id)
-            tiles_by_id = {tile.tile_id: tile for tile in plan.tiles}
+            scene_plans: dict[str, Any] = {}
+            tiles_by_scene: dict[str, dict[str, Any]] = {}
+            for row in rows:
+                scene_id = str(row.payload["scene_id"])
+                if scene_id in scene_plans:
+                    continue
+                plan = read_scene_plan(job_dir, scene_id)
+                scene_plans[scene_id] = plan
+                tiles_by_scene[scene_id] = {tile.tile_id: tile for tile in plan.tiles}
             endpoint = TritonEndpoint(
                 url=self.settings.triton_url,
                 model_name=request.model.triton_model_name or request.model.model_name or "segformer_b2",
                 model_version=request.model.triton_model_version,
             )
             descriptors = [dict(row.payload) for row in rows]
-            outputs = infer_tile_batch(descriptors=descriptors, tiles_by_id=tiles_by_id, scene_plan=plan, request=request, endpoint=endpoint)
+            outputs = infer_tile_batch_multi_scene(descriptors=descriptors, tiles_by_scene=tiles_by_scene, scene_plans=scene_plans, request=request, endpoint=endpoint)
             duration_ms = max([float(item.get("triton_request_duration_ms") or 0.0) for item in outputs] or [0.0])
             fill_ratio = len(outputs) / max(1, int(request.resource.triton_batch_size or len(outputs)))
             progress = ProgressStore(job_dir)
@@ -178,12 +190,93 @@ class RabbitPipeline:
 
             progress.update(mutate)
             self.store.update(job_id, metrics=_metrics_from_progress(progress.read()))
-            await self._event(job_id, "tile.infer", {"scene_id": scene_id, "batch_size": len(outputs), "duration_ms": duration_ms})
+            scene_ids = sorted({str(output.get("scene_id")) for output in outputs if output.get("scene_id")})
+            await self._event(job_id, "tile.infer", {"scene_ids": scene_ids, "batch_size": len(outputs), "duration_ms": duration_ms})
             for output in outputs:
+                scene_id = str(output.pop("scene_id"))
                 tile_id = str(output["tile_id"])
                 await self.client.publish("ie.tile.done", make_message(job_id=job_id, stage="tile.done", scene_id=scene_id, tile_id=tile_id, payload={"scene_id": scene_id, **output}))
 
     async def handle_tile_done(self, message: QueueMessage) -> None:
+        await self.handle_tile_done_batch([message])
+
+    async def handle_tile_done_batch(self, messages: list[QueueMessage]) -> None:
+        if not messages:
+            return
+        terminal_cache: dict[str, bool] = {}
+        active_messages = []
+        for message in messages:
+            terminal_cache.setdefault(message.job_id, self._job_is_terminal(message.job_id))
+            if not terminal_cache[message.job_id]:
+                active_messages.append(message)
+        if not active_messages:
+            return
+
+        by_scene: dict[tuple[str, str], list[QueueMessage]] = {}
+        for message in active_messages:
+            by_scene.setdefault((message.job_id, str(message.payload["scene_id"])), []).append(message)
+
+        progress_increments: dict[str, int] = {}
+        scenes_touched: dict[str, set[str]] = {}
+        ready_by_scene: dict[tuple[str, str], list[str]] = {}
+
+        for (job_id, scene_id), rows in by_scene.items():
+            job_dir = self.store.job_dir(job_id)
+            scene_state = SceneStateStore(job_dir, scene_id)
+            tile_ids = [str(row.payload["tile_id"]) for row in rows]
+            ready_blocks: list[str] = []
+            new_count = 0
+
+            def mutate(payload: dict[str, Any]) -> None:
+                nonlocal ready_blocks, new_count
+                done_tiles = set(payload.get("tiles_done") or [])
+                published = set(payload.get("blocks_ready_published") or [])
+                for tile_id in tile_ids:
+                    if tile_id in done_tiles:
+                        continue
+                    new_count += 1
+                    done_tiles.add(tile_id)
+                    for block_id in payload.get("blocks_by_tile", {}).get(tile_id, []):
+                        remaining = set(payload.get("remaining_by_block", {}).get(block_id) or [])
+                        remaining.discard(tile_id)
+                        payload["remaining_by_block"][block_id] = sorted(remaining)
+                        if not remaining and block_id not in published:
+                            ready_blocks.append(block_id)
+                            published.add(block_id)
+                if new_count:
+                    payload["tiles_done"] = sorted(done_tiles)
+                if ready_blocks:
+                    payload["blocks_ready_published"] = sorted(published)
+
+            scene_state.update(mutate)
+            if new_count:
+                progress_increments[job_id] = int(progress_increments.get(job_id) or 0) + new_count
+                scenes_touched.setdefault(job_id, set()).add(scene_id)
+            if ready_blocks:
+                ready_by_scene[(job_id, scene_id)] = ready_blocks
+
+        for job_id, increment in progress_increments.items():
+            job_dir = self.store.job_dir(job_id)
+            progress = ProgressStore(job_dir)
+
+            def progress_mutate(payload: dict[str, Any]) -> None:
+                payload["tiles_done"] = int(payload.get("tiles_done") or 0) + increment
+                payload["last_tile_inferred_at"] = time.time()
+                payload["spool_bytes"] = self._directory_size_bytes_cached(self.settings.spool_root / job_id)
+
+            progress_payload = progress.update(progress_mutate)
+            self.store.update(job_id, metrics=_metrics_from_progress(progress_payload))
+
+        for (job_id, scene_id), ready_blocks in ready_by_scene.items():
+            await self._event(job_id, "tile.done.batch", {"scene_id": scene_id, "count": len(by_scene[(job_id, scene_id)]), "ready_blocks": ready_blocks})
+            for block_id in ready_blocks:
+                await self.client.publish("ie.block.ready", make_message(job_id=job_id, stage="block.ready", scene_id=scene_id, block_id=block_id, payload={"scene_id": scene_id, "block_id": block_id}))
+
+        for job_id, scene_ids in scenes_touched.items():
+            for scene_id in scene_ids:
+                await self._publish_more_preprocess(job_id, scene_id)
+
+    async def _handle_tile_done_single(self, message: QueueMessage) -> None:
         job_id = message.job_id
         if self._job_is_terminal(job_id):
             return
