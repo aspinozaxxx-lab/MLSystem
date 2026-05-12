@@ -19,6 +19,7 @@ def export_mlflow_run_to_triton(
     input_bands: int,
     tile_size: int,
     max_batch_size: int,
+    instance_count: int = 1,
     backend: str = "auto",
 ) -> Path:
     import mlflow
@@ -46,6 +47,7 @@ def export_mlflow_run_to_triton(
                 input_bands=input_bands,
                 tile_size=tile_size,
                 max_batch_size=max_batch_size,
+                instance_count=instance_count,
             )
         except Exception:
             if backend == "onnx":
@@ -58,6 +60,7 @@ def export_mlflow_run_to_triton(
         input_bands=input_bands,
         tile_size=tile_size,
         max_batch_size=max_batch_size,
+        instance_count=instance_count,
     )
 
 
@@ -70,6 +73,7 @@ def export_python_backend(
     input_bands: int,
     tile_size: int,
     max_batch_size: int,
+    instance_count: int = 1,
 ) -> Path:
     import shutil
 
@@ -124,7 +128,7 @@ output [
   {{ name: "OUTPUT__0" data_type: TYPE_FP32 dims: [ 1, -1, -1 ] }}
 ]
 instance_group [
-  {{ kind: KIND_GPU count: 1 }}
+  {{ kind: KIND_GPU count: {max(1, int(instance_count))} }}
 ]
 dynamic_batching {{
   preferred_batch_size: [ 4, {int(max_batch_size)} ]
@@ -255,6 +259,7 @@ def main() -> None:
     parser.add_argument("--input-bands", type=int, default=4)
     parser.add_argument("--tile-size", type=int, default=1024)
     parser.add_argument("--max-batch-size", type=int, default=8)
+    parser.add_argument("--instance-count", type=int, default=int(os.getenv("TRITON_MODEL_INSTANCE_COUNT", "1")))
     parser.add_argument("--backend", choices=["auto", "onnx", "python"], default="auto")
     args = parser.parse_args()
     path = export_mlflow_run_to_triton(
@@ -265,6 +270,7 @@ def main() -> None:
         input_bands=args.input_bands,
         tile_size=args.tile_size,
         max_batch_size=args.max_batch_size,
+        instance_count=args.instance_count,
         backend=args.backend,
     )
     print(path)

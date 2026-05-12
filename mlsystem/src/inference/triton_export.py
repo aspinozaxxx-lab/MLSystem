@@ -15,6 +15,7 @@ def export_segmentation_checkpoint_to_onnx(
     input_bands: int,
     tile_size: int,
     max_batch_size: int,
+    instance_count: int = 1,
 ) -> Path:
     from ..real_train import _build_model
 
@@ -51,7 +52,7 @@ input [
 output [
   {{ name: "OUTPUT__0" data_type: TYPE_FP32 dims: [ 1, -1, -1 ] }}
 ]
-instance_group [ {{ kind: KIND_GPU count: 1 }} ]
+instance_group [ {{ kind: KIND_GPU count: {max(1, int(instance_count))} }} ]
 ''',
         encoding="utf-8",
     )
@@ -67,6 +68,7 @@ def main() -> None:
     parser.add_argument("--input-bands", type=int, default=4)
     parser.add_argument("--tile-size", type=int, default=1024)
     parser.add_argument("--max-batch-size", type=int, default=16)
+    parser.add_argument("--instance-count", type=int, default=1)
     args = parser.parse_args()
     onnx_path = export_segmentation_checkpoint_to_onnx(
         checkpoint_path=Path(args.checkpoint),
@@ -76,6 +78,7 @@ def main() -> None:
         input_bands=args.input_bands,
         tile_size=args.tile_size,
         max_batch_size=args.max_batch_size,
+        instance_count=args.instance_count,
     )
     print(onnx_path)
 
