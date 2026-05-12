@@ -515,15 +515,7 @@ class RabbitPipeline:
         job_dir = self.store.job_dir(job_id)
         request = JobRequest.model_validate(self.store.read_request(job_id))
         plan = read_scene_plan(job_dir, scene_id)
-        block_summaries = []
-        for block in plan.blocks:
-            summary_path = Path(block.summary_path)
-            if summary_path.exists():
-                import json
-
-                block_summaries.append(json.loads(summary_path.read_text(encoding="utf-8-sig")))
-        summary = merge_scene_blocks(job_dir=job_dir, plan=plan, request=request, block_summaries=block_summaries)
-        cleanup_report = cleanup_scene_runtime(job_id, scene_id, settings=self.settings, job_dir=job_dir)
+        summary, cleanup_report = await asyncio.to_thread(_merge_scene_and_cleanup, job_id, scene_id, job_dir, request, plan, self.settings)
         publish_finalize = False
         progress = ProgressStore(job_dir)
 
@@ -743,6 +735,19 @@ def _block_by_id(plan, block_id: str):
         if block.block_id == block_id:
             return block
     raise KeyError(block_id)
+
+
+def _merge_scene_and_cleanup(job_id: str, scene_id: str, job_dir: Path, request: JobRequest, plan: Any, settings: InferenceEngineSettings) -> tuple[dict[str, Any], dict[str, Any]]:
+    import json
+
+    block_summaries = []
+    for block in plan.blocks:
+        summary_path = Path(block.summary_path)
+        if summary_path.exists():
+            block_summaries.append(json.loads(summary_path.read_text(encoding="utf-8-sig")))
+    summary = merge_scene_blocks(job_dir=job_dir, plan=plan, request=request, block_summaries=block_summaries)
+    cleanup_report = cleanup_scene_runtime(job_id, scene_id, settings=settings, job_dir=job_dir)
+    return summary, cleanup_report
 
 
 def _filter_unfinished_tile_messages(job_dir: Path, rows: list[QueueMessage]) -> list[QueueMessage]:
