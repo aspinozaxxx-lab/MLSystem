@@ -19,7 +19,7 @@ dependencies = [
   "rasterio>=1.3",
   "requests>=2.32",
   "shapely>=2.0",
-  "tritonclient[http]>=2.45",
+  "tritonclient[grpc,http]>=2.45",
   "uvicorn[standard]>=0.30",
 ]
 

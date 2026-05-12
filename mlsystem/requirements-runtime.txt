@@ -15,7 +15,8 @@ rasterio
 pillow
 onnx
 onnxscript
-tritonclient[http]
+tritonclient[grpc,http]
+grpcio>=1.67.1
 segmentation-models-pytorch
 torch
 torchvision
