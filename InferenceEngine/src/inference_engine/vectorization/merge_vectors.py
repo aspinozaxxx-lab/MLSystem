@@ -21,8 +21,12 @@ def merge_block_vectors(
 ) -> dict[str, Any]:
     started = time.time()
     geometries = []
+    input_crs_values: set[str] = set()
     for path in block_vector_paths:
         payload = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+        input_crs = _geojson_crs_name(payload)
+        if input_crs:
+            input_crs_values.add(input_crs)
         for feature in payload.get("features") or []:
             geom = shape(feature.get("geometry"))
             if not geom.is_empty:
@@ -45,8 +49,9 @@ def merge_block_vectors(
         for idx, geom in enumerate(filtered, start=1)
     ]
     output_payload: dict[str, Any] = {"type": "FeatureCollection", "features": features}
-    if crs_name:
-        output_payload["crs"] = {"type": "name", "properties": {"name": crs_name}}
+    output_crs = crs_name or (next(iter(input_crs_values)) if len(input_crs_values) == 1 else None)
+    if output_crs:
+        output_payload["crs"] = {"type": "name", "properties": {"name": output_crs}}
     output_path = Path(output_geojson)
     output_path.write_text(json.dumps(output_payload, ensure_ascii=False), encoding="utf-8")
     summary = {
@@ -62,9 +67,23 @@ def merge_block_vectors(
         "final_geojson_size_mb": round(output_path.stat().st_size / (1024 * 1024), 6),
         "merge_duration_sec": round(time.time() - started, 3),
         "accepted_geojson": str(output_path),
+        "crs": output_crs,
     }
     write_json(output_path.with_suffix(".summary.json"), summary)
     return summary
+
+
+def _geojson_crs_name(payload: dict[str, Any]) -> str | None:
+    crs = payload.get("crs")
+    if isinstance(crs, dict):
+        properties = crs.get("properties")
+        if isinstance(properties, dict) and properties.get("name"):
+            return str(properties["name"])
+        if crs.get("name"):
+            return str(crs["name"])
+    if isinstance(crs, str):
+        return crs
+    return None
 
 
 def _flatten_geometries(geom: Any) -> list[Any]:

@@ -84,7 +84,11 @@ def vectorize_expanded_block(block: BlockDescriptor, plan: ScenePlan, vector_cfg
     )
     core_box = box(*block.core_bbox)
     features, boundary_candidates = _clip_features_to_core(vectorized.features_raw, core_box, block)
-    payload = {"type": "FeatureCollection", "features": features}
+    payload = {
+        "type": "FeatureCollection",
+        "crs": {"type": "name", "properties": {"name": vectorized.crs}},
+        "features": features,
+    }
     vector_path.parent.mkdir(parents=True, exist_ok=True)
     vector_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     summary = {

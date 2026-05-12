@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from ..api.schemas import JobRequest, PseudolabelConfig
+from ..postprocessing.vectorization import METRIC_CRS
 from ..planning.planner import ScenePlan
 from ..storage.local_io import write_json
 from ..vectorization.merge_vectors import merge_block_vectors
@@ -29,7 +30,7 @@ def merge_scene_blocks(
         output_geojson=accepted,
         final_min_area=float(vector_cfg.final_min_area or 0.0),
         merge_epsilon=float(vector_cfg.merge_epsilon or 0.0),
-        crs_name=plan.crs,
+        crs_name=METRIC_CRS,
     )
     summary = {
         "scene_id": plan.scene_id,
@@ -58,13 +59,12 @@ def finalize_job_artifacts(
     experiment_id = request.experiment_id
     scene_vector_paths = [str(summary.get("accepted_geojson") or summary.get("accepted")) for summary in scene_summaries if summary.get("accepted_geojson") or summary.get("accepted")]
     accepted_geojson = run_dir / f"{experiment_id}.accepted.geojson"
-    output_crs = _single_output_crs(plans)
     merge_summary = merge_block_vectors(
         scene_vector_paths,
         output_geojson=accepted_geojson,
         final_min_area=0.0,
         merge_epsilon=0.0,
-        crs_name=output_crs,
+        crs_name=METRIC_CRS,
     )
     accepted_gz = run_dir / "accepted.geojson.gz"
     with gzip.open(accepted_gz, "wt", encoding="utf-8") as fp:
@@ -194,13 +194,6 @@ def finalize_job_artifacts(
     }
     write_json(job_dir / "artifacts.json", artifacts)
     return artifacts
-
-
-def _single_output_crs(plans: list[ScenePlan]) -> str | None:
-    crs_values = {str(plan.crs) for plan in plans if plan.crs}
-    if len(crs_values) == 1:
-        return next(iter(crs_values))
-    return None
 
 
 def _write_placeholder_probability_mosaic(path: Path, plan: ScenePlan) -> None:

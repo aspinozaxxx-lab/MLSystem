@@ -73,7 +73,8 @@ class RabbitPipelineWorkerTests(unittest.TestCase):
             scene_merge = fake.pop("ie.scene.merge")
             asyncio.run(pipeline.handle_scene_merge(scene_merge))
             scene_dir = Path(tmp) / "jobs" / job_id / "scenes" / "scene_a"
-            self.assertTrue((scene_dir / "scene_a.accepted.geojson").exists())
+            scene_payload = (scene_dir / "scene_a.accepted.geojson").read_text(encoding="utf-8")
+            self.assertIn('"EPSG:3857"', scene_payload)
             self.assertTrue((scene_dir / "plan.json").exists())
             self.assertFalse((scene_dir / "tiles").exists())
             self.assertFalse((scene_dir / "blocks").exists())
@@ -83,6 +84,8 @@ class RabbitPipelineWorkerTests(unittest.TestCase):
             self.assertEqual(state["status"], "success")
             self.assertLess(state["metrics"]["first_block_vectorized_at"], state["metrics"]["last_tile_inferred_at"])
             self.assertIn("accepted_geojson", state["artifacts"])
+            accepted_payload = Path(state["artifacts"]["accepted_geojson"]).read_text(encoding="utf-8")
+            self.assertIn('"EPSG:3857"', accepted_payload)
             self.assertNotIn("scene_a.plan.json", state["artifacts"])
             self.assertFalse((Path(tmp) / "jobs" / job_id / "scenes").exists())
             self.assertFalse((Path(tmp) / "spool" / job_id).exists())

@@ -46,6 +46,7 @@ class StreamingPipelineTests(unittest.TestCase):
             accepted = Path(final["artifacts"]["accepted_geojson"])
             payload = json.loads(accepted.read_text(encoding="utf-8"))
             self.assertEqual(len(payload["features"]), 1)
+            self.assertEqual(payload["crs"]["properties"]["name"], "EPSG:3857")
             self.assertFalse((root / "jobs" / "job" / "scenes").exists())
             self.assertFalse((root / "spool" / "job").exists())
             self.assertTrue((root / "jobs" / "job" / "cleanup.json").exists())

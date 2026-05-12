@@ -48,7 +48,11 @@ def vectorize_block(job: BlockVectorizationJob) -> BlockVectorizationResult:
         )
         core_box = box(*job.block.core_bbox)
         features, boundary_candidates = _clip_features_to_core(result.features_raw, core_box, job)
-        payload = {"type": "FeatureCollection", "features": features}
+        payload = {
+            "type": "FeatureCollection",
+            "crs": {"type": "name", "properties": {"name": result.crs}},
+            "features": features,
+        }
         vector_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         block_result = BlockVectorizationResult(
             block_id=job.block.block_id,
