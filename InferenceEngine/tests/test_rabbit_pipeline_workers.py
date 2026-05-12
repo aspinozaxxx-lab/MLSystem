@@ -33,6 +33,7 @@ class FakeClient:
 class RabbitPipelineWorkerTests(unittest.TestCase):
     def test_role_queue_contracts_exist(self) -> None:
         self.assertEqual(ROLE_QUEUES["preprocess"], "ie.tile.preprocess")
+        self.assertEqual(ROLE_QUEUES["fused"], "ie.tile.preprocess")
         self.assertEqual(ROLE_QUEUES["triton"], "ie.tile.infer")
         self.assertEqual(ROLE_QUEUES["finalizer"], "ie.job.finalize")
 
@@ -119,6 +120,25 @@ class RabbitPipelineWorkerTests(unittest.TestCase):
             self.assertEqual(fake.count("ie.tile.preprocess"), 1024)
             progress = (Path(tmp) / "jobs" / job_id / "progress.json").read_text(encoding="utf-8")
             self.assertIn('"infer_queue_target": 1024', progress)
+
+    def test_fused_tile_batch_skips_input_spool_and_publishes_done(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            pipeline, fake = _pipeline(Path(tmp))
+            job_id = "job"
+            pipeline.store.create(_request().model_dump(), job_id=job_id)
+
+            asyncio.run(pipeline.handle_submit(make_message(job_id=job_id, stage="jobs.submit")))
+            scene_plan_msg = fake.pop("ie.scene.plan")
+            asyncio.run(pipeline.handle_scene_plan(scene_plan_msg))
+            preprocess = fake.pop("ie.tile.preprocess")
+            asyncio.run(pipeline.handle_tile_fused_batch([preprocess]))
+            done = fake.pop("ie.tile.done")
+
+            self.assertEqual(done.stage, "tile.done")
+            self.assertFalse((Path(tmp) / "spool" / job_id).exists())
+            metrics = pipeline.store.read(job_id)["metrics"]
+            self.assertEqual(metrics["ie_hotpath_mode"], "fused_memory")
+            self.assertGreaterEqual(metrics["ie_tiles_inferred"], 1)
 
 
 def _pipeline(root: Path) -> tuple[RabbitPipeline, FakeClient]:

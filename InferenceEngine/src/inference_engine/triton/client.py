@@ -12,6 +12,9 @@ class TritonEndpoint:
     url: str = "http://triton:8000"
     model_name: str = "identity_python"
     model_version: str | None = None
+    transport: str = "http"
+    grpc_url: str | None = None
+    shared_memory: str = "off"
 
 
 _READY_MODELS: set[tuple[str, str, str]] = set()
@@ -85,12 +88,20 @@ def infer_identity_smoke(endpoint: TritonEndpoint, values: np.ndarray | None = N
 
 def infer_segmentation_batch(endpoint: TritonEndpoint, batch: np.ndarray) -> np.ndarray:
     """Run a BCHW float32 segmentation batch and return raw logits as BCHW."""
-    import tritonclient.http as httpclient
-
     payload = np.asarray(batch, dtype=np.float32)
     if payload.ndim != 4:
         raise ValueError(f"Triton segmentation input must be BCHW, got shape={payload.shape}")
     ensure_model_ready(endpoint)
+    if endpoint.shared_memory not in {"", "off"}:
+        raise NotImplementedError("Triton shared memory is exposed for benchmarking config but not enabled in production client yet")
+    if endpoint.transport == "grpc":
+        return _infer_segmentation_batch_grpc(endpoint, payload)
+    return _infer_segmentation_batch_http(endpoint, payload)
+
+
+def _infer_segmentation_batch_http(endpoint: TritonEndpoint, payload: np.ndarray) -> np.ndarray:
+    import tritonclient.http as httpclient
+
     client = _client_for_endpoint(endpoint)
     infer_input = httpclient.InferInput("INPUT__0", payload.shape, "FP32")
     infer_input.set_data_from_numpy(payload)
@@ -102,19 +113,49 @@ def infer_segmentation_batch(endpoint: TritonEndpoint, batch: np.ndarray) -> np.
     return np.asarray(logits, dtype=np.float32)
 
 
-def _client_for_endpoint(endpoint: TritonEndpoint):
-    import tritonclient.http as httpclient
+def _infer_segmentation_batch_grpc(endpoint: TritonEndpoint, payload: np.ndarray) -> np.ndarray:
+    import tritonclient.grpc as grpcclient
 
-    url = endpoint.url.replace("http://", "").replace("https://", "")
-    clients = getattr(_CLIENTS, "http", None)
+    client = _client_for_endpoint(endpoint)
+    infer_input = grpcclient.InferInput("INPUT__0", payload.shape, "FP32")
+    infer_input.set_data_from_numpy(payload)
+    output = grpcclient.InferRequestedOutput("OUTPUT__0")
+    result = client.infer(endpoint.model_name, model_version=endpoint.model_version or "", inputs=[infer_input], outputs=[output])
+    logits = result.as_numpy("OUTPUT__0")
+    if logits is None:
+        raise RuntimeError(f"Triton model {endpoint.model_name} did not return OUTPUT__0")
+    return np.asarray(logits, dtype=np.float32)
+
+
+def _client_for_endpoint(endpoint: TritonEndpoint):
+    transport = endpoint.transport or "http"
+    url = _client_url(endpoint)
+    clients = getattr(_CLIENTS, transport, None)
     if clients is None:
         clients = {}
-        _CLIENTS.http = clients
+        setattr(_CLIENTS, transport, clients)
     client = clients.get(url)
     if client is None:
-        client = httpclient.InferenceServerClient(url=url)
+        if transport == "grpc":
+            import tritonclient.grpc as grpcclient
+
+            client = grpcclient.InferenceServerClient(url=url)
+        else:
+            import tritonclient.http as httpclient
+
+            client = httpclient.InferenceServerClient(url=url)
         clients[url] = client
     return client
+
+
+def _client_url(endpoint: TritonEndpoint) -> str:
+    if endpoint.transport == "grpc":
+        url = endpoint.grpc_url or endpoint.url
+        url = url.replace("http://", "").replace("https://", "").rstrip("/")
+        if url.endswith(":8000"):
+            return url[:-5] + ":8001"
+        return url
+    return endpoint.url.replace("http://", "").replace("https://", "").rstrip("/")
 
 
 def build_triton_config(job_predict: dict[str, Any] | None = None) -> TritonEndpoint | None:
@@ -125,4 +166,7 @@ def build_triton_config(job_predict: dict[str, Any] | None = None) -> TritonEndp
         url=str(predict.get("triton_url") or "http://triton:8000"),
         model_name=str(predict.get("triton_model_name") or predict.get("model_name") or "identity_python"),
         model_version=str(predict["triton_model_version"]) if predict.get("triton_model_version") is not None else None,
+        transport=str(predict.get("triton_transport") or "http").lower(),
+        grpc_url=str(predict["triton_grpc_url"]) if predict.get("triton_grpc_url") else None,
+        shared_memory=str(predict.get("triton_shared_memory") or "off").lower(),
     )

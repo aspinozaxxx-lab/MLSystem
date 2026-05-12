@@ -127,6 +127,18 @@ def _render_prometheus_metrics(payload: dict[str, Any]) -> str:
         "spool_bytes": "inference_engine_spool_bytes",
         "preprocess_pauses_total": "inference_engine_preprocess_pauses_total",
         "preprocess_resumes_total": "inference_engine_preprocess_resumes_total",
+        "ie_input_read_ms": "inference_engine_tile_read_ms",
+        "ie_normalize_ms": "inference_engine_tile_normalize_ms",
+        "ie_spool_write_ms": "inference_engine_spool_write_ms",
+        "ie_spool_read_ms": "inference_engine_spool_read_ms",
+        "ie_batch_stack_ms": "inference_engine_batch_stack_ms",
+        "ie_triton_request_ms": "inference_engine_triton_request_hotpath_ms",
+        "ie_cpu_sigmoid_ms": "inference_engine_cpu_sigmoid_ms",
+        "ie_probability_persist_ms": "inference_engine_probability_persist_ms",
+        "ie_tiles_inferred": "inference_engine_tiles_inferred",
+        "ie_tiles_per_sec": "inference_engine_tiles_per_sec",
+        "ie_in_memory_queue_depth": "inference_engine_in_memory_queue_depth",
+        "ie_in_memory_queue_bytes": "inference_engine_in_memory_queue_bytes",
     }
     for source, name in metric_map.items():
         value = _number(aggregate.get(source))

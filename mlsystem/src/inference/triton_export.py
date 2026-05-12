@@ -53,6 +53,10 @@ output [
   {{ name: "OUTPUT__0" data_type: TYPE_FP32 dims: [ 1, -1, -1 ] }}
 ]
 instance_group [ {{ kind: KIND_GPU count: {max(1, int(instance_count))} }} ]
+dynamic_batching {{
+  preferred_batch_size: [ 4, 8, {int(max_batch_size)} ]
+  max_queue_delay_microseconds: 1000
+}}
 ''',
         encoding="utf-8",
     )

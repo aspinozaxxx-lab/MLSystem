@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -17,13 +18,14 @@ from ..triton.client import TritonEndpoint
 from .block_worker import materialize_expanded_block, vectorize_expanded_block
 from .finalizer import finalize_job_artifacts, merge_scene_blocks
 from .state import ProgressStore, SceneStateStore, initialize_progress, initialize_scene_state
-from .tile_workers import infer_tile_batch_multi_scene, preprocess_tile_descriptor
+from .tile_workers import infer_prepared_tile_batch_multi_scene, infer_tile_batch_multi_scene, preprocess_tile_descriptor, read_normalized_tile
 
 
 ROLE_QUEUES = {
     "submit": "ie.jobs.submit",
     "planner": "ie.scene.plan",
     "preprocess": "ie.tile.preprocess",
+    "fused": "ie.tile.preprocess",
     "triton": "ie.tile.infer",
     "aggregator": "ie.tile.done",
     "block-ready": "ie.block.ready",
@@ -51,8 +53,16 @@ class RabbitPipeline:
                 RabbitPipeline(self.settings).client.consume_forever("ie.scene.plan", self.handle_scene_plan),
             )
         elif role == "preprocess":
-            await self.client.consume_forever("ie.tile.preprocess", self.handle_tile_preprocess)
+            if self.settings.hotpath_mode == "fused_memory":
+                await self._run_fused_consumer()
+            else:
+                await self.client.consume_forever("ie.tile.preprocess", self.handle_tile_preprocess)
+        elif role == "fused":
+            await self._run_fused_consumer()
         elif role == "triton":
+            if self.settings.hotpath_mode == "fused_memory":
+                await self._idle_role("triton", reason="disabled while INFERENCE_ENGINE_HOTPATH_MODE=fused_memory")
+                return
             await self.client.consume_batches_forever(
                 "ie.tile.infer",
                 max_batch_size=int(self._default_batch_size()),
@@ -173,6 +183,9 @@ class RabbitPipeline:
                 tiles_by_scene[scene_id] = {tile.tile_id: tile for tile in plan.tiles}
             endpoint = TritonEndpoint(
                 url=self.settings.triton_url,
+                grpc_url=self.settings.triton_grpc_url,
+                transport=self.settings.triton_transport,
+                shared_memory=self.settings.triton_shared_memory,
                 model_name=request.model.triton_model_name or request.model.model_name or "segformer_b2",
                 model_version=request.model.triton_model_version,
             )
@@ -183,15 +196,80 @@ class RabbitPipeline:
             progress = ProgressStore(job_dir)
 
             def mutate(payload: dict[str, Any]) -> None:
-                payload["triton_batches"] = int(payload.get("triton_batches") or 0) + 1
-                payload["triton_batch_fill_sum"] = float(payload.get("triton_batch_fill_sum") or 0.0) + fill_ratio
-                payload["triton_request_duration_ms_sum"] = float(payload.get("triton_request_duration_ms_sum") or 0.0) + duration_ms
-                payload["triton_request_count"] = int(payload.get("triton_request_count") or 0) + 1
+                _add_inference_progress_metrics(payload, outputs, fill_ratio=fill_ratio, duration_ms=duration_ms, mode="disk_spool")
 
             progress.update(mutate)
             self.store.update(job_id, metrics=_metrics_from_progress(progress.read()))
             scene_ids = sorted({str(output.get("scene_id")) for output in outputs if output.get("scene_id")})
             await self._event(job_id, "tile.infer", {"scene_ids": scene_ids, "batch_size": len(outputs), "duration_ms": duration_ms})
+            for output in outputs:
+                scene_id = str(output.pop("scene_id"))
+                tile_id = str(output["tile_id"])
+                await self.client.publish("ie.tile.done", make_message(job_id=job_id, stage="tile.done", scene_id=scene_id, tile_id=tile_id, payload={"scene_id": scene_id, **output}))
+
+    async def _run_fused_consumer(self) -> None:
+        await self.client.consume_batches_forever(
+            "ie.tile.preprocess",
+            max_batch_size=int(self._default_batch_size()),
+            max_wait_ms=int(self.settings.max_wait_ms),
+            handler=self.handle_tile_fused_batch,
+        )
+
+    async def handle_tile_fused_batch(self, messages: list[QueueMessage]) -> None:
+        if not messages:
+            return
+        active_messages = [message for message in messages if not self._job_is_terminal(message.job_id)]
+        if not active_messages:
+            return
+        by_job: dict[str, list[QueueMessage]] = {}
+        for message in active_messages:
+            by_job.setdefault(message.job_id, []).append(message)
+        for job_id, rows in by_job.items():
+            job_dir = self.store.job_dir(job_id)
+            request = JobRequest.model_validate(self.store.read_request(job_id))
+            scene_plans: dict[str, Any] = {}
+            tiles_by_scene: dict[str, dict[str, Any]] = {}
+            for row in rows:
+                scene_id = str(row.payload["scene_id"])
+                if scene_id in scene_plans:
+                    continue
+                plan = read_scene_plan(job_dir, scene_id)
+                scene_plans[scene_id] = plan
+                tiles_by_scene[scene_id] = {tile.tile_id: tile for tile in plan.tiles}
+            endpoint = TritonEndpoint(
+                url=self.settings.triton_url,
+                grpc_url=self.settings.triton_grpc_url,
+                transport=self.settings.triton_transport,
+                shared_memory=self.settings.triton_shared_memory,
+                model_name=request.model.triton_model_name or request.model.model_name or "segformer_b2",
+                model_version=request.model.triton_model_version,
+            )
+
+            def prepare(row: QueueMessage) -> dict[str, Any]:
+                scene_id = str(row.payload["scene_id"])
+                tile_id = str(row.payload["tile_id"])
+                plan = scene_plans[scene_id]
+                tile = tiles_by_scene[scene_id][tile_id]
+                array, timings = read_normalized_tile(tile, plan, request)
+                return {"scene_id": scene_id, "tile_id": tile_id, "tile": tile, "scene_plan": plan, "array": array, "timings": timings}
+
+            with ThreadPoolExecutor(max_workers=max(1, int(self.settings.fused_read_workers))) as executor:
+                prepared_rows = list(executor.map(prepare, rows))
+            in_memory_bytes = sum(int(row["array"].nbytes) for row in prepared_rows if row.get("array") is not None)
+            outputs = infer_prepared_tile_batch_multi_scene(prepared_rows=prepared_rows, request=request, endpoint=endpoint)
+            duration_ms = max([float(item.get("triton_request_duration_ms") or 0.0) for item in outputs] or [0.0])
+            fill_ratio = len(outputs) / max(1, int(request.resource.triton_batch_size or len(outputs)))
+            progress = ProgressStore(job_dir)
+
+            def mutate(payload: dict[str, Any]) -> None:
+                _add_inference_progress_metrics(payload, outputs, fill_ratio=fill_ratio, duration_ms=duration_ms, mode="fused_memory")
+                payload["ie_in_memory_queue_depth"] = len(prepared_rows)
+                payload["ie_in_memory_queue_bytes"] = in_memory_bytes
+
+            progress.update(mutate)
+            self.store.update(job_id, metrics=_metrics_from_progress(progress.read()))
+            scene_ids = sorted({str(output.get("scene_id")) for output in outputs if output.get("scene_id")})
+            await self._event(job_id, "tile.fused", {"scene_ids": scene_ids, "batch_size": len(outputs), "duration_ms": duration_ms, "in_memory_bytes": in_memory_bytes})
             for output in outputs:
                 scene_id = str(output.pop("scene_id"))
                 tile_id = str(output["tile_id"])
@@ -566,6 +644,10 @@ class RabbitPipeline:
         except Exception:
             pass
 
+    async def _idle_role(self, role: str, *, reason: str) -> None:
+        while True:
+            await asyncio.sleep(60.0)
+
     async def _handle_message_failure(self, message: QueueMessage, exc: Exception, source_queue: str, target_queue: str) -> None:
         if target_queue != "ie.dead_letter":
             return
@@ -630,6 +712,35 @@ def _block_by_id(plan, block_id: str):
     raise KeyError(block_id)
 
 
+def _add_inference_progress_metrics(payload: dict[str, Any], outputs: list[dict[str, Any]], *, fill_ratio: float, duration_ms: float, mode: str) -> None:
+    payload["triton_batches"] = int(payload.get("triton_batches") or 0) + 1
+    payload["triton_batch_fill_sum"] = float(payload.get("triton_batch_fill_sum") or 0.0) + fill_ratio
+    payload["triton_request_duration_ms_sum"] = float(payload.get("triton_request_duration_ms_sum") or 0.0) + duration_ms
+    payload["triton_request_count"] = int(payload.get("triton_request_count") or 0) + 1
+    payload["ie_hotpath_mode"] = mode
+    payload["ie_tiles_inferred"] = int(payload.get("ie_tiles_inferred") or 0) + len(outputs)
+    payload[f"ie_{mode}_batches"] = int(payload.get(f"ie_{mode}_batches") or 0) + 1
+    timing_keys = (
+        "input_read_ms",
+        "normalize_ms",
+        "spool_write_ms",
+        "spool_read_ms",
+        "batch_stack_ms",
+        "triton_request_ms",
+        "cpu_sigmoid_ms",
+        "probability_persist_ms",
+    )
+    for output in outputs:
+        timings = output.get("timings") or {}
+        if not isinstance(timings, dict):
+            continue
+        for key in timing_keys:
+            value = timings.get(key)
+            if isinstance(value, (int, float)):
+                payload[f"ie_{key}_sum"] = float(payload.get(f"ie_{key}_sum") or 0.0) + float(value)
+                payload[f"ie_{key}_count"] = int(payload.get(f"ie_{key}_count") or 0) + 1
+
+
 def _metrics_from_progress(progress: dict[str, Any]) -> dict[str, Any]:
     triton_batches = int(progress.get("triton_batches") or 0)
     first_at = progress.get("first_block_vectorized_at")
@@ -637,6 +748,8 @@ def _metrics_from_progress(progress: dict[str, Any]) -> dict[str, Any]:
     overlap = max(0.0, float(last_tile) - float(first_at)) if first_at and last_tile else None
     gpu_snapshot = gpu_util_snapshot()
     gpu_values = [float(item["gpu_util_pct"]) for item in gpu_snapshot if item.get("gpu_util_pct") is not None]
+    started_at = progress.get("started_at_unix")
+    elapsed = max(0.001, time.time() - float(started_at)) if started_at else None
     metrics = {
         "tiles_total": int(progress.get("tiles_total") or 0),
         "tiles_done": int(progress.get("tiles_done") or 0),
@@ -656,7 +769,24 @@ def _metrics_from_progress(progress: dict[str, Any]) -> dict[str, Any]:
         "preprocess_pauses_total": int(progress.get("preprocess_pauses_total") or 0),
         "preprocess_resumes_total": int(progress.get("preprocess_resumes_total") or 0),
         "gpu_util_snapshot_count": len(gpu_snapshot),
+        "ie_hotpath_mode": progress.get("ie_hotpath_mode") or "unknown",
+        "ie_tiles_inferred": int(progress.get("ie_tiles_inferred") or 0),
+        "ie_tiles_per_sec": (int(progress.get("ie_tiles_inferred") or 0) / elapsed if elapsed else 0.0),
+        "ie_in_memory_queue_depth": int(progress.get("ie_in_memory_queue_depth") or 0),
+        "ie_in_memory_queue_bytes": int(progress.get("ie_in_memory_queue_bytes") or 0),
     }
+    for key in (
+        "input_read_ms",
+        "normalize_ms",
+        "spool_write_ms",
+        "spool_read_ms",
+        "batch_stack_ms",
+        "triton_request_ms",
+        "cpu_sigmoid_ms",
+        "probability_persist_ms",
+    ):
+        count = int(progress.get(f"ie_{key}_count") or 0)
+        metrics[f"ie_{key}"] = float(progress.get(f"ie_{key}_sum") or 0.0) / max(1, count)
     if gpu_values:
         metrics["gpu_utilization_mean"] = sum(gpu_values) / len(gpu_values)
         metrics["gpu_utilization_max"] = max(gpu_values)

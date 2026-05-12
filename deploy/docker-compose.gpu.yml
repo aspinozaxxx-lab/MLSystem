@@ -416,6 +416,9 @@ services:
       INFERENCE_ENGINE_LOGS_ROOT: ${INFERENCE_ENGINE_LOGS_ROOT:-/data/mlsystem/inference-engine/logs}
       INFERENCE_ENGINE_LOCAL_S3_ROOT: ${INFERENCE_ENGINE_LOCAL_S3_ROOT:-/data/mlsystem/minio}
       INFERENCE_ENGINE_TRITON_URL: ${INFERENCE_ENGINE_TRITON_URL:-http://triton:8000}
+      INFERENCE_ENGINE_TRITON_GRPC_URL: ${INFERENCE_ENGINE_TRITON_GRPC_URL:-triton:8001}
+      INFERENCE_ENGINE_TRITON_TRANSPORT: ${INFERENCE_ENGINE_TRITON_TRANSPORT:-http}
+      INFERENCE_ENGINE_TRITON_SHARED_MEMORY: ${INFERENCE_ENGINE_TRITON_SHARED_MEMORY:-off}
       INFERENCE_ENGINE_API_TOKEN: ${INFERENCE_ENGINE_API_TOKEN}
       MLFLOW_TRACKING_URI: http://mlflow:5000
       MLFLOW_S3_ENDPOINT_URL: http://minio:9000
@@ -455,10 +458,19 @@ services:
       INFERENCE_ENGINE_LOGS_ROOT: ${INFERENCE_ENGINE_LOGS_ROOT:-/data/mlsystem/inference-engine/logs}
       INFERENCE_ENGINE_LOCAL_S3_ROOT: ${INFERENCE_ENGINE_LOCAL_S3_ROOT:-/data/mlsystem/minio}
       INFERENCE_ENGINE_TRITON_URL: ${INFERENCE_ENGINE_TRITON_URL:-http://triton:8000}
+      INFERENCE_ENGINE_TRITON_GRPC_URL: ${INFERENCE_ENGINE_TRITON_GRPC_URL:-triton:8001}
+      INFERENCE_ENGINE_TRITON_TRANSPORT: ${INFERENCE_ENGINE_TRITON_TRANSPORT:-http}
+      INFERENCE_ENGINE_TRITON_SHARED_MEMORY: ${INFERENCE_ENGINE_TRITON_SHARED_MEMORY:-off}
+      INFERENCE_ENGINE_HOTPATH_MODE: ${INFERENCE_ENGINE_HOTPATH_MODE:-disk_spool}
       INFERENCE_ENGINE_DEFAULT_TRITON_BATCH_SIZE: ${INFERENCE_ENGINE_DEFAULT_TRITON_BATCH_SIZE:-8}
       INFERENCE_ENGINE_MAX_WAIT_MS: ${INFERENCE_ENGINE_MAX_WAIT_MS:-500}
       INFERENCE_ENGINE_PREPROCESS_CONCURRENCY: ${INFERENCE_ENGINE_PREPROCESS_CONCURRENCY:-8}
       INFERENCE_ENGINE_TRITON_CONCURRENCY: ${INFERENCE_ENGINE_TRITON_CONCURRENCY:-2}
+      INFERENCE_ENGINE_FUSED_CONCURRENCY: ${INFERENCE_ENGINE_FUSED_CONCURRENCY:-1}
+      INFERENCE_ENGINE_FUSED_MAX_IN_MEMORY_TILES: ${INFERENCE_ENGINE_FUSED_MAX_IN_MEMORY_TILES:-}
+      INFERENCE_ENGINE_FUSED_MAX_IN_MEMORY_BYTES: ${INFERENCE_ENGINE_FUSED_MAX_IN_MEMORY_BYTES:-17179869184}
+      INFERENCE_ENGINE_FUSED_READ_WORKERS: ${INFERENCE_ENGINE_FUSED_READ_WORKERS:-16}
+      INFERENCE_ENGINE_FUSED_BATCH_WORKERS: ${INFERENCE_ENGINE_FUSED_BATCH_WORKERS:-1}
       INFERENCE_ENGINE_BLOCK_CONCURRENCY: ${INFERENCE_ENGINE_BLOCK_CONCURRENCY:-4}
       MLFLOW_TRACKING_URI: http://mlflow:5000
       MLFLOW_S3_ENDPOINT_URL: http://minio:9000
@@ -493,6 +505,20 @@ services:
     env_file: /etc/mlsystem/gpu-platform.env
     environment: *inference-engine-worker-env
     command: ["inference-engine-worker", "worker", "--role", "triton"]
+    gpus: all
+    volumes:
+      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}:/data/mlsystem
+    restart: unless-stopped
+    networks: [mlsystem-gpu]
+
+  inference-engine-fused-worker:
+    image: ${INFERENCE_ENGINE_IMAGE:-mlsystem/inference-engine:local}
+    container_name: mlsystem-gpu-inference-engine-fused-worker
+    profiles: ["fused"]
+    depends_on: [inference-engine-api]
+    env_file: /etc/mlsystem/gpu-platform.env
+    environment: *inference-engine-worker-env
+    command: ["inference-engine-worker", "worker", "--role", "fused"]
     gpus: all
     volumes:
       - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}:/data/mlsystem

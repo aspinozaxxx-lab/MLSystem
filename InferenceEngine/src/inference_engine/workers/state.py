@@ -86,6 +86,7 @@ def initialize_progress(job_dir: Path, *, job_id: str, scenes: list[dict[str, An
         "schema_version": 1,
         "job_id": job_id,
         "status": "running",
+        "started_at_unix": time.time(),
         "scenes": scenes,
         "scene_count": len(scenes),
         "next_scene_index": 0,

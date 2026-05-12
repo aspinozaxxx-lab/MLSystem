@@ -15,10 +15,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="InferenceEngine worker")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("api")
-    for command in ("submit", "planner", "preprocess", "triton", "aggregator", "block", "merger", "finalizer", "all"):
+    for command in ("submit", "planner", "preprocess", "fused", "triton", "aggregator", "block", "merger", "finalizer", "all"):
         sub.add_parser(command)
     worker = sub.add_parser("worker")
-    worker.add_argument("--role", default="planner", choices=["submit", "planner", "preprocess", "triton", "aggregator", "block", "merger", "finalizer", "all"])
+    worker.add_argument("--role", default="planner", choices=["submit", "planner", "preprocess", "fused", "triton", "aggregator", "block", "merger", "finalizer", "all"])
     worker.add_argument("--concurrency", type=int, default=None)
     run_job = sub.add_parser("run-job")
     run_job.add_argument("job_id")
@@ -32,7 +32,7 @@ def main() -> None:
     elif args.command == "worker":
         concurrency = args.concurrency or _role_concurrency(args.role, settings.default_worker_concurrency)
         asyncio.run(_run_role(settings, args.role, concurrency))
-    elif args.command in {"submit", "planner", "preprocess", "triton", "aggregator", "block", "merger", "finalizer", "all"}:
+    elif args.command in {"submit", "planner", "preprocess", "fused", "triton", "aggregator", "block", "merger", "finalizer", "all"}:
         asyncio.run(_run_role(settings, args.command, _role_concurrency(args.command, settings.default_worker_concurrency)))
     elif args.command == "run-job":
         run_job_local(args.job_id, store=JobStore(settings.job_root), settings=settings)
