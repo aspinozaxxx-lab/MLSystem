@@ -30,6 +30,11 @@ DEFAULT_CLASS_CHECKPOINTS = {
     ),
 }
 
+CLASS_BASELINE_RUNS = {
+    "lakes": ["train_all_lakes_v4_20260512_225353", "tune_lakes_20260512_041935_0189_9a6a02e7"],
+    "desertification": ["train_all_desertification_v2_20260512_223035"],
+}
+
 CLASS_SCENE_PREFIXES = {
     "lakes": ["images/kanopus/wave_2_Upload_01/"],
 }
@@ -41,6 +46,10 @@ def utc_now() -> str:
 
 def stable_hash(payload: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def trial_config_signature(config: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in config.items() if key not in {"hypothesis", "decision_context"}}
 
 
 def read_json(path: Path, default: Any) -> Any:
@@ -63,9 +72,52 @@ def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
         handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
 
 
+def read_jsonl(path: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            payload = json.loads(line)
+            if isinstance(payload, dict):
+                rows.append(payload)
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+    return rows
+
+
 def run_text(args: list[str], *, check: bool = True, timeout: int | None = None) -> str:
     proc = subprocess.run(args, check=check, capture_output=True, text=True, timeout=timeout)
     return proc.stdout.strip()
+
+
+def as_float(value: Any) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def first_value(*values: Any) -> Any:
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
+def status_root_checkpoint_path(path: Any, run_id: str, status_root: Path = DEFAULT_STATUS_ROOT) -> str | None:
+    if not path:
+        return None
+    value = str(path)
+    prefix = f"/opt/airflow/mlsystem_runs/{run_id}/"
+    if value.startswith(prefix):
+        return str(status_root / run_id / value[len(prefix) :])
+    return value
 
 
 def find_class_dir(mlmarkup_dir: Path, class_name: str) -> Path:
@@ -318,6 +370,117 @@ def sample_class_trial(
     raise ValueError(f"Unsupported class slug for tuning: {class_slug}")
 
 
+def _metric(metrics: dict[str, Any], *names: str) -> float | None:
+    for name in names:
+        value = as_float(metrics.get(name))
+        if value is not None:
+            return value
+    return None
+
+
+def _host_history_path(training: dict[str, Any], run_id: str, status_root: Path) -> Path:
+    history = status_root_checkpoint_path(training.get("history_path"), run_id, status_root)
+    if history:
+        return Path(history)
+    return status_root / run_id / "history.json"
+
+
+def read_run_record(status_root: Path, run_id: str) -> dict[str, Any] | None:
+    run_dir = status_root / run_id
+    summary = read_json(run_dir / "summary.json", None)
+    if not isinstance(summary, dict):
+        return None
+    training = summary.get("training_result") or read_json(run_dir / "training_result.json", {}) or {}
+    config = summary.get("experiment_config") or read_json(run_dir / "experiment_config.json", {}) or {}
+    history = read_json(_host_history_path(training, run_id, status_root), []) or []
+    best_epoch = training.get("best_epoch")
+    best_row: dict[str, Any] | None = None
+    if isinstance(history, list) and history:
+        if best_epoch is not None:
+            try:
+                best_epoch_float = float(best_epoch)
+                best_row = min(history, key=lambda row: abs(float((row or {}).get("epoch") or 0) - best_epoch_float))
+            except Exception:
+                best_row = None
+        if best_row is None:
+            best_row = max(
+                history,
+                key=lambda row: _metric(
+                    row or {},
+                    "val/class_pixel_f1",
+                    "val/pixel_f1",
+                    "epoch/pixel_f1",
+                    "objective/value",
+                )
+                or -1.0,
+            )
+    last_row = history[-1] if isinstance(history, list) and history else {}
+    metrics = {
+        "best_val_pixel_f1": _metric(training, "best_val_pixel_f1", "best_objective_value"),
+        "last_val_pixel_f1": _metric(last_row or {}, "val/class_pixel_f1", "val/pixel_f1", "epoch/pixel_f1", "objective/value"),
+        "best_epoch": best_epoch,
+        "epochs_completed": training.get("epochs_completed"),
+        "precision": _metric(best_row or {}, "val/class_pixel_precision", "val/precision", "val/precision_best_threshold"),
+        "recall": _metric(best_row or {}, "val/class_pixel_recall", "val/recall", "val/recall_best_threshold"),
+        "iou": _metric(training, "best_val_iou") or _metric(best_row or {}, "val/class_pixel_iou", "val/iou"),
+        "best_threshold": first_value(
+            (best_row or {}).get("val/best_threshold"),
+            (best_row or {}).get("val/threshold"),
+            (last_row or {}).get("val/best_threshold"),
+        ),
+    }
+    checkpoint = status_root_checkpoint_path(training.get("checkpoint_path"), run_id, status_root)
+    initial = training.get("initial_checkpoint")
+    if isinstance(initial, dict):
+        initial = initial.get("path")
+    mlflow = summary.get("mlflow") or training.get("mlflow") or {}
+    status = str(summary.get("status") or training.get("status") or "").lower()
+    if metrics["best_val_pixel_f1"] is None and status == "success":
+        status = "failed"
+    stable_gap = None
+    if metrics["best_val_pixel_f1"] is not None and metrics["last_val_pixel_f1"] is not None:
+        stable_gap = float(metrics["best_val_pixel_f1"]) - float(metrics["last_val_pixel_f1"])
+    return {
+        "run_id": run_id,
+        "status": status,
+        "summary_status": summary.get("status"),
+        "class_name": config.get("class_name") or (config.get("params") or {}).get("class_name"),
+        "config": config,
+        "train": config.get("train") or {},
+        "preprocess": config.get("preprocess") or {},
+        "metrics": metrics,
+        "stable_gap": stable_gap,
+        "overfit": stable_gap is not None and stable_gap > 0.03,
+        "checkpoint_path": checkpoint,
+        "checkpoint_exists": bool(checkpoint and Path(checkpoint).exists()),
+        "initial_checkpoint": initial,
+        "mlflow_run_id": mlflow.get("run_id"),
+        "mlflow_run_url": mlflow.get("run_url_external") or mlflow.get("external_run_url") or mlflow.get("run_url"),
+        "errors": summary.get("errors") or [],
+        "finished_at": summary.get("finished_at"),
+    }
+
+
+def summarize_record(record: dict[str, Any] | None) -> dict[str, Any]:
+    if not record:
+        return {}
+    metrics = record.get("metrics") or {}
+    return {
+        "run_id": record.get("run_id"),
+        "status": record.get("status"),
+        "f1": metrics.get("best_val_pixel_f1"),
+        "last_f1": metrics.get("last_val_pixel_f1"),
+        "precision": metrics.get("precision"),
+        "recall": metrics.get("recall"),
+        "iou": metrics.get("iou"),
+        "best_epoch": metrics.get("best_epoch"),
+        "epochs_completed": metrics.get("epochs_completed"),
+        "checkpoint_path": record.get("checkpoint_path"),
+        "overfit": record.get("overfit"),
+        "stable_gap": record.get("stable_gap"),
+    }
+
+
 def build_experiment_config(
     *,
     run_id: str,
@@ -329,6 +492,8 @@ def build_experiment_config(
     config_hash: str,
     images_uri: str,
 ) -> dict[str, Any]:
+    loss_cfg = {"name": trial["loss"]}
+    loss_cfg.update(trial.get("loss_params") or {})
     train = {
         "enabled": True,
         "require_gpu": True,
@@ -339,7 +504,7 @@ def build_experiment_config(
         "weight_decay": trial["weight_decay"],
         "optimizer": "adamw",
         "scheduler": {"name": trial["scheduler"]},
-        "loss": {"name": trial["loss"]},
+        "loss": loss_cfg,
         "early_stopping": {"enabled": True, "patience": trial["early_stopping_patience"]},
         "augmentations": trial["augmentations"],
         "metric_thresholds": [0.3, 0.4, 0.5, 0.6, 0.7],
@@ -391,6 +556,7 @@ def build_experiment_config(
             "tuning.class_slug": class_slug,
             "tuning.config_hash": config_hash,
             "tuning.hypothesis": trial["hypothesis"],
+            "tuning.initial_checkpoint_path": trial.get("initial_checkpoint_path"),
             "training.phase": "continuous_tuning",
             "validation.kind": "scene_level",
             "validation.split_strategy": trial["split_strategy"],
@@ -443,11 +609,13 @@ class AirflowTuningController:
         stats = dataset_stats(layout_dir)
         self.log(f"start class={self.class_name} slug={self.class_slug} layout={layout_dir}")
         state = self.load_state()
+        self.refresh_baseline_state(state)
         while not self.stop_requested():
             if self.args.max_trials and int(state.get("trials_completed") or 0) >= self.args.max_trials:
                 self.log("max_trials reached")
                 return
             state = self.load_state()
+            self.refresh_baseline_state(state)
             trial_index = int(state.get("trials_started") or 0) + 1
             trial = self.next_trial(state, trial_index)
             state["trials_started"] = trial_index
@@ -470,37 +638,275 @@ class AirflowTuningController:
             state = self.load_state()
             state["trials_completed"] = int(state.get("trials_completed") or 0) + 1
             state["last_result"] = result
-            best = state.get("best") or {}
-            f1 = ((result.get("metrics") or {}).get("best_val_pixel_f1") if result.get("status") == "succeeded" else None)
-            if f1 is not None and float(f1) > float(best.get("best_val_pixel_f1") or -1):
-                state["best"] = {
-                    "run_id": result["run_id"],
-                    "mlflow_run_id": result.get("mlflow_run_id"),
-                    "best_val_pixel_f1": f1,
-                    "checkpoint_path": (result.get("metrics") or {}).get("checkpoint_path"),
-                    "config_hash": trial["config_hash"],
-                }
+            self.refresh_baseline_state(state)
             self.write_state(state)
             self.refresh_frontend()
             if not self.args.max_trials:
                 time.sleep(max(1, int(self.args.sleep_sec)))
         self.log("STOP_TUNING detected; exiting")
 
+    def build_leaderboard(self) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for run_id in CLASS_BASELINE_RUNS.get(self.class_slug, []):
+            record = read_run_record(Path(self.args.status_root), run_id)
+            if record:
+                records.append(record)
+                seen.add(run_id)
+        for path in sorted(Path(self.args.status_root).glob(f"*{self.class_slug}*/summary.json")):
+            run_id = path.parent.name
+            if run_id in seen:
+                continue
+            record = read_run_record(Path(self.args.status_root), run_id)
+            if record:
+                records.append(record)
+                seen.add(run_id)
+        normalized = self.class_name.strip().lower()
+        for path in sorted(Path(self.args.status_root).glob("*desertification*/summary.json")):
+            run_id = path.parent.name
+            if self.class_slug != "desertification" or run_id in seen:
+                continue
+            record = read_run_record(Path(self.args.status_root), run_id)
+            if record:
+                records.append(record)
+                seen.add(run_id)
+        records = [
+            record
+            for record in records
+            if record.get("class_name") in {None, "", self.class_name}
+            or str(record.get("class_name") or "").strip().lower() == normalized
+            or self.class_slug in str(record.get("run_id") or "")
+        ]
+        return sorted(
+            records,
+            key=lambda record: (
+                as_float((record.get("metrics") or {}).get("best_val_pixel_f1")) or -1.0,
+                -abs(as_float(record.get("stable_gap")) or 0.0),
+            ),
+            reverse=True,
+        )
+
+    def refresh_baseline_state(self, state: dict[str, Any]) -> dict[str, Any]:
+        leaderboard = self.build_leaderboard()
+        state["leaderboard"] = [summarize_record(record) for record in leaderboard[:12]]
+        best = next(
+            (
+                record
+                for record in leaderboard
+                if record.get("status") == "success"
+                and (record.get("metrics") or {}).get("best_val_pixel_f1") is not None
+                and record.get("checkpoint_exists")
+            ),
+            None,
+        )
+        if best:
+            metrics = best.get("metrics") or {}
+            state["best"] = {
+                "run_id": best.get("run_id"),
+                "mlflow_run_id": best.get("mlflow_run_id"),
+                "best_val_pixel_f1": metrics.get("best_val_pixel_f1"),
+                "last_val_pixel_f1": metrics.get("last_val_pixel_f1"),
+                "precision": metrics.get("precision"),
+                "recall": metrics.get("recall"),
+                "iou": metrics.get("iou"),
+                "best_epoch": metrics.get("best_epoch"),
+                "checkpoint_path": best.get("checkpoint_path"),
+                "stable_gap": best.get("stable_gap"),
+                "overfit": best.get("overfit"),
+            }
+        self.write_state(state)
+        return state
+
+    def best_checkpoint(self, state: dict[str, Any]) -> str | None:
+        best = state.get("best") or {}
+        checkpoint = best.get("checkpoint_path")
+        if checkpoint and Path(str(checkpoint)).exists():
+            return str(checkpoint)
+        default_checkpoint = DEFAULT_CLASS_CHECKPOINTS.get(self.class_slug) or DEFAULT_LAKES_CHECKPOINT
+        if default_checkpoint.exists():
+            return str(default_checkpoint)
+        if self.args.initial_checkpoint and Path(self.args.initial_checkpoint).exists():
+            return self.args.initial_checkpoint
+        return self.args.initial_checkpoint
+
     def next_trial(self, state: dict[str, Any], trial_index: int) -> dict[str, Any]:
         tried = set(state.get("tried_config_hashes") or [])
-        initial = self.args.initial_checkpoint
-        default_checkpoint = DEFAULT_CLASS_CHECKPOINTS.get(self.class_slug) or DEFAULT_LAKES_CHECKPOINT
-        if not initial and default_checkpoint.exists():
-            initial = str(default_checkpoint)
-        for _ in range(500):
-            config = sample_class_trial(self.class_slug, self.rng, trial_index, initial_checkpoint=initial)
-            config_hash = stable_hash(config)
+        initial = self.best_checkpoint(state)
+        leaderboard = self.build_leaderboard()
+        for offset in range(500):
+            config = self.adaptive_trial_config(state, leaderboard, trial_index + offset, initial_checkpoint=initial)
+            config_hash = stable_hash(trial_config_signature(config))
             if config_hash not in tried:
+                trial_index += offset
                 break
-            trial_index += 1
+        else:
+            raise RuntimeError("Could not generate a new untried adaptive config")
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         run_id = f"tune_{self.class_slug}_airflow_{timestamp}_{trial_index:04d}_{config_hash[:8]}"
         return {"run_id": run_id, "trial_index": trial_index, "config": config, "config_hash": config_hash}
+
+    def adaptive_trial_config(
+        self,
+        state: dict[str, Any],
+        leaderboard: list[dict[str, Any]],
+        trial_index: int,
+        *,
+        initial_checkpoint: str | None,
+    ) -> dict[str, Any]:
+        if self.class_slug == "lakes" and trial_index <= 4:
+            return sample_lakes_trial(self.rng, trial_index, initial_checkpoint=initial_checkpoint)
+        if self.class_slug == "desertification":
+            return self.adaptive_desertification_config(state, leaderboard, trial_index, initial_checkpoint=initial_checkpoint)
+        return sample_class_trial(self.class_slug, self.rng, trial_index, initial_checkpoint=initial_checkpoint)
+
+    def adaptive_desertification_config(
+        self,
+        state: dict[str, Any],
+        leaderboard: list[dict[str, Any]],
+        trial_index: int,
+        *,
+        initial_checkpoint: str | None,
+    ) -> dict[str, Any]:
+        best_record = leaderboard[0] if leaderboard else None
+        best_metrics = (best_record or {}).get("metrics") or {}
+        precision = as_float(best_metrics.get("precision"))
+        recall = as_float(best_metrics.get("recall"))
+        best_f1 = as_float(best_metrics.get("best_val_pixel_f1"))
+        last = state.get("last_result") or {}
+        last_status = str(last.get("status") or "").lower()
+        overfit = bool((best_record or {}).get("overfit"))
+        base = self.trial_from_record(best_record, initial_checkpoint=initial_checkpoint)
+        base["hypothesis"] = "Continue the best desertification branch and change one controlled factor based on the latest pixel-F1 diagnostics."
+        scenarios: list[dict[str, Any]] = []
+        if last_status == "failed":
+            scenarios.append(
+                {
+                    "hypothesis": "Previous tuning run failed at orchestration/runtime level, not by metric. Retry from the best valid checkpoint with baseline-safe training controls and no gamma change.",
+                    "learning_rate": 1e-4,
+                    "loss": "focal_dice",
+                    "scheduler": "none",
+                    "epochs": 50,
+                    "early_stopping_patience": 14,
+                    "augmentations": {**base["augmentations"], "gamma": False, "blur": False},
+                }
+            )
+        if precision is not None and recall is not None and precision > recall + 0.08:
+            scenarios.extend(
+                [
+                    {
+                        "hypothesis": f"Recall is limiting F1 (precision={precision:.3f}, recall={recall:.3f}); switch to Tversky-biased loss to penalize false negatives.",
+                        "loss": "focal_tversky",
+                        "loss_params": {"tversky_alpha": 0.35, "tversky_beta": 0.65},
+                    },
+                    {
+                        "hypothesis": f"Recall is limiting F1 (precision={precision:.3f}, recall={recall:.3f}); keep focal_dice but use a slightly higher LR with cosine decay to escape the conservative solution.",
+                        "learning_rate": 2e-4,
+                        "scheduler": "cosine",
+                    },
+                    {
+                        "hypothesis": "Improve recall by increasing tile overlap while keeping model/loss fixed, so border objects appear in more positive crops.",
+                        "stride": 384,
+                    },
+                ]
+            )
+        elif precision is not None and recall is not None and recall > precision + 0.08:
+            scenarios.extend(
+                [
+                    {
+                        "hypothesis": f"Precision is limiting F1 (precision={precision:.3f}, recall={recall:.3f}); increase regularization to reduce false positives.",
+                        "weight_decay": 1e-3,
+                    },
+                    {
+                        "hypothesis": f"Precision is limiting F1 (precision={precision:.3f}, recall={recall:.3f}); use BCE+Dice to make probability calibration more conservative.",
+                        "loss": "bce_dice",
+                        "learning_rate": 8e-5,
+                    },
+                ]
+            )
+        else:
+            scenarios.extend(
+                [
+                    {
+                        "hypothesis": f"F1 is balanced near {best_f1}; check a conservative LR decay variant from the best checkpoint.",
+                        "learning_rate": 8e-5,
+                        "scheduler": "cosine",
+                    },
+                    {
+                        "hypothesis": "Metric is close/balanced; test one crop geometry change while preserving loss and split.",
+                        "patch_size": 768,
+                        "stride": 512,
+                    },
+                ]
+            )
+        if overfit:
+            scenarios.insert(
+                0,
+                {
+                    "hypothesis": "Best run has a large best-vs-last F1 gap; reduce LR and add weight decay to improve end-of-training stability.",
+                    "learning_rate": 5e-5,
+                    "weight_decay": 3e-4,
+                    "scheduler": "cosine",
+                    "early_stopping_patience": 12,
+                },
+            )
+        index = max(1, trial_index) - 1
+        scenario = scenarios[index % len(scenarios)]
+        cycle = index // len(scenarios)
+        trial = {**base}
+        trial.update({key: value for key, value in scenario.items() if key != "loss_params"})
+        if "loss_params" in scenario:
+            trial["loss_params"] = scenario["loss_params"]
+        if cycle:
+            lr_multipliers = [0.75, 1.25, 0.5, 1.5]
+            wd_multipliers = [1.0, 3.0, 0.3, 1.0]
+            trial["learning_rate"] = round(float(trial["learning_rate"]) * lr_multipliers[(cycle - 1) % len(lr_multipliers)], 8)
+            trial["weight_decay"] = round(float(trial["weight_decay"]) * wd_multipliers[(cycle - 1) % len(wd_multipliers)], 8)
+            trial["epochs"] = int(trial["epochs"]) + 5 * min(cycle, 3)
+            trial["hypothesis"] = (
+                f"{scenario['hypothesis']} Controlled follow-up cycle {cycle}: adjust LR/WD only, keeping split, "
+                "checkpoint, model, and the main hypothesis fixed."
+            )
+        else:
+            trial["hypothesis"] = scenario["hypothesis"]
+        trial["initial_checkpoint_path"] = initial_checkpoint
+        trial["decision_context"] = {
+            "best": summarize_record(best_record),
+            "last_result": last,
+            "rule": "precision_recall_adaptive",
+        }
+        return trial
+
+    def trial_from_record(self, record: dict[str, Any] | None, *, initial_checkpoint: str | None) -> dict[str, Any]:
+        train = (record or {}).get("train") or {}
+        preprocess = (record or {}).get("preprocess") or {}
+        loss_cfg = train.get("loss") or {}
+        scheduler_cfg = train.get("scheduler") or {}
+        augmentations = train.get("augmentations") or {
+            "flips": True,
+            "rot90": True,
+            "brightness_contrast": True,
+            "noise": True,
+            "blur": False,
+            "gamma": False,
+        }
+        return {
+            "hypothesis": "Fine-tune from the current best checkpoint.",
+            "model_name": str(((record or {}).get("config") or {}).get("model", {}).get("name") or "segformer_b2"),
+            "patch_size": int(preprocess.get("patch_size") or preprocess.get("tile_size") or 1024),
+            "stride": int(preprocess.get("stride") or 512),
+            "batch_size": train.get("batch_size") or 2,
+            "learning_rate": float(train.get("learning_rate") or 1e-4),
+            "weight_decay": float(train.get("weight_decay") or 1e-4),
+            "loss": str(loss_cfg.get("name") or loss_cfg.get("type") or "focal_dice"),
+            "scheduler": str(scheduler_cfg.get("name") or scheduler_cfg.get("type") or "none"),
+            "epochs": int(train.get("epochs") or train.get("max_epochs") or 50),
+            "early_stopping_patience": int((train.get("early_stopping") or {}).get("patience") or 14),
+            "split_seed": int(preprocess.get("split_seed") or 20260513),
+            "initial_checkpoint_path": initial_checkpoint,
+            "target_val_fraction": float(preprocess.get("target_val_fraction") or 0.2),
+            "split_strategy": str(preprocess.get("split_strategy") or "object_balanced"),
+            "augmentations": dict(augmentations),
+        }
 
     def run_trial(self, layout_dir: Path, stats: dict[str, Any], trial: dict[str, Any]) -> dict[str, Any]:
         run_id = trial["run_id"]
@@ -534,30 +940,55 @@ class AirflowTuningController:
         )
         status = self.wait_for_run(run_id)
         summary = read_json(Path(self.args.status_root) / run_id / "summary.json", {})
-        training = summary.get("training_result") or read_json(Path(self.args.status_root) / run_id / "training_result.json", {})
-        metrics = {
-            "best_val_pixel_f1": training.get("best_val_pixel_f1"),
-            "last_val_pixel_f1": (training.get("last_epoch_metrics") or {}).get("val/pixel_f1"),
-            "best_epoch": training.get("best_epoch"),
-            "epochs_completed": training.get("epochs_completed"),
-            "checkpoint_path": training.get("checkpoint_path"),
-            "precision": (training.get("last_epoch_metrics") or {}).get("val/class_pixel_precision")
-            or (training.get("last_epoch_metrics") or {}).get("val/precision"),
-            "recall": (training.get("last_epoch_metrics") or {}).get("val/class_pixel_recall")
-            or (training.get("last_epoch_metrics") or {}).get("val/recall"),
-            "iou": training.get("best_val_iou"),
-        }
-        mlflow = summary.get("mlflow") or training.get("mlflow") or {}
+        record = read_run_record(Path(self.args.status_root), run_id)
+        metrics = dict((record or {}).get("metrics") or {})
+        if record and record.get("checkpoint_path"):
+            metrics["checkpoint_path"] = record.get("checkpoint_path")
+        mlflow = summary.get("mlflow") or {}
         result = {
             "status": status,
             "run_id": run_id,
-            "mlflow_run_id": mlflow.get("run_id"),
-            "mlflow_run_url": mlflow.get("run_url_external") or mlflow.get("external_run_url") or mlflow.get("run_url"),
+            "mlflow_run_id": (record or {}).get("mlflow_run_id") or mlflow.get("run_id"),
+            "mlflow_run_url": (record or {}).get("mlflow_run_url")
+            or mlflow.get("run_url_external")
+            or mlflow.get("external_run_url")
+            or mlflow.get("run_url"),
             "metrics": metrics,
+            "analysis": self.analyze_result(record),
             "finished_at": utc_now(),
         }
         self.log(f"run done run={run_id} status={status} f1={metrics.get('best_val_pixel_f1')} epoch={metrics.get('best_epoch')}")
         return result
+
+    def analyze_result(self, record: dict[str, Any] | None) -> dict[str, Any]:
+        if not record:
+            return {"status": "missing_record", "decision": "Do not use this run as a baseline."}
+        metrics = record.get("metrics") or {}
+        precision = as_float(metrics.get("precision"))
+        recall = as_float(metrics.get("recall"))
+        f1 = as_float(metrics.get("best_val_pixel_f1"))
+        last_f1 = as_float(metrics.get("last_val_pixel_f1"))
+        findings: list[str] = []
+        next_focus = "balanced"
+        if record.get("status") != "success":
+            findings.append("Run failed; keep current best checkpoint and avoid treating this config as a valid branch.")
+            next_focus = "pipeline_or_config_recovery"
+        elif precision is not None and recall is not None and precision > recall + 0.08:
+            findings.append("Precision is materially higher than recall; next experiment should target recall and false negatives.")
+            next_focus = "increase_recall"
+        elif precision is not None and recall is not None and recall > precision + 0.08:
+            findings.append("Recall is materially higher than precision; next experiment should reduce false positives.")
+            next_focus = "increase_precision"
+        if f1 is not None and last_f1 is not None and f1 - last_f1 > 0.03:
+            findings.append("Best F1 is much higher than last F1; treat as unstable/overfit and prefer more conservative continuation.")
+            next_focus = "stability"
+        if not findings:
+            findings.append("Run is usable and reasonably balanced; continue with small controlled mutations.")
+        return {
+            "findings": findings,
+            "next_focus": next_focus,
+            "summary": summarize_record(record),
+        }
 
     def wait_for_run(self, run_id: str) -> str:
         deadline = time.time() + int(self.args.run_timeout_sec)
@@ -597,7 +1028,8 @@ class AirflowTuningController:
                 timeout=60,
             )
             for row in json.loads(raw or "[]"):
-                if str(row.get("dag_run_id") or "") == run_id:
+                row_run_id = str(row.get("run_id") or row.get("dag_run_id") or "")
+                if row_run_id == run_id:
                     return str(row.get("state") or "").lower() or None
         except Exception:
             return None
@@ -613,10 +1045,22 @@ class AirflowTuningController:
             handle.write(f"- status: {result.get('status')}\n")
             handle.write(f"- hypothesis: {trial['config']['hypothesis']}\n")
             handle.write(f"- config_hash: `{trial['config_hash']}`\n")
+            handle.write(f"- initial_checkpoint: `{trial['config'].get('initial_checkpoint_path')}`\n")
             handle.write(f"- mlflow_run_id: `{result.get('mlflow_run_id')}`\n")
             handle.write(f"- best_val_pixel_f1: {metrics.get('best_val_pixel_f1')}\n")
+            handle.write(f"- last_val_pixel_f1: {metrics.get('last_val_pixel_f1')}\n")
+            handle.write(f"- precision: {metrics.get('precision')}\n")
+            handle.write(f"- recall: {metrics.get('recall')}\n")
+            handle.write(f"- iou: {metrics.get('iou')}\n")
             handle.write(f"- best_epoch: {metrics.get('best_epoch')}\n")
             handle.write(f"- checkpoint: `{metrics.get('checkpoint_path')}`\n\n")
+            analysis = result.get("analysis") or {}
+            findings = analysis.get("findings") or []
+            if findings:
+                handle.write("Analysis:\n")
+                for finding in findings:
+                    handle.write(f"- {finding}\n")
+                handle.write(f"- next_focus: `{analysis.get('next_focus')}`\n\n")
 
     def refresh_frontend(self) -> None:
         if not self.args.refresh_url:
