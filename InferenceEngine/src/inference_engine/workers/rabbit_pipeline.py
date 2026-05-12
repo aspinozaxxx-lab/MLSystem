@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from contextlib import ExitStack
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -11,13 +12,14 @@ from ..config.settings import InferenceEngineSettings
 from ..planning.planner import build_scene_plan, read_scene_plan, resolve_scene_inputs, write_scene_plan
 from ..queues.messages import QueueMessage, make_message
 from ..queues.rabbitmq import RabbitMQClient
+from ..storage.artifacts import checksum_matches
 from ..storage.job_store import JobStore, TERMINAL_STATUSES
 from ..storage.runtime_cleanup import cleanup_scene_runtime, cleanup_terminal_job_runtime, prune_missing_local_artifacts
 from ..telemetry.metrics import directory_size_bytes, gpu_util_snapshot
 from ..triton.client import TritonEndpoint
 from .block_worker import materialize_expanded_block, vectorize_expanded_block
 from .finalizer import finalize_job_artifacts, merge_scene_blocks
-from .state import ProgressStore, SceneStateStore, initialize_progress, initialize_scene_state
+from .state import ProgressStore, SceneStateStore, file_lock, initialize_progress, initialize_scene_state
 from .tile_workers import infer_prepared_tile_batch_multi_scene, infer_tile_batch_multi_scene, preprocess_tile_descriptor, read_normalized_tile
 
 
@@ -260,25 +262,32 @@ class RabbitPipeline:
                 model_name=request.model.triton_model_name or request.model.model_name or "segformer_b2",
                 model_version=request.model.triton_model_version,
             )
+            rows = sorted(rows, key=lambda row: (str(row.payload.get("scene_id") or ""), str(row.payload.get("tile_id") or "")))
 
             def prepare(row: QueueMessage) -> dict[str, Any]:
                 scene_id = str(row.payload["scene_id"])
                 tile_id = str(row.payload["tile_id"])
                 plan = scene_plans[scene_id]
                 tile = tiles_by_scene[scene_id][tile_id]
+                if checksum_matches(Path(tile.artifact_path), Path(tile.checksum_path)):
+                    return {"scene_id": scene_id, "tile_id": tile_id, "tile": tile, "scene_plan": plan, "timings": {}}
                 array, timings = read_normalized_tile(tile, plan, request)
                 return {"scene_id": scene_id, "tile_id": tile_id, "tile": tile, "scene_plan": plan, "array": array, "timings": timings}
 
-            with ThreadPoolExecutor(max_workers=max(1, int(self.settings.fused_read_workers))) as executor:
-                prepared_rows = list(executor.map(prepare, rows))
-            in_memory_bytes = sum(int(row["array"].nbytes) for row in prepared_rows if row.get("array") is not None)
-            outputs: list[dict[str, Any]] = []
-            for chunk in _chunk_prepared_rows_by_memory(
-                prepared_rows,
-                max_tiles=int(self._fused_batch_size()),
-                max_bytes=int(self.settings.fused_max_in_memory_bytes),
-            ):
-                outputs.extend(infer_prepared_tile_batch_multi_scene(prepared_rows=chunk, request=request, endpoint=endpoint))
+            lock_paths = [_tile_infer_lock_path(job_dir, str(row.payload["scene_id"]), str(row.payload["tile_id"])) for row in rows]
+            with ExitStack() as locks:
+                for lock_path in lock_paths:
+                    locks.enter_context(file_lock(lock_path, timeout_sec=300.0))
+                with ThreadPoolExecutor(max_workers=max(1, int(self.settings.fused_read_workers))) as executor:
+                    prepared_rows = list(executor.map(prepare, rows))
+                in_memory_bytes = sum(int(row["array"].nbytes) for row in prepared_rows if row.get("array") is not None)
+                outputs: list[dict[str, Any]] = []
+                for chunk in _chunk_prepared_rows_by_memory(
+                    prepared_rows,
+                    max_tiles=int(self._fused_batch_size()),
+                    max_bytes=int(self.settings.fused_max_in_memory_bytes),
+                ):
+                    outputs.extend(infer_prepared_tile_batch_multi_scene(prepared_rows=chunk, request=request, endpoint=endpoint))
             if self._job_is_terminal(job_id):
                 continue
             duration_ms = max([float(item.get("triton_request_duration_ms") or 0.0) for item in outputs] or [0.0])
@@ -755,6 +764,12 @@ def _filter_unfinished_tile_messages(job_dir: Path, rows: list[QueueMessage]) ->
             continue
         filtered.append(row)
     return filtered
+
+
+def _tile_infer_lock_path(job_dir: Path, scene_id: str, tile_id: str) -> Path:
+    safe_scene = scene_id.replace("/", "_").replace("\\", "_")
+    safe_tile = tile_id.replace("/", "_").replace("\\", "_")
+    return job_dir / "tile_infer_locks" / safe_scene / f"{safe_tile}.lockfile"
 
 
 def _add_inference_progress_metrics(payload: dict[str, Any], outputs: list[dict[str, Any]], *, fill_ratio: float, duration_ms: float, mode: str) -> None:
