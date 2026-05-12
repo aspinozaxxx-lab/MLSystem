@@ -23,6 +23,13 @@ DEFAULT_LAKES_CHECKPOINT = Path(
     "/data/mlsystem/airflow/status/tune_lakes_20260512_041935_0189_9a6a02e7/segformer_b2.pt"
 )
 
+DEFAULT_CLASS_CHECKPOINTS = {
+    "lakes": Path("/data/mlsystem/airflow/status/train_all_lakes_v4_20260512_225353/segformer_b2.pt"),
+    "desertification": Path(
+        "/data/mlsystem/airflow/status/train_all_desertification_v2_20260512_223035/segformer_b2.pt"
+    ),
+}
+
 CLASS_SCENE_PREFIXES = {
     "lakes": ["images/kanopus/wave_2_Upload_01/"],
 }
@@ -207,6 +214,110 @@ def sample_lakes_trial(rng: random.Random, trial_index: int, *, initial_checkpoi
     return trial
 
 
+def sample_desertification_trial(rng: random.Random, trial_index: int, *, initial_checkpoint: str | None) -> dict[str, Any]:
+    base_variants = [
+        {
+            "hypothesis": "Continue from the best desertification checkpoint with lower LR; current F1 is recall-limited, so keep threshold sweep and avoid aggressive regularization.",
+            "model_name": "segformer_b2",
+            "patch_size": 1024,
+            "stride": 512,
+            "batch_size": 2,
+            "learning_rate": 8e-5,
+            "weight_decay": 1e-4,
+            "loss": "focal_dice",
+            "scheduler": "none",
+            "epochs": 55,
+            "early_stopping_patience": 14,
+            "split_seed": 20260513,
+        },
+        {
+            "hypothesis": "Use cosine decay from a slightly higher LR to improve recall without sacrificing the high precision from the baseline.",
+            "model_name": "segformer_b2",
+            "patch_size": 1024,
+            "stride": 512,
+            "batch_size": 2,
+            "learning_rate": 2e-4,
+            "weight_decay": 1e-4,
+            "loss": "focal_dice",
+            "scheduler": "cosine",
+            "epochs": 65,
+            "early_stopping_patience": 16,
+            "split_seed": 20260513,
+        },
+        {
+            "hypothesis": "Try BCE+Dice with lower threshold-friendly training to raise recall on the object-balanced scene split.",
+            "model_name": "segformer_b2",
+            "patch_size": 768,
+            "stride": 512,
+            "batch_size": "auto",
+            "learning_rate": 1e-4,
+            "weight_decay": 3e-4,
+            "loss": "bce_dice",
+            "scheduler": "none",
+            "epochs": 55,
+            "early_stopping_patience": 14,
+            "split_seed": 20260513,
+        },
+        {
+            "hypothesis": "Use stronger Tversky-style loss to reduce false negatives; baseline precision is high and recall is the limiting side of F1.",
+            "model_name": "segformer_b2",
+            "patch_size": 1024,
+            "stride": 640,
+            "batch_size": 2,
+            "learning_rate": 1e-4,
+            "weight_decay": 1e-4,
+            "loss": "focal_tversky",
+            "scheduler": "cosine",
+            "epochs": 65,
+            "early_stopping_patience": 16,
+            "split_seed": 20260513,
+        },
+    ]
+    if trial_index <= len(base_variants):
+        trial = dict(base_variants[trial_index - 1])
+    else:
+        trial = {
+            "hypothesis": "Mutation around the best desertification configs; optimize recall-limited pixel F1 on the fixed scene-level split.",
+            "model_name": "segformer_b2",
+            "patch_size": rng.choice([768, 1024]),
+            "stride": rng.choice([512, 640, 768]),
+            "batch_size": rng.choice([2, "auto"]),
+            "learning_rate": rng.choice([5e-5, 8e-5, 1e-4, 2e-4, 3e-4]),
+            "weight_decay": rng.choice([1e-5, 1e-4, 3e-4, 1e-3]),
+            "loss": rng.choice(["focal_dice", "bce_dice", "focal_tversky"]),
+            "scheduler": rng.choice(["none", "cosine"]),
+            "epochs": rng.choice([45, 55, 65, 75]),
+            "early_stopping_patience": rng.choice([12, 14, 16, 18]),
+            "split_seed": 20260513,
+        }
+    trial["initial_checkpoint_path"] = initial_checkpoint
+    trial["target_val_fraction"] = 0.2
+    trial["split_strategy"] = "object_balanced"
+    trial["augmentations"] = {
+        "flips": True,
+        "rot90": True,
+        "brightness_contrast": True,
+        "noise": True,
+        "blur": rng.choice([False, True]) if trial_index > len(base_variants) else False,
+        "gamma": rng.choice([False, True]) if trial_index > len(base_variants) else True,
+    }
+    return trial
+
+
+def sample_class_trial(
+    class_slug: str,
+    rng: random.Random,
+    trial_index: int,
+    *,
+    initial_checkpoint: str | None,
+) -> dict[str, Any]:
+    if class_slug == "lakes":
+        return sample_lakes_trial(rng, trial_index, initial_checkpoint=initial_checkpoint)
+    if class_slug == "desertification":
+        return sample_desertification_trial(rng, trial_index, initial_checkpoint=initial_checkpoint)
+    raise ValueError(f"Unsupported class slug for tuning: {class_slug}")
+
+
 def build_experiment_config(
     *,
     run_id: str,
@@ -280,6 +391,7 @@ def build_experiment_config(
             "tuning.class_slug": class_slug,
             "tuning.config_hash": config_hash,
             "tuning.hypothesis": trial["hypothesis"],
+            "training.phase": "continuous_tuning",
             "validation.kind": "scene_level",
             "validation.split_strategy": trial["split_strategy"],
             "pseudolabeling.enabled": False,
@@ -377,10 +489,11 @@ class AirflowTuningController:
     def next_trial(self, state: dict[str, Any], trial_index: int) -> dict[str, Any]:
         tried = set(state.get("tried_config_hashes") or [])
         initial = self.args.initial_checkpoint
-        if not initial and DEFAULT_LAKES_CHECKPOINT.exists():
-            initial = str(DEFAULT_LAKES_CHECKPOINT)
+        default_checkpoint = DEFAULT_CLASS_CHECKPOINTS.get(self.class_slug) or DEFAULT_LAKES_CHECKPOINT
+        if not initial and default_checkpoint.exists():
+            initial = str(default_checkpoint)
         for _ in range(500):
-            config = sample_lakes_trial(self.rng, trial_index, initial_checkpoint=initial)
+            config = sample_class_trial(self.class_slug, self.rng, trial_index, initial_checkpoint=initial)
             config_hash = stable_hash(config)
             if config_hash not in tried:
                 break
@@ -428,8 +541,10 @@ class AirflowTuningController:
             "best_epoch": training.get("best_epoch"),
             "epochs_completed": training.get("epochs_completed"),
             "checkpoint_path": training.get("checkpoint_path"),
-            "precision": (training.get("last_epoch_metrics") or {}).get("val/precision"),
-            "recall": (training.get("last_epoch_metrics") or {}).get("val/recall"),
+            "precision": (training.get("last_epoch_metrics") or {}).get("val/class_pixel_precision")
+            or (training.get("last_epoch_metrics") or {}).get("val/precision"),
+            "recall": (training.get("last_epoch_metrics") or {}).get("val/class_pixel_recall")
+            or (training.get("last_epoch_metrics") or {}).get("val/recall"),
             "iou": training.get("best_val_iou"),
         }
         mlflow = summary.get("mlflow") or training.get("mlflow") or {}
@@ -492,7 +607,7 @@ class AirflowTuningController:
         first = not self.ledger_path.exists()
         with self.ledger_path.open("a", encoding="utf-8") as handle:
             if first:
-                handle.write("# Lakes tuning ledger\n\n")
+                handle.write(f"# {self.class_name} tuning ledger\n\n")
             metrics = result.get("metrics") or {}
             handle.write(f"## {utc_now()} {trial['run_id']}\n\n")
             handle.write(f"- status: {result.get('status')}\n")
@@ -534,8 +649,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    if args.class_slug != "lakes":
-        raise SystemExit("This controller currently supports the accumulated lakes tuning line only.")
+    if args.class_slug not in {"lakes", "desertification"}:
+        raise SystemExit("This controller currently supports class_slug values: lakes, desertification.")
     AirflowTuningController(args).run_forever()
 
 
