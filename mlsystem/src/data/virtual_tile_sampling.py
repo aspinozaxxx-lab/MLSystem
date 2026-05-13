@@ -12,6 +12,8 @@ from rasterio.features import rasterize
 from rasterio.windows import Window
 from shapely.geometry import box
 
+from ..tile_preparation.windows import generate_window_grid_for_scene as _tile_preparation_window_grid
+
 
 TileKind = Literal["positive", "partial_positive", "hard_negative", "negative"]
 
@@ -167,24 +169,27 @@ def generate_window_grid_for_scene(
     *,
     scene_id: str = "",
 ) -> list[WindowCandidate]:
-    xs = _origins(int(width), int(tile_size), int(stride))
-    ys = _origins(int(height), int(tile_size), int(stride))
-    windows: list[WindowCandidate] = []
-    for y in ys:
-        for x in xs:
-            windows.append(
-                WindowCandidate(
-                    scene_id=scene_id,
-                    x=int(x),
-                    y=int(y),
-                    width=int(tile_size),
-                    height=int(tile_size),
-                    tile_size=int(tile_size),
-                    stride=max(1, int(stride)),
-                    index=len(windows),
-                )
+    return [
+        WindowCandidate(
+            scene_id=window.scene_id,
+            x=window.x,
+            y=window.y,
+            width=window.width,
+            height=window.height,
+            tile_size=window.tile_size,
+            stride=window.stride,
+            index=index,
+        )
+        for index, window in enumerate(
+            _tile_preparation_window_grid(
+                int(width),
+                int(height),
+                int(tile_size),
+                int(stride),
+                scene_id=scene_id,
             )
-    return windows
+        )
+    ]
 
 
 def classify_tile_by_mask(
