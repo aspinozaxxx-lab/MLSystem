@@ -37,6 +37,14 @@ class TileSampleRecord:
     base_record_id: str | None = None
     repeat_index: int | None = None
     geometries_intersecting: int = 0
+    valid_pixel_share: float = 1.0
+    invalid_pixel_share: float = 0.0
+    mask_pixels_before_valid_clip: int = 0
+    mask_pixels_after_valid_clip: int = 0
+    valid_data_source: str = "unknown"
+    mosaic_sources: list[str] = field(default_factory=list)
+    mosaic_filled_pixel_count: int = 0
+    mosaic_unfilled_pixel_count: int = 0
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -63,6 +71,14 @@ class TileSampleRecord:
             "positive_pixels": int(self.positive_pixels),
             "gt_positive_pixels": int(self.positive_pixels),
             "geometries_intersecting": int(self.geometries_intersecting),
+            "valid_pixel_share": float(self.valid_pixel_share),
+            "invalid_pixel_share": float(self.invalid_pixel_share),
+            "mask_pixels_before_valid_clip": int(self.mask_pixels_before_valid_clip),
+            "mask_pixels_after_valid_clip": int(self.mask_pixels_after_valid_clip),
+            "valid_data_source": self.valid_data_source,
+            "mosaic_sources": list(self.mosaic_sources),
+            "mosaic_filled_pixel_count": int(self.mosaic_filled_pixel_count),
+            "mosaic_unfilled_pixel_count": int(self.mosaic_unfilled_pixel_count),
             "source": self.source,
             "base_record_id": self.base_record_id,
             "repeat_index": self.repeat_index,

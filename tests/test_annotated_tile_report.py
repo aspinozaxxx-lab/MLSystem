@@ -10,7 +10,7 @@ import numpy as np
 from shapely.geometry import Polygon, mapping
 
 from mlsystem.src.tile_preparation import TilePreparationConfig
-from mlsystem.src.tile_preparation.report import generate_annotated_tile_report, preview_annotated_tile_report
+from mlsystem.src.tile_preparation.report import find_annotated_scenes, generate_annotated_tile_report, preview_annotated_tile_report
 
 try:
     import rasterio
@@ -52,17 +52,49 @@ class AnnotatedTileReportTests(unittest.TestCase):
             self.assertTrue((scene_dir / "annotated_scene_summary.json").exists())
             self.assertTrue((scene_dir / "overview_raster_grid_mask.png").exists())
             self.assertTrue((scene_dir / "overview_mask_only.png").exists())
+            self.assertTrue((scene_dir / "overview_valid_mask.png").exists())
             self.assertTrue((scene_dir / "overview_grid_positive_negative.png").exists())
             summary = json.loads((scene_dir / "annotated_scene_summary.json").read_text(encoding="utf-8"))
             self.assertIn("classification_summary", summary)
             self.assertIn("augmentation_report", summary)
+            self.assertIn("valid_data_clipping", summary)
+            self.assertIn("mosaic", summary)
             self.assertEqual(summary["mask_visualization"]["mode"], "dashed_contour")
             self.assertGreater(summary["classification_summary"]["positive_tiles"], 0)
             self.assertGreater(summary["augmentation_report"]["checks_summary"]["passed"], 0)
             self.assertEqual(summary["augmentation_report"]["checks_summary"]["failed"], 0)
             self.assertTrue(list((scene_dir / "annotated_tiles").glob("*_overlay.png")))
+            self.assertTrue(list((scene_dir / "annotated_tiles").glob("*_valid_mask.png")))
+            self.assertTrue(list((scene_dir / "annotated_tiles").glob("*_raw_annotation_mask.png")))
             self.assertTrue(list((scene_dir / "annotated_augmentations").glob("*_overlay.png")))
             self.assertEqual(sorted(path.name for path in root.glob("*.tif")), ["scene.tif"])
+
+    def test_annotated_report_mosaic_case_generates_source_map(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_fixture(root)
+            (root / "scene.tif").rename(root / "anchor.tif")
+            _write_neighbor(root / "neighbor.tif")
+            scenes, annotation = find_annotated_scenes(root, anchor_scene="anchor.tif", annotation_name="scene.geojson", include_neighbors=True)
+            output_dir = root / "case_two_scenes"
+            index = generate_annotated_tile_report(
+                root,
+                scenes=scenes,
+                annotation=annotation,
+                output_dir=output_dir,
+                config=TilePreparationConfig(tile_size=256, stride=256, max_empty_tile_share=None, valid_pixel_mode="nonzero_any", mosaic_enabled=True),
+                annotation_crs="auto",
+                max_overview_size=512,
+                max_tile_examples=6,
+                max_augmentation_tiles=1,
+                augmentation_mode="production-groups",
+                augmentation_seed=9,
+            )
+            scene_dir = output_dir / "anchor"
+            summary = json.loads((scene_dir / "annotated_scene_summary.json").read_text(encoding="utf-8"))
+            self.assertTrue(index["scenes"][0]["mosaic"]["enabled"])
+            self.assertTrue(summary["mosaic"]["enabled"])
+            self.assertTrue(list((scene_dir / "annotated_tiles").glob("*_source_map.png")))
 
     def test_preview_is_lightweight(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -146,6 +178,24 @@ def _write_fixture(root: Path) -> None:
         "features": [{"type": "Feature", "properties": {}, "geometry": mapping(polygon)}],
     }
     (root / "scene.geojson").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _write_neighbor(path: Path) -> None:
+    width = height = 1024
+    y, x = np.mgrid[0:height, 0:width]
+    data = np.stack([((x + 40) % 255), ((y + 80) % 255), ((x + y + 120) % 255)], axis=0).astype("uint8")
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        width=width,
+        height=height,
+        count=3,
+        dtype="uint8",
+        crs="EPSG:3857",
+        transform=from_origin(0, 1024, 1, 1),
+    ) as ds:
+        ds.write(data)
 
 
 if __name__ == "__main__":

@@ -45,6 +45,14 @@ class TilePreparationConfig:
     output_format: str = "chw_float32"
     normalize: bool = True
     input_bands: list[int] | None = None
+    valid_pixel_mode: str = "auto"
+    min_valid_pixel_share: float = 0.0
+    clip_mask_to_valid_data: bool = True
+    exclude_empty_valid_tiles: bool = False
+    mosaic_enabled: bool = False
+    mosaic_fill_nodata: bool = True
+    mosaic_require_same_crs: bool = False
+    mosaic_resampling: str = "bilinear"
     augmentations: dict[str, Any] = field(default_factory=dict)
     apply_random_augmentations: bool = False
     max_records: int | None = None
@@ -74,6 +82,9 @@ class TilePreparationConfig:
             self.max_records = max(0, int(self.max_records))
         if self.max_records_per_scene is not None:
             self.max_records_per_scene = max(0, int(self.max_records_per_scene))
+        self.valid_pixel_mode = str(self.valid_pixel_mode or "auto")
+        self.min_valid_pixel_share = max(0.0, min(1.0, float(self.min_valid_pixel_share)))
+        self.mosaic_resampling = str(self.mosaic_resampling or "bilinear")
 
     @property
     def positive_stride(self) -> int:
@@ -117,14 +128,22 @@ def resolve_tile_preparation_config(
     max_empty_tile_share = raw.get("max_empty_tile_share")
     if max_empty_tile_share is None and "max_empty_tile_share" in preprocess:
         max_empty_tile_share = preprocess.get("max_empty_tile_share")
-    if not train_mode:
-        return TilePreparationConfig(
+        if not train_mode:
+            return TilePreparationConfig(
             tile_size=tile_size,
             stride=stride,
             min_positive_pixels=max(1, int(raw.get("min_positive_pixels", 1) or 1)),
             include_partial_positive=bool(raw.get("include_partial_positive", True)),
-            partial_positive_fraction=max(0.0, float(raw.get("partial_positive_fraction", 0.0) or 0.0)),
-            input_bands=input_bands,
+                partial_positive_fraction=max(0.0, float(raw.get("partial_positive_fraction", 0.0) or 0.0)),
+                valid_pixel_mode=str(raw.get("valid_pixel_mode", preprocess.get("valid_pixel_mode", "auto")) or "auto"),
+                min_valid_pixel_share=max(0.0, min(1.0, float(raw.get("min_valid_pixel_share", preprocess.get("min_valid_pixel_share", 0.0)) or 0.0))),
+                clip_mask_to_valid_data=bool(raw.get("clip_mask_to_valid_data", preprocess.get("clip_mask_to_valid_data", True))),
+                exclude_empty_valid_tiles=bool(raw.get("exclude_empty_valid_tiles", preprocess.get("exclude_empty_valid_tiles", False))),
+                mosaic_enabled=bool(raw.get("mosaic_enabled", preprocess.get("mosaic_enabled", False))),
+                mosaic_fill_nodata=bool(raw.get("mosaic_fill_nodata", preprocess.get("mosaic_fill_nodata", True))),
+                mosaic_require_same_crs=bool(raw.get("mosaic_require_same_crs", preprocess.get("mosaic_require_same_crs", False))),
+                mosaic_resampling=str(raw.get("mosaic_resampling", preprocess.get("mosaic_resampling", "bilinear")) or "bilinear"),
+                input_bands=input_bands,
             apply_random_augmentations=False,
             max_records=max_records,
             max_records_per_scene=max_records_per_scene,
@@ -140,6 +159,14 @@ def resolve_tile_preparation_config(
         min_positive_pixels=max(1, int(raw.get("min_positive_pixels", 1) or 1)),
         include_partial_positive=bool(raw.get("include_partial_positive", True)),
         partial_positive_fraction=max(0.0, float(raw.get("partial_positive_fraction", 0.0) or 0.0)),
+        valid_pixel_mode=str(raw.get("valid_pixel_mode", preprocess.get("valid_pixel_mode", "auto")) or "auto"),
+        min_valid_pixel_share=max(0.0, min(1.0, float(raw.get("min_valid_pixel_share", preprocess.get("min_valid_pixel_share", 0.0)) or 0.0))),
+        clip_mask_to_valid_data=bool(raw.get("clip_mask_to_valid_data", preprocess.get("clip_mask_to_valid_data", True))),
+        exclude_empty_valid_tiles=bool(raw.get("exclude_empty_valid_tiles", preprocess.get("exclude_empty_valid_tiles", False))),
+        mosaic_enabled=bool(raw.get("mosaic_enabled", preprocess.get("mosaic_enabled", False))),
+        mosaic_fill_nodata=bool(raw.get("mosaic_fill_nodata", preprocess.get("mosaic_fill_nodata", True))),
+        mosaic_require_same_crs=bool(raw.get("mosaic_require_same_crs", preprocess.get("mosaic_require_same_crs", False))),
+        mosaic_resampling=str(raw.get("mosaic_resampling", preprocess.get("mosaic_resampling", "bilinear")) or "bilinear"),
         max_empty_tile_share=None if max_empty_tile_share is None else max(0.0, min(1.0, float(max_empty_tile_share))),
         hard_negative_context_px=None if raw.get("hard_negative_context_px") is None else max(0, int(raw.get("hard_negative_context_px") or 0)),
         virtual_epoch_multiplier=max(1, int(raw.get("virtual_epoch_multiplier", 1) or 1)) if enabled else 1,

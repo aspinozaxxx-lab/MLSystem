@@ -84,11 +84,35 @@ class TilePreparationDatasetTests(unittest.TestCase):
         self.assertNotIn("build_virtual_train_records", text)
         self.assertNotIn("build_validation_records", text)
 
+    def test_four_channel_train_augmentation_preserves_channels_and_mask(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raster_path, geojson_path = _write_fixture(root, band_count=4)
+            config = TilePreparationConfig(
+                tile_size=256,
+                stride=256,
+                input_bands=[1, 2, 3, 4],
+                augmentations={"flips": True, "rot90": True, "brightness_contrast": True, "gamma": True, "noise": True, "blur": True, "cutout": True, "coarse_dropout": True},
+                apply_random_augmentations=True,
+                seed=21,
+            )
+            dataset = TrainingTileDataset([SceneInput(raster_path, "scene")], AnnotationInput(geojson_path), config, train=True)
+            try:
+                sample = dataset[0]
+                self.assertEqual(sample.image.shape, (4, 256, 256))
+                self.assertEqual(sample.mask.shape, (1, 256, 256))
+                self.assertTrue(set(np.unique(sample.mask).tolist()).issubset({0.0, 1.0}))
+            finally:
+                dataset.close()
 
-def _write_fixture(root: Path) -> tuple[Path, Path]:
+
+def _write_fixture(root: Path, *, band_count: int = 3) -> tuple[Path, Path]:
     width = height = 1024
     y, x = np.mgrid[0:height, 0:width]
-    data = np.stack([(x % 255), (y % 255), ((x + y) % 255)], axis=0).astype("uint8")
+    bands = [(x % 255), (y % 255), ((x + y) % 255)]
+    if band_count >= 4:
+        bands.append(((x * 2 + y * 3) % 255))
+    data = np.stack(bands[:band_count], axis=0).astype("uint8")
     raster_path = root / "scene.tif"
     with rasterio.open(
         raster_path,
@@ -96,7 +120,7 @@ def _write_fixture(root: Path) -> tuple[Path, Path]:
         driver="GTiff",
         width=width,
         height=height,
-        count=3,
+        count=band_count,
         dtype="uint8",
         crs="EPSG:3857",
         transform=from_origin(0, 1024, 1, 1),

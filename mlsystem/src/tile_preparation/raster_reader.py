@@ -25,6 +25,10 @@ def read_rgb_window(ds: Any, record: TileSampleRecord, *, bands: list[int] | Non
 
 def read_training_image(ds: Any, record: TileSampleRecord, config: TilePreparationConfig) -> np.ndarray:
     arr = read_band_window(ds, record, bands=config.input_bands)
+    return format_training_image(arr, config)
+
+
+def format_training_image(arr: np.ndarray, config: TilePreparationConfig) -> np.ndarray:
     if config.output_format == "hwc_uint8":
         return np.transpose(_normalize_to_uint8(arr), (1, 2, 0))
     data = arr.astype("float32", copy=False)

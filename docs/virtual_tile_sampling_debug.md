@@ -76,6 +76,14 @@ train:
 | `preprocess.train_sampling.random_jitter.enabled` | `false` | bool | `true` / `false` | train | window generation | `true` shifts base train windows before repeats; validation never jitters. |
 | `preprocess.train_sampling.random_jitter.max_shift_fraction` | `0.25` | float | `>= 0`; fraction of tile size | train | window generation | With `tile_size=768`, `0.25` allows up to 192 px shift in each direction, clipped to scene bounds. |
 | `preprocess.train_sampling.random_jitter.keep_positive_min_pixels` | `1` | int | `>= 1` | train | tile classification | Positive/partial-positive jitter attempts fall back to the original window if foreground drops below this value. |
+| `preprocess.train_sampling.valid_pixel_mode` | `auto` | string | `auto`, `dataset_mask`, `alpha`, `nodata`, `nonzero_any`, `nonzero_all` | train+val | valid-data clipping | `nonzero_any` treats Kanopus black borders as invalid when at least one real band is non-zero inside the footprint. |
+| `preprocess.train_sampling.clip_mask_to_valid_data` | `true` | bool | `true` / `false` | train+val | mask rasterization, tile classification | `true` removes annotation mask pixels that fall outside the valid raster footprint. |
+| `preprocess.train_sampling.min_valid_pixel_share` | `0.0` | float | `0.0..1.0` | train+val | window filtering | With `exclude_empty_valid_tiles=true`, tiles below this valid share are skipped. |
+| `preprocess.train_sampling.exclude_empty_valid_tiles` | `false` | bool | `true` / `false` | train+val | window filtering | `true` can drop mostly-empty edge tiles after valid mask calculation. |
+| `preprocess.train_sampling.mosaic_enabled` | `false` | bool | `true` / `false` | train+val when configured | raster read, mask clipping | `true` fills invalid anchor pixels from neighboring dataset scenes before clipping the training mask. |
+| `preprocess.train_sampling.mosaic_fill_nodata` | `true` | bool | `true` / `false` | train+val when mosaic enabled | raster read | `false` keeps invalid pixels black even when neighbor scenes exist. |
+| `preprocess.train_sampling.mosaic_require_same_crs` | `false` | bool | `true` / `false` | train+val when mosaic enabled | raster read | `true` skips neighbors whose CRS differs from the anchor. |
+| `preprocess.train_sampling.mosaic_resampling` | `bilinear` | string | `nearest`, `bilinear`, `cubic`, `average` | train+val when mosaic enabled | raster read | Controls WarpedVRT resampling for neighbor fill. |
 
 All parameters above are implemented in `mlsystem/src/tile_preparation/`. `mlsystem/src/data/virtual_tile_sampling.py` remains a compatibility wrapper for older debug callers. The CLI/API preview reports `warnings` when a requested group is empty, fractions need normalization, or `hard_negative_context_px` falls back to `tile_size // 2`.
 
@@ -217,6 +225,24 @@ python scripts/debug_annotated_tile_report.py `
 ```
 
 The script writes `annotated_tile_sampling_index.html/json` in the input directory and `annotated_tile_sampling_report.html`, `annotated_scene_summary.json`, overview images, tile mask previews, and augmentation mask previews under the scene subdirectory. The main visual overlay uses a bright red dashed annotation contour, not a translucent mask fill. These are debug artifacts only and must not be committed.
+
+For footprint clipping and mosaic debugging with one anchor scene and one neighbor scene:
+
+```powershell
+python scripts/debug_annotated_tile_report.py `
+  --input-dir E:\Projects\NSPD\Images\test `
+  --cases single,two_scene `
+  --anchor-scene KV3_30861_31739-00_KANOPUS_20230826_035108_20.L2.PMS.SCN03.tif `
+  --annotation deforestation.geojson `
+  --mosaic-enabled `
+  --tile-size 768 `
+  --stride 512 `
+  --positive-stride-factor 0.5 `
+  --hard-negative-stride-factor 0.5 `
+  --negative-stride-factor 1.0
+```
+
+`case_single_scene` clips annotation masks to the anchor valid-data footprint. `case_two_scenes` keeps the same anchor grid but fills invalid pixels from neighbor scenes before clipping the mask to the union valid mask. In the report, red dashed contour is the final clipped training mask and yellow dashed contour is the raw annotation mask before valid-data clipping.
 
 CRS behavior:
 

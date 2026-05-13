@@ -175,6 +175,10 @@ if str(os.getenv("MLSYSTEM_DEBUG_DATASET_ENDPOINTS") or "").lower() in {"1", "tr
                 include_augmentation_catalog=bool(request.get("include_augmentation_catalog", False)),
                 annotation_crs=request.get("annotation_crs", "auto"),
                 allow_inferred_annotation_crs=bool(request.get("allow_inferred_annotation_crs", True)),
+                anchor_scene=request.get("anchor_scene"),
+                annotation_name=request.get("annotation"),
+                include_neighbors=bool(request.get("include_neighbors", False) or request.get("mosaic_enabled", False)),
+                mosaic_enabled=bool(request.get("mosaic_enabled", False)),
             )
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc

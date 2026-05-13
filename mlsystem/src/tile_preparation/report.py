@@ -24,10 +24,12 @@ from .augmentations import (
 )
 from .config import AnnotationInput, SceneInput, TilePreparationConfig
 from .iterator import build_tile_records
+from .mosaic import read_mosaic_window
 from .mask_rasterizer import rasterize_mask_for_window
-from .raster_reader import read_rgb_window, to_rgb_uint8
+from .raster_reader import read_band_window, read_rgb_window, to_rgb_uint8
 from .records import TileSampleRecord
 from .summary import summarize_tile_records
+from .validity import read_valid_data_mask_with_source
 from .windows import build_tiling_check
 
 
@@ -50,12 +52,20 @@ def preview_annotated_tile_report(
     include_augmentation_catalog: bool = False,
     annotation_crs: str | None = "auto",
     allow_inferred_annotation_crs: bool = True,
+    anchor_scene: str | None = None,
+    annotation_name: str | None = None,
+    include_neighbors: bool = False,
+    mosaic_enabled: bool = False,
 ) -> dict[str, Any]:
-    scene, annotation = find_single_annotated_scene(
+    scenes, annotation = find_annotated_scenes(
         input_dir,
+        anchor_scene=anchor_scene,
+        annotation_name=annotation_name,
+        include_neighbors=include_neighbors,
         annotation_crs=annotation_crs,
         allow_inferred_annotation_crs=allow_inferred_annotation_crs,
     )
+    scene = scenes[0]
     config = TilePreparationConfig(
         tile_size=tile_size,
         stride=stride,
@@ -64,14 +74,24 @@ def preview_annotated_tile_report(
         negative_stride_factor=negative_stride_factor,
         min_positive_pixels=min_positive_pixels,
         hard_negative_context_px=max(1, int(tile_size) // 2),
+        mosaic_enabled=mosaic_enabled,
     )
-    result = build_tile_records([scene], annotation, config)
+    result = build_tile_records(scenes, annotation, config)
     with rasterio.open(scene.image_path) as ds:
         raster = _raster_metadata(ds, scene.image_path)
     base_summary = summarize_tile_records(result.base_records)
     response: dict[str, Any] = {
         "status": "ok",
         "mask_visualization": dict(MASK_VISUALIZATION),
+        "valid_data_clipping": {
+            "enabled": bool(config.clip_mask_to_valid_data),
+            "valid_pixel_mode": config.valid_pixel_mode,
+        },
+        "mosaic": {
+            "enabled": bool(config.mosaic_enabled),
+            "scene_count": len(scenes),
+            "scenes": [item.resolved_scene_id() for item in scenes],
+        },
         "raster": raster,
         "tiling_summary": _tiling_checks(raster["width"], raster["height"], config),
         "classification_summary": {
@@ -97,6 +117,9 @@ def generate_annotated_tile_report(
     input_dir: str | Path,
     *,
     config: TilePreparationConfig,
+    scenes: list[SceneInput] | None = None,
+    annotation: AnnotationInput | None = None,
+    output_dir: str | Path | None = None,
     annotation_crs: str | None = "auto",
     allow_inferred_annotation_crs: bool = True,
     max_overview_size: int = 1600,
@@ -105,12 +128,17 @@ def generate_annotated_tile_report(
     augmentation_mode: str = "all",
     augmentation_seed: int = 42,
 ) -> dict[str, Any]:
-    root = Path(input_dir)
-    scene, annotation = find_single_annotated_scene(
-        root,
-        annotation_crs=annotation_crs,
-        allow_inferred_annotation_crs=allow_inferred_annotation_crs,
-    )
+    root = Path(output_dir) if output_dir is not None else Path(input_dir)
+    input_root = Path(input_dir)
+    if scenes is None or annotation is None:
+        scene, annotation = find_single_annotated_scene(
+            input_root,
+            annotation_crs=annotation_crs,
+            allow_inferred_annotation_crs=allow_inferred_annotation_crs,
+        )
+        scenes = [scene]
+    else:
+        scene = next((item for item in scenes if not bool(item.metadata.get("mosaic_neighbor_only"))), scenes[0])
     scene_dir = root / scene.resolved_scene_id()
     scene_dir.mkdir(parents=True, exist_ok=True)
     previews_dir = scene_dir / "annotated_tiles"
@@ -120,7 +148,7 @@ def generate_annotated_tile_report(
     _clear_pngs(previews_dir)
     _clear_pngs(augmentations_dir)
 
-    result = build_tile_records([scene], annotation, config)
+    result = build_tile_records(scenes, annotation, config)
     with rasterio.open(scene.image_path) as ds:
         annotation_geoms = load_annotation_geometries(annotation, raster_crs=ds.crs)
         raster = _raster_metadata(ds, scene.image_path)
@@ -133,6 +161,7 @@ def generate_annotated_tile_report(
             previews_dir,
             augmentations_dir,
             config,
+            scenes=scenes,
             max_augmentation_tiles=max_augmentation_tiles,
             augmentation_mode=augmentation_mode,
             augmentation_seed=augmentation_seed,
@@ -152,6 +181,19 @@ def generate_annotated_tile_report(
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "git_commit": _git_commit(),
         "mask_visualization": dict(MASK_VISUALIZATION),
+        "valid_data_clipping": {
+            "enabled": bool(config.clip_mask_to_valid_data),
+            "valid_pixel_mode": config.valid_pixel_mode,
+            "min_valid_pixel_share": config.min_valid_pixel_share,
+            "exclude_empty_valid_tiles": config.exclude_empty_valid_tiles,
+        },
+        "mosaic": {
+            "enabled": bool(config.mosaic_enabled),
+            "fill_nodata": bool(config.mosaic_fill_nodata),
+            "resampling": config.mosaic_resampling,
+            "scene_count": len(scenes),
+            "scenes": [item.resolved_scene_id() for item in scenes],
+        },
         "raster": raster,
         "annotation": result.metadata.get("annotation"),
         "config": _config_to_dict(config, augmentation_mode, augmentation_seed, max_tile_examples, max_augmentation_tiles),
@@ -193,6 +235,8 @@ def generate_annotated_tile_report(
                 "crs": raster["crs"],
                 **classification_summary,
                 "augmentation_checks": augmentation_report["checks_summary"],
+                "valid_data_clipping": summary["valid_data_clipping"],
+                "mosaic": summary["mosaic"],
             }
         ],
         "warnings": result.warnings,
@@ -232,6 +276,56 @@ def find_single_annotated_scene(
     )
 
 
+def find_annotated_scenes(
+    input_dir: str | Path,
+    *,
+    anchor_scene: str | None = None,
+    annotation_name: str | None = None,
+    include_neighbors: bool = False,
+    annotation_crs: str | None = "auto",
+    allow_inferred_annotation_crs: bool = True,
+) -> tuple[list[SceneInput], AnnotationInput]:
+    root = Path(input_dir)
+    rasters = sorted([path for path in root.iterdir() if path.is_file() and path.suffix.lower() in RASTER_SUFFIXES])
+    if not rasters:
+        raise ValueError(f"expected at least one GeoTIFF in {root}")
+    if anchor_scene:
+        anchor_candidates = [path for path in rasters if path.name == anchor_scene or path.stem == Path(anchor_scene).stem]
+        if len(anchor_candidates) != 1:
+            raise ValueError(f"expected exactly one anchor scene matching {anchor_scene!r}, found {len(anchor_candidates)}")
+        anchor = anchor_candidates[0]
+    elif len(rasters) == 1:
+        anchor = rasters[0]
+    else:
+        raise ValueError(f"multiple GeoTIFF files found in {root}; pass --anchor-scene")
+
+    geojsons = sorted([path for path in root.iterdir() if path.is_file() and path.suffix.lower() == ".geojson"])
+    if annotation_name:
+        matches = [path for path in geojsons if path.name == annotation_name or path.stem == Path(annotation_name).stem]
+        if len(matches) != 1:
+            raise ValueError(f"expected exactly one annotation matching {annotation_name!r}, found {len(matches)}")
+        annotation_path = matches[0]
+    elif len(geojsons) == 1:
+        annotation_path = geojsons[0]
+    else:
+        raise ValueError(f"expected one GeoJSON annotation in {root}, found {len(geojsons)}")
+
+    scenes = [SceneInput(image_path=anchor, scene_id=anchor.stem)]
+    if include_neighbors:
+        for path in rasters:
+            if path == anchor:
+                continue
+            scenes.append(SceneInput(image_path=path, scene_id=path.stem, metadata={"mosaic_neighbor_only": True}))
+    return (
+        scenes,
+        AnnotationInput(
+            geojson_path=annotation_path,
+            annotation_crs=annotation_crs,
+            allow_inferred_annotation_crs=allow_inferred_annotation_crs,
+        ),
+    )
+
+
 def _write_overviews(
     ds: Any,
     geometries: list[Any],
@@ -241,8 +335,14 @@ def _write_overviews(
     max_size: int,
 ) -> dict[str, str]:
     overview = _read_overview(ds, max_size)
-    mask = _overview_mask(ds, geometries, overview.shape[1], overview.shape[0], config.all_touched)
-    overlay = overlay_mask_contour(overview, mask, width=max(2, int(round(max(overview.shape[:2]) / 900))))
+    raw_mask = _overview_mask(ds, geometries, overview.shape[1], overview.shape[0], config.all_touched)
+    valid_mask = _overview_valid_mask(ds, overview.shape[1], overview.shape[0], config)
+    clipped_mask = (raw_mask & valid_mask).astype("uint8") if config.clip_mask_to_valid_data else raw_mask
+    overlay = overlay_mask_contour(
+        overlay_mask_contour(overview, raw_mask, color=(255, 230, 0), width=max(2, int(round(max(overview.shape[:2]) / 900))), shadow=True),
+        clipped_mask,
+        width=max(2, int(round(max(overview.shape[:2]) / 900))),
+    )
     base = Image.fromarray(overlay, mode="RGB").convert("RGBA")
     scale_x = overview.shape[1] / float(ds.width)
     scale_y = overview.shape[0] / float(ds.height)
@@ -262,10 +362,14 @@ def _write_overviews(
     outputs = {
         "overview_raster_grid_mask.png": "overview_raster_grid_mask.png",
         "overview_mask_only.png": "overview_mask_only.png",
+        "overview_valid_mask.png": "overview_valid_mask.png",
+        "overview_raw_annotation_mask.png": "overview_raw_annotation_mask.png",
         "overview_grid_positive_negative.png": "overview_grid_positive_negative.png",
     }
     base.convert("RGB").save(scene_dir / "overview_raster_grid_mask.png")
-    Image.fromarray(_mask_only_contour(mask), mode="RGB").save(scene_dir / "overview_mask_only.png")
+    Image.fromarray(_mask_only_contour(clipped_mask), mode="RGB").save(scene_dir / "overview_mask_only.png")
+    Image.fromarray((valid_mask * 255).astype("uint8"), mode="L").save(scene_dir / "overview_valid_mask.png")
+    Image.fromarray(_mask_only_contour(raw_mask), mode="RGB").save(scene_dir / "overview_raw_annotation_mask.png")
     Image.fromarray(overview, mode="RGB").convert("RGBA").save(scene_dir / "overview_grid_positive_negative.png")
     grid = Image.open(scene_dir / "overview_grid_positive_negative.png").convert("RGBA")
     draw = ImageDraw.Draw(grid)
@@ -293,6 +397,7 @@ def _write_tile_examples(
     augmentations_dir: Path,
     config: TilePreparationConfig,
     *,
+    scenes: list[SceneInput],
     max_augmentation_tiles: int,
     augmentation_mode: str,
     augmentation_seed: int,
@@ -300,23 +405,90 @@ def _write_tile_examples(
     operations = resolve_augmentation_operations(augmentation_mode)
     rows: list[dict[str, Any]] = []
     augmented_positive_tiles = 0
+    neighbor_handles: list[tuple[str, Any]] = []
+    for scene in scenes:
+        if scene.resolved_scene_id() == (records[0].scene_id if records else ""):
+            continue
+        try:
+            neighbor_handles.append((scene.resolved_scene_id(), rasterio.open(scene.image_path)))
+        except Exception:  # noqa: BLE001
+            continue
     for index, record in enumerate(records):
-        rgb = read_rgb_window(ds, record, bands=config.input_bands)
-        mask, geom_count = rasterize_mask_for_window(ds, geometries, record, all_touched=config.all_touched)
+        rgb_before = read_rgb_window(ds, record, bands=config.input_bands)
+        valid = read_valid_data_mask_with_source(ds, record, mode=config.valid_pixel_mode)
+        valid_mask = valid.mask
+        mosaic_info: dict[str, Any] = {}
+        source_map = None
+        if config.mosaic_enabled:
+            mosaic = read_mosaic_window(ds, neighbor_handles, record, config)
+            rgb = to_rgb_uint8(mosaic.image)
+            valid_mask = mosaic.valid_mask
+            source_map = mosaic.source_map
+            mosaic_info = {
+                "mosaic_sources": mosaic.source_scenes,
+                "mosaic_filled_pixel_count": mosaic.filled_pixel_count,
+                "mosaic_unfilled_pixel_count": mosaic.unfilled_pixel_count,
+                "valid_pixel_share_before_mosaic": mosaic.anchor_valid_pixel_share,
+                "valid_pixel_share_after_mosaic": mosaic.final_valid_pixel_share,
+                "mosaic_warnings": mosaic.warnings,
+            }
+        else:
+            rgb = rgb_before
+            mosaic_info = {
+                "mosaic_sources": [],
+                "mosaic_filled_pixel_count": 0,
+                "mosaic_unfilled_pixel_count": int(valid_mask.size - np.count_nonzero(valid_mask)),
+                "valid_pixel_share_before_mosaic": valid.valid_pixel_share,
+                "valid_pixel_share_after_mosaic": valid.valid_pixel_share,
+                "mosaic_warnings": [],
+            }
+        mask_result = rasterize_mask_for_window(
+            ds,
+            geometries,
+            record,
+            all_touched=config.all_touched,
+            valid_mask=valid_mask if config.clip_mask_to_valid_data else None,
+        )
+        mask = mask_result.mask
         stem = f"tile_{index:03d}_{record.kind}"
         original_name = f"{stem}_rgb.png"
+        before_name = f"{stem}_rgb_before_mosaic.png"
         mask_name = f"{stem}_mask.png"
+        raw_mask_name = f"{stem}_raw_annotation_mask.png"
+        valid_mask_name = f"{stem}_valid_mask.png"
         overlay_name = f"{stem}_overlay.png"
+        raw_overlay_name = f"{stem}_raw_yellow_clipped_red_overlay.png"
         Image.fromarray(rgb, mode="RGB").save(previews_dir / original_name)
+        Image.fromarray(rgb_before, mode="RGB").save(previews_dir / before_name)
         Image.fromarray((mask * 255).astype("uint8"), mode="L").save(previews_dir / mask_name)
+        Image.fromarray((mask_result.raw_mask * 255).astype("uint8"), mode="L").save(previews_dir / raw_mask_name)
+        Image.fromarray((valid_mask * 255).astype("uint8"), mode="L").save(previews_dir / valid_mask_name)
         Image.fromarray(overlay_mask_contour(rgb, mask), mode="RGB").save(previews_dir / overlay_name)
+        raw_then_clipped = overlay_mask_contour(rgb, mask_result.raw_mask, color=(255, 230, 0), shadow=True)
+        raw_then_clipped = overlay_mask_contour(raw_then_clipped, mask, color=(255, 0, 0), shadow=True)
+        Image.fromarray(raw_then_clipped, mode="RGB").save(previews_dir / raw_overlay_name)
+        source_map_path = None
+        if source_map is not None:
+            source_map_name = f"{stem}_source_map.png"
+            Image.fromarray(_source_map_rgb(source_map), mode="RGB").save(previews_dir / source_map_name)
+            source_map_path = f"annotated_tiles/{source_map_name}"
         row = {
             **record.to_dict(),
-            "geometries_intersecting": geom_count,
+            "geometries_intersecting": mask_result.geom_count,
             "positive_pixels_runtime": int(mask.sum()),
+            "raw_positive_pixels_runtime": int(mask_result.raw_positive_pixels),
+            "clipped_positive_pixels_runtime": int(mask_result.clipped_positive_pixels),
+            "valid_pixel_share_runtime": mask_result.valid_pixel_share,
+            "valid_data_source_runtime": valid.source,
             "preview_rgb": f"annotated_tiles/{original_name}",
+            "preview_rgb_before_mosaic": f"annotated_tiles/{before_name}",
             "preview_mask": f"annotated_tiles/{mask_name}",
+            "preview_raw_mask": f"annotated_tiles/{raw_mask_name}",
+            "preview_valid_mask": f"annotated_tiles/{valid_mask_name}",
             "preview_overlay": f"annotated_tiles/{overlay_name}",
+            "preview_raw_yellow_clipped_red_overlay": f"annotated_tiles/{raw_overlay_name}",
+            "preview_source_map": source_map_path,
+            **mosaic_info,
             "augmentations": [],
         }
         should_write_aug = int(mask.sum()) > 0 and augmented_positive_tiles < max_augmentation_tiles
@@ -341,6 +513,8 @@ def _write_tile_examples(
                     }
                 )
         rows.append(row)
+    for _scene_id, handle in neighbor_handles:
+        handle.close()
     return rows
 
 
@@ -431,9 +605,22 @@ def _render_html(summary: dict[str, Any]) -> str:
     tile_html = "".join(
         "<figure>"
         f"<img src=\"{tile['preview_overlay']}\">"
-        f"<figcaption>{html.escape(tile['kind'])}: {html.escape(tile['tile_id'])}, positive_pixels={tile['positive_pixels_runtime']}, geoms={tile['geometries_intersecting']}</figcaption>"
+        f"<figcaption>{html.escape(tile['kind'])}: {html.escape(tile['tile_id'])}, clipped={tile['clipped_positive_pixels_runtime']}, raw={tile['raw_positive_pixels_runtime']}, valid={float(tile['valid_pixel_share_runtime']):.3f}, filled={tile.get('mosaic_filled_pixel_count', 0)}</figcaption>"
         "</figure>"
         for tile in summary["tile_examples"]
+    )
+    tile_diag_html = "".join(
+        "<div class=\"diag\">"
+        f"<figure><img src=\"{tile['preview_rgb_before_mosaic']}\"><figcaption>anchor before mosaic</figcaption></figure>"
+        f"<figure><img src=\"{tile['preview_rgb']}\"><figcaption>training RGB after mosaic</figcaption></figure>"
+        f"<figure><img src=\"{tile['preview_valid_mask']}\"><figcaption>valid data mask</figcaption></figure>"
+        f"<figure><img src=\"{tile['preview_raw_mask']}\"><figcaption>raw annotation mask</figcaption></figure>"
+        f"<figure><img src=\"{tile['preview_mask']}\"><figcaption>clipped training mask</figcaption></figure>"
+        f"<figure><img src=\"{tile['preview_raw_yellow_clipped_red_overlay']}\"><figcaption>yellow raw contour, red clipped contour</figcaption></figure>"
+        + (f"<figure><img src=\"{tile['preview_source_map']}\"><figcaption>mosaic source map</figcaption></figure>" if tile.get("preview_source_map") else "")
+        + f"<pre>{html.escape(json.dumps({key: tile.get(key) for key in ['tile_id', 'kind', 'raw_positive_pixels_runtime', 'clipped_positive_pixels_runtime', 'valid_pixel_share_runtime', 'mosaic_sources', 'mosaic_filled_pixel_count', 'mosaic_unfilled_pixel_count']}, ensure_ascii=False, indent=2, default=str))}</pre>"
+        "</div>"
+        for tile in summary["tile_examples"][:8]
     )
     aug_rows = "\n".join(
         f"<tr><td>{item['operation']}</td><td>{item['training_key']}</td><td>{item['group']}</td><td>{html.escape(json.dumps(item.get('parameters') or {}, ensure_ascii=False))}</td><td>{item['status']}</td><td>{item.get('changed_pixels_fraction_mean')}</td></tr>"
@@ -464,6 +651,7 @@ def _render_html(summary: dict[str, Any]) -> str:
     th {{ background: #f6f8fa; }}
     img {{ max-width: 100%; height: auto; border: 1px solid #d0d7de; }}
     .gallery {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }}
+    .diag {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; border: 1px solid #d0d7de; padding: 10px; margin: 12px 0; }}
     .warning {{ background: #fff7ed; border: 1px solid #fed7aa; padding: 12px; }}
     figure {{ margin: 0; }}
     figcaption {{ font-size: 12px; margin-top: 4px; color: #4b5563; }}
@@ -481,8 +669,14 @@ def _render_html(summary: dict[str, Any]) -> str:
   <pre>{html.escape(json.dumps(summary['annotation'], ensure_ascii=False, indent=2, default=str))}</pre>
   <h2>Parameters</h2>
   <pre>{html.escape(json.dumps(summary['config'], ensure_ascii=False, indent=2, default=str))}</pre>
+  <h2>Valid data clipping</h2>
+  <p>Red dashed contour is the clipped training mask. Yellow dashed contour is the raw annotation mask before valid-data clipping.</p>
+  <pre>{html.escape(json.dumps(summary['valid_data_clipping'], ensure_ascii=False, indent=2, default=str))}</pre>
+  <h2>Mosaic fill</h2>
+  <p>When enabled, invalid anchor pixels are filled from neighboring scenes before the final training mask is clipped to the union valid mask.</p>
+  <pre>{html.escape(json.dumps(summary['mosaic'], ensure_ascii=False, indent=2, default=str))}</pre>
   <h2>Scene-level mask overview</h2>
-  <p><b>Legend:</b> red dashed contour = annotation mask boundary; grid colors: red = positive, orange = partial positive, blue = hard negative, gray = negative.</p>
+  <p><b>Legend:</b> red dashed contour = clipped training mask; yellow dashed contour = raw annotation mask before valid clipping; grid colors: red = positive, orange = partial positive, blue = hard negative, gray = negative.</p>
   <section class="gallery">{overview_html}</section>
   <h2>Tiling summary</h2>
   <table><tr><th>stride type</th><th>effective stride</th><th>expected</th><th>actual</th><th>coverage</th><th>out of bounds</th><th>status</th></tr>{tiling_rows}</table>
@@ -490,6 +684,8 @@ def _render_html(summary: dict[str, Any]) -> str:
   <table><tr><th>metric</th><th>value</th></tr>{class_rows}</table>
   <h2>Positive / negative examples</h2>
   <section class="gallery">{tile_html}</section>
+  <h2>Valid clipping / mosaic diagnostics</h2>
+  {tile_diag_html}
   <h2>Augmentation examples with masks</h2>
   <section class="gallery">{aug_gallery}</section>
   <h2>Augmentation checks</h2>
@@ -567,6 +763,37 @@ def _overview_mask(ds: Any, geometries: list[Any], out_width: int, out_height: i
         dtype="uint8",
         all_touched=all_touched,
     ).astype("uint8")
+
+
+def _overview_valid_mask(ds: Any, out_width: int, out_height: int, config: TilePreparationConfig) -> np.ndarray:
+    bands = [int(band) for band in (config.input_bands or list(range(1, int(ds.count) + 1))) if 1 <= int(band) <= int(ds.count)]
+    if not bands:
+        return np.zeros((out_height, out_width), dtype="uint8")
+    arr = ds.read(
+        bands,
+        out_shape=(len(bands), out_height, out_width),
+        boundless=True,
+        fill_value=0,
+    )
+    mode = str(config.valid_pixel_mode or "auto").lower()
+    if mode == "nonzero_all":
+        return np.all(arr != 0, axis=0).astype("uint8")
+    return np.any(arr != 0, axis=0).astype("uint8")
+
+
+def _source_map_rgb(source_map: np.ndarray) -> np.ndarray:
+    colors = np.array(
+        [
+            [0, 0, 0],
+            [80, 180, 80],
+            [0, 140, 255],
+            [255, 180, 0],
+            [180, 80, 255],
+        ],
+        dtype="uint8",
+    )
+    indices = np.asarray(source_map, dtype="int64") % len(colors)
+    return colors[indices]
 
 
 def mask_boundary(mask: np.ndarray) -> np.ndarray:

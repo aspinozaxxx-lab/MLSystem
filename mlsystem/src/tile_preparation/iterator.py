@@ -16,9 +16,11 @@ from .annotations import AnnotationGeometrySet, load_annotation_geometries
 from .augmentations import apply_training_augmentation
 from .config import AnnotationInput, SceneInput, TilePreparationConfig
 from .mask_rasterizer import positive_pixel_bbox, rasterize_mask_for_window
-from .raster_reader import read_training_image
+from .mosaic import read_mosaic_window
+from .raster_reader import format_training_image, read_training_image
 from .records import ReadyTileSample, TileKind, TileRecordBuildResult, TileSampleRecord, TileWindow
 from .summary import summarize_tile_records
+from .validity import read_valid_data_mask_with_source
 from .windows import generate_window_grid_for_scene
 
 
@@ -32,15 +34,25 @@ def build_tile_records(
     scene_reports: list[dict[str, Any]] = []
     annotation_summary: dict[str, Any] | None = None
     rng = random.Random(config.seed)
+    open_datasets: dict[str, Any] = {}
+    scene_ids_by_path: dict[str, str] = {}
+    try:
+        for scene in scenes:
+            image_path = _rasterio_path(scene.image_path)
+            open_datasets[image_path] = rasterio.open(image_path)
+            scene_ids_by_path[image_path] = scene.resolved_scene_id()
 
-    for scene in scenes:
-        image_path = _rasterio_path(scene.image_path)
-        scene_id = scene.resolved_scene_id()
-        with rasterio.open(image_path) as ds:
+        for scene in scenes:
+            if bool(scene.metadata.get("mosaic_neighbor_only")):
+                continue
+            image_path = _rasterio_path(scene.image_path)
+            scene_id = scene.resolved_scene_id()
+            ds = open_datasets[image_path]
             annotation_geoms = load_annotation_geometries(annotation, raster_crs=ds.crs)
             annotation_summary = annotation_geoms.to_dict(annotation.geojson_path)
             warnings.extend(annotation_geoms.warnings)
-            scene_records = _build_scene_records(ds, scene_id, image_path, annotation_geoms, config)
+            neighbor_datasets = _neighbor_datasets(image_path, open_datasets, scene_ids_by_path, config)
+            scene_records = _build_scene_records(ds, scene_id, image_path, annotation_geoms, config, neighbor_datasets=neighbor_datasets)
             before_limit = list(scene_records)
             scene_records, limit_warnings = limit_empty_tile_share(scene_records, config.max_empty_tile_share, seed=config.seed)
             warnings.extend(limit_warnings)
@@ -61,6 +73,9 @@ def build_tile_records(
                     **scene_summary,
                 }
             )
+    finally:
+        for ds in open_datasets.values():
+            ds.close()
 
     if config.max_records is not None and len(base_records) > config.max_records:
         base_records = _limit_records(base_records, config.max_records, rng)
@@ -145,19 +160,48 @@ def build_validation_tile_records(
     records: list[TileSampleRecord] = []
     scene_reports: list[dict[str, Any]] = []
     annotation_summary: dict[str, Any] | None = None
-    for scene in scenes:
-        image_path = _rasterio_path(scene.image_path)
-        scene_id = scene.resolved_scene_id()
-        with rasterio.open(image_path) as ds:
+    open_datasets: dict[str, Any] = {}
+    scene_ids_by_path: dict[str, str] = {}
+    try:
+        for scene in scenes:
+            image_path = _rasterio_path(scene.image_path)
+            open_datasets[image_path] = rasterio.open(image_path)
+            scene_ids_by_path[image_path] = scene.resolved_scene_id()
+        for scene in scenes:
+            if bool(scene.metadata.get("mosaic_neighbor_only")):
+                continue
+            image_path = _rasterio_path(scene.image_path)
+            scene_id = scene.resolved_scene_id()
+            ds = open_datasets[image_path]
             annotation_geoms = load_annotation_geometries(annotation, raster_crs=ds.crs)
             annotation_summary = annotation_geoms.to_dict(annotation.geojson_path)
             warnings.extend(annotation_geoms.warnings)
+            neighbor_datasets = _neighbor_datasets(image_path, open_datasets, scene_ids_by_path, config)
             scene_records: list[TileSampleRecord] = []
             for window in generate_window_grid_for_scene(ds.width, ds.height, config.tile_size, config.stride, scene_id=scene_id):
-                mask, geom_count = rasterize_mask_for_window(ds, annotation_geoms.geometries, window, all_touched=config.all_touched)
-                kind, positive_pixels = classify_mask(mask, config)
+                valid = read_valid_data_mask_with_source(ds, window, mode=config.valid_pixel_mode)
+                valid_mask = valid.mask
+                mosaic_sources: list[str] = []
+                mosaic_filled = 0
+                mosaic_unfilled = int(valid_mask.size - np.count_nonzero(valid_mask))
+                if config.mosaic_enabled and neighbor_datasets:
+                    mosaic = read_mosaic_window(ds, neighbor_datasets, window, config)
+                    valid_mask = mosaic.valid_mask
+                    mosaic_sources = mosaic.source_scenes
+                    mosaic_filled = mosaic.filled_pixel_count
+                    mosaic_unfilled = mosaic.unfilled_pixel_count
+                mask_result = rasterize_mask_for_window(
+                    ds,
+                    annotation_geoms.geometries,
+                    window,
+                    all_touched=config.all_touched,
+                    valid_mask=valid_mask if config.clip_mask_to_valid_data else None,
+                )
+                kind, positive_pixels = classify_mask(mask_result.mask, config)
                 if kind == "hard_negative":
                     kind = "negative"
+                if config.exclude_empty_valid_tiles and mask_result.valid_pixel_share < config.min_valid_pixel_share:
+                    continue
                 scene_records.append(
                     TileSampleRecord(
                         scene_id=scene_id,
@@ -171,7 +215,15 @@ def build_validation_tile_records(
                         kind=kind if kind in {"positive", "partial_positive"} else "negative",
                         positive_pixels=int(positive_pixels),
                         source="validation_grid",
-                        geometries_intersecting=int(geom_count),
+                        geometries_intersecting=int(mask_result.geom_count),
+                        valid_pixel_share=mask_result.valid_pixel_share,
+                        invalid_pixel_share=1.0 - mask_result.valid_pixel_share,
+                        mask_pixels_before_valid_clip=mask_result.raw_positive_pixels,
+                        mask_pixels_after_valid_clip=mask_result.clipped_positive_pixels,
+                        valid_data_source=valid.source,
+                        mosaic_sources=mosaic_sources,
+                        mosaic_filled_pixel_count=mosaic_filled,
+                        mosaic_unfilled_pixel_count=mosaic_unfilled,
                     )
                 )
             scene_records.sort(key=lambda item: (item.y, item.x))
@@ -192,9 +244,12 @@ def build_validation_tile_records(
                     **summary,
                 }
             )
-        if config.max_records is not None and len(records) >= config.max_records:
-            records = records[: config.max_records]
-            break
+            if config.max_records is not None and len(records) >= config.max_records:
+                records = records[: config.max_records]
+                break
+    finally:
+        for ds in open_datasets.values():
+            ds.close()
     return TileRecordBuildResult(
         records=records,
         base_records=records,
@@ -223,7 +278,12 @@ def iter_training_tiles(
         random.Random(config.seed + 101).shuffle(records)
     open_datasets: dict[str, Any] = {}
     annotation_cache: dict[str, AnnotationGeometrySet] = {}
+    scene_ids_by_path = {_rasterio_path(scene.image_path): scene.resolved_scene_id() for scene in scenes}
     try:
+        if config.mosaic_enabled:
+            for scene in scenes:
+                path = _rasterio_path(scene.image_path)
+                open_datasets[path] = rasterio.open(path)
         for index, record in enumerate(records):
             if config.max_records is not None and index >= config.max_records:
                 break
@@ -237,9 +297,41 @@ def iter_training_tiles(
             if annotation_geoms is None:
                 annotation_geoms = load_annotation_geometries(annotation, raster_crs=ds.crs)
                 annotation_cache[record.image_path] = annotation_geoms
-            image = read_training_image(ds, record, config)
-            mask, geom_count = rasterize_mask_for_window(ds, annotation_geoms.geometries, record, all_touched=config.all_touched)
-            metadata: dict[str, Any] = {"geometries_intersecting": geom_count}
+            valid = read_valid_data_mask_with_source(ds, record, mode=config.valid_pixel_mode)
+            mosaic_metadata: dict[str, Any] = {}
+            if config.mosaic_enabled:
+                mosaic = read_mosaic_window(ds, _neighbor_datasets(record.image_path, open_datasets, scene_ids_by_path, config), record, config)
+                valid_mask = mosaic.valid_mask
+                image = format_training_image(mosaic.image, config)
+                valid_source = mosaic.valid_data_source
+                mosaic_metadata = {
+                    "mosaic_sources": mosaic.source_scenes,
+                    "mosaic_filled_pixel_count": mosaic.filled_pixel_count,
+                    "mosaic_unfilled_pixel_count": mosaic.unfilled_pixel_count,
+                    "valid_pixel_share_before_mosaic": mosaic.anchor_valid_pixel_share,
+                    "valid_pixel_share_after_mosaic": mosaic.final_valid_pixel_share,
+                    "mosaic_warnings": mosaic.warnings,
+                }
+            else:
+                valid_mask = valid.mask
+                image = read_training_image(ds, record, config)
+                valid_source = valid.source
+            mask_result = rasterize_mask_for_window(
+                ds,
+                annotation_geoms.geometries,
+                record,
+                all_touched=config.all_touched,
+                valid_mask=valid_mask if config.clip_mask_to_valid_data else None,
+            )
+            mask = mask_result.mask
+            metadata: dict[str, Any] = {
+                "geometries_intersecting": mask_result.geom_count,
+                "valid_pixel_share": mask_result.valid_pixel_share,
+                "mask_pixels_before_valid_clip": mask_result.raw_positive_pixels,
+                "mask_pixels_after_valid_clip": mask_result.clipped_positive_pixels,
+                "valid_data_source": valid_source,
+                **mosaic_metadata,
+            }
             if config.apply_random_augmentations and any(bool(value) for value in (config.augmentations or {}).values()):
                 image, mask, aug_metadata = apply_training_augmentation(
                     image,
@@ -295,6 +387,14 @@ def apply_virtual_repeats(records: list[TileSampleRecord], config: TilePreparati
                     base_record_id=base_id,
                     repeat_index=repeat_index if factor > 1 else None,
                     geometries_intersecting=record.geometries_intersecting,
+                    valid_pixel_share=record.valid_pixel_share,
+                    invalid_pixel_share=record.invalid_pixel_share,
+                    mask_pixels_before_valid_clip=record.mask_pixels_before_valid_clip,
+                    mask_pixels_after_valid_clip=record.mask_pixels_after_valid_clip,
+                    valid_data_source=record.valid_data_source,
+                    mosaic_sources=list(record.mosaic_sources),
+                    mosaic_filled_pixel_count=record.mosaic_filled_pixel_count,
+                    mosaic_unfilled_pixel_count=record.mosaic_unfilled_pixel_count,
                     metadata=metadata,
                 )
             )
@@ -335,6 +435,8 @@ def _build_scene_records(
     image_path: str,
     annotation_geoms: AnnotationGeometrySet,
     config: TilePreparationConfig,
+    *,
+    neighbor_datasets: list[tuple[str, Any]] | None = None,
 ) -> list[TileSampleRecord]:
     candidates: dict[tuple[int, int, int, int], tuple[TileWindow, set[str]]] = {}
     for source, stride in (
@@ -353,9 +455,30 @@ def _build_scene_records(
     classified: dict[tuple[int, int, int, int], dict[str, Any]] = {}
     positive_bboxes: list[tuple[int, int, int, int]] = []
     for key, (window, sources) in candidates.items():
-        mask, geom_count = rasterize_mask_for_window(ds, annotation_geoms.geometries, window, all_touched=config.all_touched)
-        kind, positive_pixels = classify_mask(mask, config)
-        bbox = positive_pixel_bbox(mask, x_offset=window.x, y_offset=window.y)
+        valid = read_valid_data_mask_with_source(ds, window, mode=config.valid_pixel_mode)
+        valid_mask = valid.mask
+        mosaic_sources: list[str] = []
+        filled_pixel_count = 0
+        unfilled_pixel_count = int(valid_mask.size - np.count_nonzero(valid_mask))
+        valid_before_mosaic = valid.valid_pixel_share
+        if config.mosaic_enabled and neighbor_datasets:
+            mosaic = read_mosaic_window(ds, neighbor_datasets, window, config)
+            valid_mask = mosaic.valid_mask
+            mosaic_sources = mosaic.source_scenes
+            filled_pixel_count = mosaic.filled_pixel_count
+            unfilled_pixel_count = mosaic.unfilled_pixel_count
+            valid_before_mosaic = mosaic.anchor_valid_pixel_share
+        mask_result = rasterize_mask_for_window(
+            ds,
+            annotation_geoms.geometries,
+            window,
+            all_touched=config.all_touched,
+            valid_mask=valid_mask if config.clip_mask_to_valid_data else None,
+        )
+        if config.exclude_empty_valid_tiles and mask_result.valid_pixel_share < config.min_valid_pixel_share:
+            continue
+        kind, positive_pixels = classify_mask(mask_result.mask, config)
+        bbox = positive_pixel_bbox(mask_result.mask, x_offset=window.x, y_offset=window.y)
         if bbox and kind in {"positive", "partial_positive"}:
             positive_bboxes.append(bbox)
         classified[key] = {
@@ -363,7 +486,16 @@ def _build_scene_records(
             "sources": sources,
             "kind": kind,
             "positive_pixels": positive_pixels,
-            "geometries_intersecting": geom_count,
+            "geometries_intersecting": mask_result.geom_count,
+            "valid_pixel_share": mask_result.valid_pixel_share,
+            "invalid_pixel_share": 1.0 - mask_result.valid_pixel_share,
+            "valid_pixel_share_before_mosaic": valid_before_mosaic,
+            "mask_pixels_before_valid_clip": mask_result.raw_positive_pixels,
+            "mask_pixels_after_valid_clip": mask_result.clipped_positive_pixels,
+            "valid_data_source": valid.source,
+            "mosaic_sources": mosaic_sources,
+            "mosaic_filled_pixel_count": filled_pixel_count,
+            "mosaic_unfilled_pixel_count": unfilled_pixel_count,
         }
 
     records: list[TileSampleRecord] = []
@@ -399,7 +531,18 @@ def _build_scene_records(
                 positive_pixels=int(item["positive_pixels"]),
                 source=source,
                 geometries_intersecting=int(item["geometries_intersecting"]),
-                metadata={"sources": sorted(sources)},
+                valid_pixel_share=float(item["valid_pixel_share"]),
+                invalid_pixel_share=float(item["invalid_pixel_share"]),
+                mask_pixels_before_valid_clip=int(item["mask_pixels_before_valid_clip"]),
+                mask_pixels_after_valid_clip=int(item["mask_pixels_after_valid_clip"]),
+                valid_data_source=str(item["valid_data_source"]),
+                mosaic_sources=list(item["mosaic_sources"]),
+                mosaic_filled_pixel_count=int(item["mosaic_filled_pixel_count"]),
+                mosaic_unfilled_pixel_count=int(item["mosaic_unfilled_pixel_count"]),
+                metadata={
+                    "sources": sorted(sources),
+                    "valid_pixel_share_before_mosaic": item["valid_pixel_share_before_mosaic"],
+                },
             )
         )
     records.sort(key=lambda item: (_kind_priority(item.kind), item.y, item.x, item.stride))
@@ -460,6 +603,21 @@ def _limit_records(records: list[TileSampleRecord], limit: int, rng: random.Rand
 
 def _kind_priority(kind: str) -> int:
     return {"positive": 0, "partial_positive": 1, "hard_negative": 2, "negative": 3}.get(kind, 9)
+
+
+def _neighbor_datasets(
+    image_path: str,
+    datasets: dict[str, Any],
+    scene_ids_by_path: dict[str, str],
+    config: TilePreparationConfig,
+) -> list[tuple[str, Any]]:
+    if not config.mosaic_enabled:
+        return []
+    return [
+        (scene_ids_by_path.get(path, path), ds)
+        for path, ds in datasets.items()
+        if path != image_path
+    ]
 
 
 def _rasterio_path(value: str | Path | None) -> str:
