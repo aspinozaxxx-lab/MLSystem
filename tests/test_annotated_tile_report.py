@@ -56,6 +56,7 @@ class AnnotatedTileReportTests(unittest.TestCase):
             summary = json.loads((scene_dir / "annotated_scene_summary.json").read_text(encoding="utf-8"))
             self.assertIn("classification_summary", summary)
             self.assertIn("augmentation_report", summary)
+            self.assertEqual(summary["mask_visualization"]["mode"], "dashed_contour")
             self.assertGreater(summary["classification_summary"]["positive_tiles"], 0)
             self.assertGreater(summary["augmentation_report"]["checks_summary"]["passed"], 0)
             self.assertEqual(summary["augmentation_report"]["checks_summary"]["failed"], 0)
@@ -76,6 +77,7 @@ class AnnotatedTileReportTests(unittest.TestCase):
                 include_augmentation_catalog=True,
             )
             self.assertEqual(body["status"], "ok")
+            self.assertEqual(body["mask_visualization"]["mode"], "dashed_contour")
             self.assertIn("annotation", body)
             self.assertIn("classification_summary", body)
             self.assertIn("flip_horizontal", body["augmentation_operations_supported"])
@@ -112,6 +114,7 @@ class AnnotatedTileReportTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             body = response.json()
             self.assertEqual(body["status"], "ok")
+            self.assertEqual(body["mask_visualization"]["mode"], "dashed_contour")
             self.assertIn("annotation", body)
             self.assertIn("classification_summary", body)
             self.assertIn("flip_horizontal", body["augmentation_operations_supported"])

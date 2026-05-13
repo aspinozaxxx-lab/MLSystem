@@ -47,7 +47,7 @@ class DebugAugmentationsTests(unittest.TestCase):
         self.assertTrue(REQUIRED_OPERATIONS.issubset(set(AUGMENTATION_REGISTRY)))
 
     def test_training_keys_match_real_train_augmentation_keys(self) -> None:
-        source = Path("mlsystem/src/real_train.py").read_text(encoding="utf-8")
+        source = Path("mlsystem/src/tile_preparation/augmentations.py").read_text(encoding="utf-8")
         for key in TRAINING_AUGMENTATION_KEYS:
             with self.subTest(key=key):
                 self.assertIn(f'"{key}"', source)

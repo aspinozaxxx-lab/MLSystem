@@ -1,18 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 
 @dataclass(frozen=True)
 class SceneInput:
-    image_path: Path
+    image_path: Path | str
     scene_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def resolved_scene_id(self) -> str:
-        return self.scene_id or Path(self.image_path).stem
+        return self.scene_id or PurePosixPath(str(self.image_path).replace("\\", "/")).stem
 
 
 @dataclass(frozen=True)
@@ -38,6 +38,9 @@ class TilePreparationConfig:
     positive_repeat_factor: int = 1
     hard_negative_repeat_factor: int = 1
     negative_repeat_factor: int = 1
+    batch_positive_fraction: float | None = None
+    batch_hard_negative_fraction: float | None = None
+    batch_negative_fraction: float | None = None
     all_touched: bool = False
     output_format: str = "chw_float32"
     normalize: bool = True
@@ -87,3 +90,76 @@ class TilePreparationConfig:
 
 def effective_stride(base_stride: int, factor: float) -> int:
     return max(1, int(max(1, int(base_stride)) * max(0.000001, float(factor))))
+
+
+def train_sampling_enabled(preprocess: dict[str, Any] | None) -> bool:
+    raw = ((preprocess or {}).get("train_sampling") or {}) if isinstance(preprocess, dict) else {}
+    return bool(raw.get("enabled", False))
+
+
+def resolve_tile_preparation_config(
+    preprocess: dict[str, Any] | None,
+    train: dict[str, Any] | None,
+    *,
+    tile_size: int,
+    stride: int,
+    input_bands: list[int] | None,
+    seed: int,
+    train_mode: bool,
+    max_records: int | None = None,
+    max_records_per_scene: int | None = None,
+) -> TilePreparationConfig:
+    preprocess = preprocess or {}
+    train = train or {}
+    raw = dict(preprocess.get("train_sampling") or {})
+    enabled = bool(raw.get("enabled", False))
+    random_jitter = raw.get("random_jitter") or {}
+    max_empty_tile_share = raw.get("max_empty_tile_share")
+    if max_empty_tile_share is None and "max_empty_tile_share" in preprocess:
+        max_empty_tile_share = preprocess.get("max_empty_tile_share")
+    if not train_mode:
+        return TilePreparationConfig(
+            tile_size=tile_size,
+            stride=stride,
+            min_positive_pixels=max(1, int(raw.get("min_positive_pixels", 1) or 1)),
+            include_partial_positive=bool(raw.get("include_partial_positive", True)),
+            partial_positive_fraction=max(0.0, float(raw.get("partial_positive_fraction", 0.0) or 0.0)),
+            input_bands=input_bands,
+            apply_random_augmentations=False,
+            max_records=max_records,
+            max_records_per_scene=max_records_per_scene,
+            seed=seed,
+        )
+    augmentations = dict(train.get("augmentations") or {})
+    return TilePreparationConfig(
+        tile_size=tile_size,
+        stride=stride,
+        positive_stride_factor=max(0.000001, float(raw.get("positive_stride_factor", 1.0 if enabled else 1.0) or 1.0)),
+        hard_negative_stride_factor=max(0.000001, float(raw.get("hard_negative_stride_factor", 1.0 if enabled else 1.0) or 1.0)),
+        negative_stride_factor=max(0.000001, float(raw.get("negative_stride_factor", 1.0) or 1.0)),
+        min_positive_pixels=max(1, int(raw.get("min_positive_pixels", 1) or 1)),
+        include_partial_positive=bool(raw.get("include_partial_positive", True)),
+        partial_positive_fraction=max(0.0, float(raw.get("partial_positive_fraction", 0.0) or 0.0)),
+        max_empty_tile_share=None if max_empty_tile_share is None else max(0.0, min(1.0, float(max_empty_tile_share))),
+        hard_negative_context_px=None if raw.get("hard_negative_context_px") is None else max(0, int(raw.get("hard_negative_context_px") or 0)),
+        virtual_epoch_multiplier=max(1, int(raw.get("virtual_epoch_multiplier", 1) or 1)) if enabled else 1,
+        positive_repeat_factor=max(1, int(raw.get("positive_repeat_factor", 1) or 1)) if enabled else 1,
+        hard_negative_repeat_factor=max(1, int(raw.get("hard_negative_repeat_factor", 1) or 1)) if enabled else 1,
+        negative_repeat_factor=max(1, int(raw.get("negative_repeat_factor", 1) or 1)) if enabled else 1,
+        batch_positive_fraction=_optional_fraction(raw.get("batch_positive_fraction")),
+        batch_hard_negative_fraction=_optional_fraction(raw.get("batch_hard_negative_fraction")),
+        batch_negative_fraction=_optional_fraction(raw.get("batch_negative_fraction")),
+        input_bands=input_bands,
+        augmentations=augmentations,
+        apply_random_augmentations=bool(augmentations),
+        max_records=max_records,
+        max_records_per_scene=max_records_per_scene,
+        shuffle=bool(train.get("shuffle_tiles", False)),
+        seed=seed,
+    )
+
+
+def _optional_fraction(value: Any) -> float | None:
+    if value is None:
+        return None
+    return max(0.0, min(1.0, float(value)))

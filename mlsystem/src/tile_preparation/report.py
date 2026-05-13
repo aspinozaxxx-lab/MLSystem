@@ -32,6 +32,7 @@ from .windows import build_tiling_check
 
 
 RASTER_SUFFIXES = {".tif", ".tiff"}
+MASK_VISUALIZATION = {"mode": "dashed_contour", "color": "red", "dash": 8, "gap": 5, "width": 2}
 
 
 def preview_annotated_tile_report(
@@ -70,6 +71,7 @@ def preview_annotated_tile_report(
     base_summary = summarize_tile_records(result.base_records)
     response: dict[str, Any] = {
         "status": "ok",
+        "mask_visualization": dict(MASK_VISUALIZATION),
         "raster": raster,
         "tiling_summary": _tiling_checks(raster["width"], raster["height"], config),
         "classification_summary": {
@@ -149,6 +151,7 @@ def generate_annotated_tile_report(
         "annotation_path": str(annotation.geojson_path),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "git_commit": _git_commit(),
+        "mask_visualization": dict(MASK_VISUALIZATION),
         "raster": raster,
         "annotation": result.metadata.get("annotation"),
         "config": _config_to_dict(config, augmentation_mode, augmentation_seed, max_tile_examples, max_augmentation_tiles),
@@ -239,7 +242,7 @@ def _write_overviews(
 ) -> dict[str, str]:
     overview = _read_overview(ds, max_size)
     mask = _overview_mask(ds, geometries, overview.shape[1], overview.shape[0], config.all_touched)
-    overlay = _overlay_mask(overview, mask)
+    overlay = overlay_mask_contour(overview, mask, width=max(2, int(round(max(overview.shape[:2]) / 900))))
     base = Image.fromarray(overlay, mode="RGB").convert("RGBA")
     scale_x = overview.shape[1] / float(ds.width)
     scale_y = overview.shape[0] / float(ds.height)
@@ -262,7 +265,7 @@ def _write_overviews(
         "overview_grid_positive_negative.png": "overview_grid_positive_negative.png",
     }
     base.convert("RGB").save(scene_dir / "overview_raster_grid_mask.png")
-    Image.fromarray((mask * 255).astype("uint8"), mode="L").save(scene_dir / "overview_mask_only.png")
+    Image.fromarray(_mask_only_contour(mask), mode="RGB").save(scene_dir / "overview_mask_only.png")
     Image.fromarray(overview, mode="RGB").convert("RGBA").save(scene_dir / "overview_grid_positive_negative.png")
     grid = Image.open(scene_dir / "overview_grid_positive_negative.png").convert("RGBA")
     draw = ImageDraw.Draw(grid)
@@ -306,7 +309,7 @@ def _write_tile_examples(
         overlay_name = f"{stem}_overlay.png"
         Image.fromarray(rgb, mode="RGB").save(previews_dir / original_name)
         Image.fromarray((mask * 255).astype("uint8"), mode="L").save(previews_dir / mask_name)
-        Image.fromarray(_overlay_mask(rgb, mask), mode="RGB").save(previews_dir / overlay_name)
+        Image.fromarray(overlay_mask_contour(rgb, mask), mode="RGB").save(previews_dir / overlay_name)
         row = {
             **record.to_dict(),
             "geometries_intersecting": geom_count,
@@ -328,7 +331,7 @@ def _write_tile_examples(
                 overlay_aug_name = f"{aug_stem}_overlay.png"
                 Image.fromarray(aug_rgb, mode="RGB").save(augmentations_dir / rgb_name)
                 Image.fromarray(((aug_mask if aug_mask is not None else mask) * 255).astype("uint8"), mode="L").save(augmentations_dir / mask_aug_name)
-                Image.fromarray(_overlay_mask(aug_rgb, aug_mask if aug_mask is not None else mask), mode="RGB").save(augmentations_dir / overlay_aug_name)
+                Image.fromarray(overlay_mask_contour(aug_rgb, aug_mask if aug_mask is not None else mask), mode="RGB").save(augmentations_dir / overlay_aug_name)
                 row["augmentations"].append(
                     {
                         "rgb_path": f"annotated_augmentations/{rgb_name}",
@@ -411,7 +414,7 @@ def _build_augmentation_report(tile_examples: list[dict[str, Any]], augmentation
             "failed": int(status_counts.get("failed", 0)),
         },
         "operation_checks": operation_checks,
-        "cutout_mask_behavior": "unchanged, matching real_train.py production behavior",
+        "cutout_mask_behavior": "unchanged, matching tile_preparation production behavior",
     }
 
 
@@ -479,6 +482,7 @@ def _render_html(summary: dict[str, Any]) -> str:
   <h2>Parameters</h2>
   <pre>{html.escape(json.dumps(summary['config'], ensure_ascii=False, indent=2, default=str))}</pre>
   <h2>Scene-level mask overview</h2>
+  <p><b>Legend:</b> red dashed contour = annotation mask boundary; grid colors: red = positive, orange = partial positive, blue = hard negative, gray = negative.</p>
   <section class="gallery">{overview_html}</section>
   <h2>Tiling summary</h2>
   <table><tr><th>stride type</th><th>effective stride</th><th>expected</th><th>actual</th><th>coverage</th><th>out of bounds</th><th>status</th></tr>{tiling_rows}</table>
@@ -565,13 +569,70 @@ def _overview_mask(ds: Any, geometries: list[Any], out_width: int, out_height: i
     ).astype("uint8")
 
 
-def _overlay_mask(rgb: np.ndarray, mask: np.ndarray) -> np.ndarray:
-    base = Image.fromarray(rgb, mode="RGB").convert("RGBA")
-    overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
-    mask_img = Image.fromarray((mask > 0).astype("uint8") * 135, mode="L")
-    color = Image.new("RGBA", base.size, (255, 40, 40, 120))
-    overlay.paste(color, (0, 0), mask_img)
-    return np.asarray(Image.alpha_composite(base, overlay).convert("RGB"))
+def mask_boundary(mask: np.ndarray) -> np.ndarray:
+    binary = np.asarray(mask) > 0
+    if binary.ndim != 2 or not binary.any():
+        return np.zeros_like(binary, dtype=bool)
+    padded = np.pad(binary, 1, mode="constant", constant_values=False)
+    eroded = np.ones_like(binary, dtype=bool)
+    for dy in range(3):
+        for dx in range(3):
+            eroded &= padded[dy : dy + binary.shape[0], dx : dx + binary.shape[1]]
+    return binary & ~eroded
+
+
+def dilate_binary(mask: np.ndarray, radius: int = 1) -> np.ndarray:
+    binary = np.asarray(mask) > 0
+    radius = max(0, int(radius))
+    if radius == 0 or not binary.any():
+        return binary
+    padded = np.pad(binary, radius, mode="constant", constant_values=False)
+    out = np.zeros_like(binary, dtype=bool)
+    for dy in range(2 * radius + 1):
+        for dx in range(2 * radius + 1):
+            out |= padded[dy : dy + binary.shape[0], dx : dx + binary.shape[1]]
+    return out
+
+
+def dashed_boundary(boundary: np.ndarray, dash: int = 8, gap: int = 5) -> np.ndarray:
+    binary = np.asarray(boundary) > 0
+    if not binary.any():
+        return binary
+    yy, xx = np.indices(binary.shape)
+    period = max(1, int(dash) + max(0, int(gap)))
+    dash_mask = ((xx + yy) % period) < max(1, int(dash))
+    return binary & dash_mask
+
+
+def overlay_mask_contour(
+    rgb: np.ndarray,
+    mask: np.ndarray,
+    *,
+    color: tuple[int, int, int] = (255, 0, 0),
+    dash: int = 8,
+    gap: int = 5,
+    width: int = 2,
+    shadow: bool = True,
+) -> np.ndarray:
+    out = np.asarray(rgb).copy()
+    if out.ndim != 3 or out.shape[2] != 3:
+        raise ValueError(f"Expected RGB HxWx3 image, got shape={out.shape}")
+    if out.dtype != np.uint8:
+        out = np.clip(out, 0, 255).astype("uint8")
+    boundary = mask_boundary(mask)
+    contour = dashed_boundary(dilate_binary(boundary, radius=max(0, int(width) - 1)), dash=dash, gap=gap)
+    if shadow:
+        shadow_mask = dilate_binary(contour, radius=1)
+        out[shadow_mask] = np.array((255, 255, 255), dtype="uint8")
+    out[contour] = np.array(color, dtype="uint8")
+    return out
+
+
+def _mask_only_contour(mask: np.ndarray) -> np.ndarray:
+    base = np.zeros((*np.asarray(mask).shape, 3), dtype="uint8")
+    base[:] = (20, 20, 20)
+    base[np.asarray(mask) > 0] = (55, 55, 55)
+    return overlay_mask_contour(base, mask, width=2, shadow=True)
 
 
 def _kind_color(kind: str) -> tuple[int, int, int, int]:

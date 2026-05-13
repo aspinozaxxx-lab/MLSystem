@@ -24,17 +24,50 @@ def read_rgb_window(ds: Any, record: TileSampleRecord, *, bands: list[int] | Non
 
 
 def read_training_image(ds: Any, record: TileSampleRecord, config: TilePreparationConfig) -> np.ndarray:
-    rgb = read_rgb_window(ds, record, bands=config.input_bands)
+    arr = read_band_window(ds, record, bands=config.input_bands)
     if config.output_format == "hwc_uint8":
-        return rgb
-    data = rgb.astype("float32")
+        return np.transpose(_normalize_to_uint8(arr), (1, 2, 0))
+    data = arr.astype("float32", copy=False)
     if config.normalize:
-        data = data / 255.0
+        data = normalize_band_first(data)
     if config.output_format == "chw_float32":
-        return np.transpose(data, (2, 0, 1)).astype("float32")
-    if config.output_format == "hwc_float32":
         return data.astype("float32")
+    if config.output_format == "hwc_float32":
+        return np.transpose(data, (1, 2, 0)).astype("float32")
     raise ValueError(f"Unsupported output_format: {config.output_format}")
+
+
+def read_band_window(ds: Any, record: TileSampleRecord, *, bands: list[int] | None = None) -> np.ndarray:
+    usable_bands = bands or list(range(1, int(ds.count) + 1))
+    usable_bands = [int(band) for band in usable_bands if 1 <= int(band) <= int(ds.count)]
+    if not usable_bands:
+        raise ValueError(f"{record.scene_id} has no readable bands")
+    return ds.read(
+        usable_bands,
+        window=Window(int(record.x), int(record.y), int(record.width), int(record.height)),
+        boundless=True,
+        fill_value=0,
+    )
+
+
+def normalize_band_first(arr: np.ndarray) -> np.ndarray:
+    data = arr.astype("float32", copy=False)
+    data[~np.isfinite(data)] = 0.0
+    out = np.zeros_like(data, dtype="float32")
+    for band_index in range(data.shape[0]):
+        band = data[band_index]
+        valid = band[band != 0]
+        if valid.size < 16:
+            continue
+        lo, hi = np.percentile(valid, [2, 98])
+        if hi <= lo:
+            hi = lo + 1.0
+        out[band_index] = np.clip((band - lo) / (hi - lo), 0.0, 1.0)
+    return out
+
+
+def _normalize_to_uint8(arr: np.ndarray) -> np.ndarray:
+    return np.clip(normalize_band_first(arr) * 255.0, 0, 255).astype("uint8")
 
 
 def to_rgb_uint8(arr: np.ndarray) -> np.ndarray:

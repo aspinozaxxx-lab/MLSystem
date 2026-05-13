@@ -57,7 +57,7 @@ train:
 
 | YAML path | Default | Type | Allowed values / constraints | Scope | Affects | Count impact example |
 |---|---:|---|---|---|---|---|
-| `preprocess.train_sampling.enabled` | `false` | bool | `true` / `false` | train | window generation, repeats, balancing, jitter | `false` keeps the legacy `real_train._read_samples` path; `true` switches train to virtual records. |
+| `preprocess.train_sampling.enabled` | `false` | bool | `true` / `false` | train | window generation, repeats, balancing, jitter | `false` keeps default stride/repeat behavior; `true` enables virtual expansion in the shared `tile_preparation` module. |
 | `preprocess.train_sampling.virtual_epoch_multiplier` | `1` | int | `>= 1` | train | batch/epoch balancing | `2` makes `effective_train_samples_per_epoch` about `2 * virtual_train_records`. |
 | `preprocess.train_sampling.positive_repeat_factor` | `1` | int | `>= 1` | train | repeats | `4` expands positive and partial-positive virtual records 4x. |
 | `preprocess.train_sampling.hard_negative_repeat_factor` | `1` | int | `>= 1` | train | repeats | `2` expands hard-negative virtual records 2x. |
@@ -77,7 +77,7 @@ train:
 | `preprocess.train_sampling.random_jitter.max_shift_fraction` | `0.25` | float | `>= 0`; fraction of tile size | train | window generation | With `tile_size=768`, `0.25` allows up to 192 px shift in each direction, clipped to scene bounds. |
 | `preprocess.train_sampling.random_jitter.keep_positive_min_pixels` | `1` | int | `>= 1` | train | tile classification | Positive/partial-positive jitter attempts fall back to the original window if foreground drops below this value. |
 
-All parameters above are implemented in `mlsystem/src/data/virtual_tile_sampling.py`. The CLI/API preview reports `warnings` when a requested group is empty, fractions need normalization, or `hard_negative_context_px` falls back to `tile_size // 2`.
+All parameters above are implemented in `mlsystem/src/tile_preparation/`. `mlsystem/src/data/virtual_tile_sampling.py` remains a compatibility wrapper for older debug callers. The CLI/API preview reports `warnings` when a requested group is empty, fractions need normalization, or `hard_negative_context_px` falls back to `tile_size // 2`.
 
 ## Local Preview
 
@@ -143,11 +143,11 @@ Supported local report augmentation operations:
 
 `original`, `flip_horizontal`, `flip_vertical`, `flip_horizontal_vertical`, `rot90_90`, `rot90_180`, `rot90_270`, `brightness`, `contrast`, `brightness_contrast`, `gamma_low`, `gamma_high`, `noise_low`, `noise_high`, `blur_light`, `blur_strong`, `cutout_small`, `cutout_medium`, `coarse_dropout`, `color_jitter`, `training_random_all_enabled_seed_1`, `training_random_all_enabled_seed_2`, `training_random_all_enabled_seed_3`.
 
-The debug implementation mirrors production augmentation groups used by `real_train.py`: `flips`, `rot90`, `brightness_contrast`/`color_jitter`, `gamma`, `noise`, `blur`, `cutout`/`coarse_dropout`. Random train-like examples are visual preview equivalents and are marked with `matches_training_semantics=false` in JSON metadata when they do not reuse the exact torch batch code path. Geometric image+mask consistency is covered by synthetic unit tests; local GeoTIFF reports without annotation only validate RGB preview behavior.
+The debug implementation mirrors production augmentation groups implemented in `mlsystem/src/tile_preparation/augmentations.py`: `flips`, `rot90`, `brightness_contrast`/`color_jitter`, `gamma`, `noise`, `blur`, `cutout`/`coarse_dropout`. Random train-like examples are visual preview equivalents and are marked with `matches_training_semantics=false` in JSON metadata. Geometric image+mask consistency is covered by synthetic unit tests; local GeoTIFF reports without annotation only validate RGB preview behavior.
 
 ## Annotated Tile Preparation Module
 
-The reusable training tile preparation code lives in `mlsystem/src/tile_preparation/`. It is independent from Airflow, FastAPI, `real_train.py`, and pipeline stages. The public API accepts image and annotation paths, builds lightweight tile records, and reads raster windows plus rasterized masks lazily during iteration:
+The reusable training tile preparation code lives in `mlsystem/src/tile_preparation/`. It is independent from Airflow, FastAPI, `real_train.py`, and pipeline stages. `real_train.py` uses this package for train and validation records/datasets instead of duplicating window generation, mask rasterization, classification, repeats, empty limiting, or augmentation logic. The public API accepts image and annotation paths, builds lightweight tile records, and reads raster windows plus rasterized masks lazily during iteration:
 
 ```python
 from pathlib import Path
@@ -216,7 +216,7 @@ python scripts/debug_annotated_tile_report.py `
   --augmentation-seed 42
 ```
 
-The script writes `annotated_tile_sampling_index.html/json` in the input directory and `annotated_tile_sampling_report.html`, `annotated_scene_summary.json`, overview images, tile mask overlays, and augmentation mask overlays under the scene subdirectory. These are debug artifacts only and must not be committed.
+The script writes `annotated_tile_sampling_index.html/json` in the input directory and `annotated_tile_sampling_report.html`, `annotated_scene_summary.json`, overview images, tile mask previews, and augmentation mask previews under the scene subdirectory. The main visual overlay uses a bright red dashed annotation contour, not a translucent mask fill. These are debug artifacts only and must not be committed.
 
 CRS behavior:
 
@@ -225,7 +225,7 @@ CRS behavior:
 - with `--allow-inferred-annotation-crs`, missing CRS can be inferred as EPSG:4326/EPSG:3857 or treated as raster CRS with a warning;
 - if raster and annotation CRS differ, geometries are transformed to raster CRS before rasterization.
 
-Cutout and coarse dropout match `real_train.py`: they modify image pixels only and keep the mask unchanged.
+Cutout and coarse dropout match the production augmentation behavior in `tile_preparation`: they modify image pixels only and keep the mask unchanged.
 
 ## Download A Few S3 Scenes
 
@@ -329,7 +329,7 @@ Invoke-RestMethod `
   -Body $payload
 ```
 
-The annotated endpoint is also gated by `MLSYSTEM_DEBUG_DATASET_ENDPOINTS=1`. It returns raster metadata, annotation metadata, tiling summary, classification summary, augmentation catalog, and warnings. It does not generate HTML and does not return raster or mask arrays.
+The annotated endpoint is also gated by `MLSYSTEM_DEBUG_DATASET_ENDPOINTS=1`. It returns raster metadata, annotation metadata, tiling summary, classification summary, augmentation catalog, `mask_visualization` (`dashed_contour`, red, dash/gap/width), and warnings. It does not generate HTML and does not return raster or mask arrays.
 
 ## What To Check
 

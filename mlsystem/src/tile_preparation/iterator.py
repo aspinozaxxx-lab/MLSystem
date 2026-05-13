@@ -13,10 +13,10 @@ from rasterio.windows import Window
 from shapely.geometry import box
 
 from .annotations import AnnotationGeometrySet, load_annotation_geometries
-from .augmentations import apply_random_training_augmentation
+from .augmentations import apply_training_augmentation
 from .config import AnnotationInput, SceneInput, TilePreparationConfig
 from .mask_rasterizer import positive_pixel_bbox, rasterize_mask_for_window
-from .raster_reader import read_rgb_window
+from .raster_reader import read_training_image
 from .records import ReadyTileSample, TileKind, TileRecordBuildResult, TileSampleRecord, TileWindow
 from .summary import summarize_tile_records
 from .windows import generate_window_grid_for_scene
@@ -34,7 +34,7 @@ def build_tile_records(
     rng = random.Random(config.seed)
 
     for scene in scenes:
-        image_path = Path(scene.image_path)
+        image_path = _rasterio_path(scene.image_path)
         scene_id = scene.resolved_scene_id()
         with rasterio.open(image_path) as ds:
             annotation_geoms = load_annotation_geometries(annotation, raster_crs=ds.crs)
@@ -69,6 +69,8 @@ def build_tile_records(
     virtual_records = apply_virtual_repeats(base_records, config)
     if config.virtual_epoch_multiplier > 1:
         virtual_records = virtual_records * config.virtual_epoch_multiplier
+    virtual_records, balance_warnings = build_balanced_epoch_records(virtual_records, config, seed=config.seed + 17)
+    warnings.extend(balance_warnings)
     return TileRecordBuildResult(
         records=virtual_records,
         base_records=base_records,
@@ -82,6 +84,130 @@ def build_tile_records(
             "base_record_count": len(base_records),
             "virtual_record_count": len(virtual_records),
             "effective_samples_per_epoch": len(virtual_records),
+        },
+    )
+
+
+def build_balanced_epoch_records(
+    records: list[TileSampleRecord],
+    config: TilePreparationConfig,
+    *,
+    seed: int = 0,
+) -> tuple[list[TileSampleRecord], list[str]]:
+    requested = {
+        "positive": config.batch_positive_fraction,
+        "hard_negative": config.batch_hard_negative_fraction,
+        "negative": config.batch_negative_fraction,
+    }
+    if not records or not any(value is not None for value in requested.values()):
+        return list(records), []
+    rng = random.Random(seed)
+    total = len(records)
+    groups = {
+        "positive": [record for record in records if record.kind in {"positive", "partial_positive"}],
+        "hard_negative": [record for record in records if record.kind == "hard_negative"],
+        "negative": [record for record in records if record.kind == "negative"],
+    }
+    warnings: list[str] = []
+    explicit_sum = sum(float(value) for value in requested.values() if value is not None)
+    remaining_groups = [name for name, value in requested.items() if value is None]
+    remaining_fraction = max(0.0, 1.0 - explicit_sum)
+    fractions = {
+        name: (float(value) if value is not None else remaining_fraction / max(1, len(remaining_groups)))
+        for name, value in requested.items()
+    }
+    if sum(fractions.values()) <= 0:
+        return list(records), []
+    normalized_total = sum(fractions.values())
+    fractions = {name: value / normalized_total for name, value in fractions.items()}
+    balanced: list[TileSampleRecord] = []
+    for name, fraction in fractions.items():
+        count = int(round(total * fraction))
+        if count <= 0:
+            continue
+        group = groups.get(name) or []
+        if not group:
+            warnings.append(f"batch balancing requested {name} records, but the group is empty")
+            continue
+        balanced.extend(group[rng.randrange(len(group))] for _ in range(count))
+    while len(balanced) < total:
+        balanced.append(records[rng.randrange(len(records))])
+    rng.shuffle(balanced)
+    return balanced[:total], warnings
+
+
+def build_validation_tile_records(
+    scenes: list[SceneInput],
+    annotation: AnnotationInput,
+    config: TilePreparationConfig,
+) -> TileRecordBuildResult:
+    warnings: list[str] = []
+    records: list[TileSampleRecord] = []
+    scene_reports: list[dict[str, Any]] = []
+    annotation_summary: dict[str, Any] | None = None
+    for scene in scenes:
+        image_path = _rasterio_path(scene.image_path)
+        scene_id = scene.resolved_scene_id()
+        with rasterio.open(image_path) as ds:
+            annotation_geoms = load_annotation_geometries(annotation, raster_crs=ds.crs)
+            annotation_summary = annotation_geoms.to_dict(annotation.geojson_path)
+            warnings.extend(annotation_geoms.warnings)
+            scene_records: list[TileSampleRecord] = []
+            for window in generate_window_grid_for_scene(ds.width, ds.height, config.tile_size, config.stride, scene_id=scene_id):
+                mask, geom_count = rasterize_mask_for_window(ds, annotation_geoms.geometries, window, all_touched=config.all_touched)
+                kind, positive_pixels = classify_mask(mask, config)
+                if kind == "hard_negative":
+                    kind = "negative"
+                scene_records.append(
+                    TileSampleRecord(
+                        scene_id=scene_id,
+                        image_path=str(image_path),
+                        x=int(window.x),
+                        y=int(window.y),
+                        width=int(window.width),
+                        height=int(window.height),
+                        tile_size=int(window.tile_size),
+                        stride=int(window.stride),
+                        kind=kind if kind in {"positive", "partial_positive"} else "negative",
+                        positive_pixels=int(positive_pixels),
+                        source="validation_grid",
+                        geometries_intersecting=int(geom_count),
+                    )
+                )
+            scene_records.sort(key=lambda item: (item.y, item.x))
+            if config.max_records_per_scene is not None and len(scene_records) > config.max_records_per_scene:
+                scene_records = scene_records[: config.max_records_per_scene]
+            records.extend(scene_records)
+            summary = summarize_tile_records(scene_records)
+            scene_reports.append(
+                {
+                    "scene": scene_id,
+                    "image_path": str(image_path),
+                    "width": int(ds.width),
+                    "height": int(ds.height),
+                    "bands": int(ds.count),
+                    "crs": str(ds.crs) if ds.crs else None,
+                    "positive_scene": bool(summary["positive_tiles"] or summary["partial_positive_tiles"]),
+                    "samples": len(scene_records),
+                    **summary,
+                }
+            )
+        if config.max_records is not None and len(records) >= config.max_records:
+            records = records[: config.max_records]
+            break
+    return TileRecordBuildResult(
+        records=records,
+        base_records=records,
+        warnings=warnings,
+        scene_reports=scene_reports,
+        metadata={
+            "annotation": annotation_summary,
+            "positive_stride": config.stride,
+            "hard_negative_stride": config.stride,
+            "negative_stride": config.stride,
+            "base_record_count": len(records),
+            "virtual_record_count": len(records),
+            "effective_samples_per_epoch": len(records),
         },
     )
 
@@ -105,24 +231,23 @@ def iter_training_tiles(
                 continue
             ds = open_datasets.get(record.image_path)
             if ds is None:
-                ds = rasterio.open(record.image_path)
+                ds = rasterio.open(_rasterio_path(record.image_path))
                 open_datasets[record.image_path] = ds
             annotation_geoms = annotation_cache.get(record.image_path)
             if annotation_geoms is None:
                 annotation_geoms = load_annotation_geometries(annotation, raster_crs=ds.crs)
                 annotation_cache[record.image_path] = annotation_geoms
-            rgb = read_rgb_window(ds, record, bands=config.input_bands)
+            image = read_training_image(ds, record, config)
             mask, geom_count = rasterize_mask_for_window(ds, annotation_geoms.geometries, record, all_touched=config.all_touched)
             metadata: dict[str, Any] = {"geometries_intersecting": geom_count}
             if config.apply_random_augmentations and any(bool(value) for value in (config.augmentations or {}).values()):
-                rgb, mask, aug_metadata = apply_random_training_augmentation(
-                    rgb,
+                image, mask, aug_metadata = apply_training_augmentation(
+                    image,
                     mask,
                     config.augmentations,
                     seed=config.seed + index,
                 )
                 metadata["augmentation"] = aug_metadata
-            image = _format_image(rgb, config)
             out_mask = mask.astype("float32")[None, :, :] if config.output_format.startswith("chw") else mask.astype("uint8")
             yield ReadyTileSample(image=image, mask=out_mask, record=record, metadata=metadata)
     finally:
@@ -207,7 +332,7 @@ def limit_empty_tile_share(
 def _build_scene_records(
     ds: Any,
     scene_id: str,
-    image_path: Path,
+    image_path: str,
     annotation_geoms: AnnotationGeometrySet,
     config: TilePreparationConfig,
 ) -> list[TileSampleRecord]:
@@ -335,3 +460,10 @@ def _limit_records(records: list[TileSampleRecord], limit: int, rng: random.Rand
 
 def _kind_priority(kind: str) -> int:
     return {"positive": 0, "partial_positive": 1, "hard_negative": 2, "negative": 3}.get(kind, 9)
+
+
+def _rasterio_path(value: str | Path | None) -> str:
+    text = str(value) if value is not None else ""
+    if text.startswith("\\vsis3\\"):
+        return "/" + text.lstrip("\\").replace("\\", "/")
+    return text

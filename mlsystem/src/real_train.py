@@ -14,25 +14,20 @@ from typing import Any
 
 import numpy as np
 import torch
-import torch.nn.functional as F
-from rasterio.features import rasterize
-from shapely.geometry import Point, box, mapping, shape
-from shapely.ops import transform as shapely_transform
+from shapely.geometry import box, shape
 
 from .io_utils import write_json
 from .data import scene_matching as scene_matching_mod
-from .data.virtual_tile_sampling import (
-    TileSampleRecord,
-    apply_virtual_repeats,
-    build_balanced_epoch_indices,
-    build_validation_records,
-    build_virtual_train_records,
-    limit_empty_tile_share,
-    resolve_train_sampling_config,
-    summarize_tile_records,
-)
 from .job_schema import JobSpec
-from .tile_preparation import TilePreparationConfig
+from .tile_preparation import (
+    AnnotationInput,
+    SceneInput,
+    TrainingTileDataset,
+    iter_dataset_batches,
+    resolve_tile_preparation_config,
+    summarize_tile_records,
+    train_sampling_enabled as resolve_train_sampling_enabled,
+)
 from .mlflow_adapter import MLflowJobRun, trace_stage
 from .metrics.debug_dump import (
     build_sample_payload,
@@ -52,7 +47,6 @@ from .pipeline.pseudolabel_pipeline import (
     run_pseudolabel_postprocess_stage,
 )
 from .pipeline_config import PipelineConfig
-from .preprocessing.normalization import normalize_image as normalize_image_mod
 from .reporting.prediction_examples import write_prediction_examples_report as write_prediction_examples_report_mod
 from .storage import s3 as s3_storage
 from .tiling import windows as tiling_windows
@@ -559,10 +553,6 @@ def _load_initial_checkpoint(model: torch.nn.Module, checkpoint_path: str | Path
     }
 
 
-def _normalize_image(arr: np.ndarray) -> np.ndarray:
-    return normalize_image_mod(arr)
-
-
 def _dice_iou_precision_recall(logits: torch.Tensor, target: torch.Tensor, threshold: float = 0.5) -> dict[str, float]:
     metrics = binary_segmentation_metrics_from_logits(logits, target, threshold=threshold)
     return {
@@ -648,342 +638,25 @@ def _augmentation_profile(augmentations: Any) -> str:
     return ",".join(enabled) if enabled else "none"
 
 
-def _apply_train_augmentations(
-    x: torch.Tensor,
-    y: torch.Tensor,
-    augmentations: Any,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    if not isinstance(augmentations, dict) or not any(bool(value) for value in augmentations.values()):
-        return x, y
-
-    x = x.clone()
-    y = y.clone()
-    batch_size = int(x.shape[0])
-    device = x.device
-
-    if augmentations.get("flips"):
-        h_mask = torch.rand(batch_size, device=device) < 0.5
-        v_mask = torch.rand(batch_size, device=device) < 0.5
-        if bool(h_mask.any()):
-            x[h_mask] = torch.flip(x[h_mask], dims=(-1,))
-            y[h_mask] = torch.flip(y[h_mask], dims=(-1,))
-        if bool(v_mask.any()):
-            x[v_mask] = torch.flip(x[v_mask], dims=(-2,))
-            y[v_mask] = torch.flip(y[v_mask], dims=(-2,))
-
-    if augmentations.get("rot90"):
-        rotations = torch.randint(0, 4, (batch_size,), device=device)
-        for k in (1, 2, 3):
-            mask = rotations == k
-            if bool(mask.any()):
-                x[mask] = torch.rot90(x[mask], k, dims=(-2, -1))
-                y[mask] = torch.rot90(y[mask], k, dims=(-2, -1))
-
-    if augmentations.get("brightness_contrast") or augmentations.get("color_jitter"):
-        brightness = 1.0 + (torch.rand(batch_size, 1, 1, 1, device=device) - 0.5) * 0.18
-        contrast = 1.0 + (torch.rand(batch_size, 1, 1, 1, device=device) - 0.5) * 0.30
-        mean = x.mean(dim=(-2, -1), keepdim=True)
-        x = (x - mean) * contrast + mean
-        x = x * brightness
-
-    if augmentations.get("gamma"):
-        gamma = 0.80 + torch.rand(batch_size, 1, 1, 1, device=device) * 0.45
-        x = torch.clamp(x, 0.0, 1.0).pow(gamma)
-
-    if augmentations.get("noise"):
-        x = x + torch.randn_like(x) * 0.02
-
-    if augmentations.get("blur"):
-        blur_mask = torch.rand(batch_size, device=device) < 0.25
-        if bool(blur_mask.any()):
-            x[blur_mask] = F.avg_pool2d(x[blur_mask], kernel_size=3, stride=1, padding=1)
-
-    if augmentations.get("cutout") or augmentations.get("coarse_dropout"):
-        height = int(x.shape[-2])
-        width = int(x.shape[-1])
-        cut_h = max(8, height // 8)
-        cut_w = max(8, width // 8)
-        for idx in range(batch_size):
-            if float(torch.rand((), device=device)) >= 0.35:
-                continue
-            y0 = int(torch.randint(0, max(1, height - cut_h + 1), (1,), device=device).item())
-            x0 = int(torch.randint(0, max(1, width - cut_w + 1), (1,), device=device).item())
-            x[idx, :, y0 : y0 + cut_h, x0 : x0 + cut_w] = 0.0
-
-    return torch.clamp(x, 0.0, 1.0), y
-
-
-def _sample_windows(
-    ds: Any,
-    shapes: list[Any],
-    patch_size: int,
-    max_tiles: int,
-    empty_share: float,
-    seed: int,
-) -> list[tuple[int, int]]:
-    rng = random.Random(seed)
-    width, height = ds.width, ds.height
-    if width < patch_size or height < patch_size:
-        return [(0, 0)]
-
-    scene_bounds = box(*ds.bounds)
-    max_empty = max(1, int(max_tiles * empty_share))
-    max_positive = max(1, max_tiles - max_empty)
-
-    intersections: list[Any] = []
-    for geom in shapes:
-        if not geom.is_valid or not geom.intersects(scene_bounds):
-            continue
-        inter = geom.intersection(scene_bounds)
-        if inter.is_empty:
-            continue
-        intersections.append(inter)
-
-    positives: list[tuple[int, int]] = []
-    if intersections:
-        per_geometry = max(1, math.ceil(max_positive / len(intersections)))
-        for inter in intersections:
-            candidate_points = [inter.representative_point(), inter.centroid]
-            minx, miny, maxx, maxy = inter.bounds
-            attempts = max(8, per_geometry * 8)
-            while len(candidate_points) < per_geometry + 2 and attempts > 0:
-                attempts -= 1
-                if minx == maxx or miny == maxy:
-                    break
-                point = Point(rng.uniform(minx, maxx), rng.uniform(miny, maxy))
-                if inter.contains(point) or inter.touches(point):
-                    candidate_points.append(point)
-            for point in candidate_points:
-                row, col = ds.index(point.x, point.y)
-                x = max(0, min(width - patch_size, int(col - patch_size / 2)))
-                y = max(0, min(height - patch_size, int(row - patch_size / 2)))
-                positives.append((x, y))
-
-    positives = list(dict.fromkeys(positives))
-    rng.shuffle(positives)
-    windows = positives[:max_positive]
-    while len(windows) < max_tiles:
-        windows.append((rng.randint(0, width - patch_size), rng.randint(0, height - patch_size)))
-    return windows[:max_tiles]
-
-
-def _read_samples(
-    config: PipelineConfig,
-    matches: list[SceneMatch],
-    shapes: list[Any],
-    input_bands: list[int],
-    patch_size: int,
-    max_tiles_per_scene: int,
-    max_tiles_total: int,
-    empty_share: float,
-    seed: int,
-) -> tuple[list[tuple[np.ndarray, np.ndarray]], list[dict[str, Any]], list[dict[str, Any]]]:
-    import rasterio
-    from rasterio.windows import Window
-
-    samples: list[tuple[np.ndarray, np.ndarray]] = []
-    report: list[dict[str, Any]] = []
-    sample_records: list[dict[str, Any]] = []
-    aws = _aws_session(config)
-    with rasterio.Env(aws, AWS_HTTPS="NO", AWS_VIRTUAL_HOSTING="FALSE"):
-        for scene_idx, match in enumerate(matches):
-            if len(samples) >= max_tiles_total:
-                break
-            path = s3_storage.raster_path_for_s3_key(config, match.key)
-            with rasterio.open(path) as ds:
-                scene_bounds = box(*ds.bounds)
-                positive_scene = any(
-                    geom.is_valid and (not geom.is_empty) and geom.intersects(scene_bounds)
-                    for geom in shapes
-                )
-                usable_bands = [band for band in input_bands if band <= ds.count]
-                if len(usable_bands) != len(input_bands):
-                    raise RuntimeError(f"{match.name} has {ds.count} bands, expected {input_bands}")
-                windows = _sample_windows(
-                    ds,
-                    shapes,
-                    patch_size,
-                    max_tiles_per_scene,
-                    empty_share,
-                    seed + scene_idx,
-                )
-                scene_samples = 0
-                positive_tiles = 0
-                for x, y in windows:
-                    if len(samples) >= max_tiles_total:
-                        break
-                    window = Window(x, y, patch_size, patch_size)
-                    arr = ds.read(usable_bands, window=window, boundless=True, fill_value=0)
-                    if arr.shape[-2:] != (patch_size, patch_size):
-                        continue
-                    mask = rasterize(
-                        [(geom, 1) for geom in shapes if geom.intersects(box(*ds.window_bounds(window)))],
-                        out_shape=(patch_size, patch_size),
-                        transform=ds.window_transform(window),
-                        fill=0,
-                        dtype="uint8",
-                    )
-                    if np.count_nonzero(arr) == 0:
-                        continue
-                    sample_index = len(samples)
-                    samples.append((_normalize_image(arr), mask.astype("float32")[None, :, :]))
-                    sample_records.append(
-                        {
-                            "sample_id": f"{scene_idx:04d}_{scene_samples:04d}",
-                            "scene_id": match.name,
-                            "scene": match.name,
-                            "tile_id": f"x{x}_y{y}_w{patch_size}_h{patch_size}",
-                            "source_image_path": path,
-                            "s3_key": match.key,
-                            "window": {"x": int(x), "y": int(y), "width": int(patch_size), "height": int(patch_size)},
-                            "sample_index": sample_index,
-                            "positive_tile": bool(mask.sum() > 0),
-                            "gt_positive_pixels": int(mask.sum()),
-                        }
-                    )
-                    scene_samples += 1
-                    positive_tiles += int(mask.sum() > 0)
-                report.append(
-                    {
-                        "scene": match.name,
-                        "s3_key": match.key,
-                        "width": ds.width,
-                        "height": ds.height,
-                        "bands": ds.count,
-                        "crs": str(ds.crs),
-                        "positive_scene": bool(positive_scene),
-                        "samples": scene_samples,
-                        "positive_tiles": positive_tiles,
-                        "negative_tiles": max(0, scene_samples - positive_tiles),
-                    }
-                )
-    return samples, report, sample_records
-
-
-def _scene_sources_for_matches(config: PipelineConfig, matches: list[SceneMatch]) -> list[dict[str, Any]]:
-    sources: list[dict[str, Any]] = []
+def _scene_inputs_for_matches(config: PipelineConfig, matches: list[SceneMatch]) -> list[SceneInput]:
+    scenes: list[SceneInput] = []
     for match in matches:
         image_path = s3_storage.raster_path_for_s3_key(config, match.key)
-        sources.append(
-            {
-                "scene_id": match.name,
-                "scene": match.name,
-                "entry": match.entry,
-                "name": match.name,
-                "key": match.key,
-                "s3_key": match.key,
-                "score": match.score,
-                "image_path": image_path,
-            }
-        )
-    return sources
-
-
-def _read_samples_from_tile_records(
-    records: list[TileSampleRecord],
-    shapes: list[Any],
-    input_bands: list[int],
-) -> tuple[list[tuple[np.ndarray, np.ndarray]], list[dict[str, Any]], list[TileSampleRecord], int]:
-    import rasterio
-    from rasterio.windows import Window
-
-    samples: list[tuple[np.ndarray, np.ndarray]] = []
-    sample_records: list[dict[str, Any]] = []
-    kept_records: list[TileSampleRecord] = []
-    skipped = 0
-    open_datasets: dict[str, Any] = {}
-    try:
-        for record in records:
-            if not record.image_path:
-                skipped += 1
-                continue
-            path = str(record.image_path)
-            ds = open_datasets.get(path)
-            if ds is None:
-                ds = rasterio.open(path)
-                open_datasets[path] = ds
-            usable_bands = [band for band in input_bands if band <= ds.count]
-            if len(usable_bands) != len(input_bands):
-                raise RuntimeError(f"{record.scene_id} has {ds.count} bands, expected {input_bands}")
-            window = Window(int(record.x), int(record.y), int(record.width), int(record.height))
-            arr = ds.read(usable_bands, window=window, boundless=True, fill_value=0)
-            if arr.shape[-2:] != (int(record.height), int(record.width)):
-                skipped += 1
-                continue
-            if np.count_nonzero(arr) == 0:
-                skipped += 1
-                continue
-            mask = rasterize(
-                [(geom, 1) for geom in shapes if geom.intersects(box(*ds.window_bounds(window)))],
-                out_shape=(int(record.height), int(record.width)),
-                transform=ds.window_transform(window),
-                fill=0,
-                dtype="uint8",
+        scenes.append(
+            SceneInput(
+                image_path=str(image_path),
+                scene_id=match.name,
+                metadata={"entry": match.entry, "s3_key": match.key, "score": match.score},
             )
-            sample_index = len(samples)
-            record.metadata["sample_index"] = sample_index
-            record.metadata.setdefault("base_record_id", record.record_id)
-            samples.append((_normalize_image(arr), mask.astype("float32")[None, :, :]))
-            row = record.to_dict()
-            row["sample_index"] = sample_index
-            row["positive_tile"] = bool(mask.sum() > 0)
-            row["gt_positive_pixels"] = int(mask.sum())
-            row["virtual_record"] = False
-            if (record.metadata or {}).get("s3_key"):
-                row["s3_key"] = record.metadata.get("s3_key")
-            sample_records.append(row)
-            kept_records.append(record)
-    finally:
-        for ds in open_datasets.values():
-            ds.close()
-    return samples, sample_records, kept_records, skipped
+        )
+    return scenes
 
 
-def _finalize_virtual_train_records(
-    base_records: list[TileSampleRecord],
-    train_sampling_cfg: Any,
-    *,
-    seed: int,
-) -> tuple[list[TileSampleRecord], list[dict[str, Any]], list[int], list[str]]:
-    base_id_to_sample_index = {
-        record.record_id: int(record.metadata["sample_index"])
-        for record in base_records
-        if record.metadata.get("sample_index") is not None
-    }
-    virtual_records = apply_virtual_repeats(base_records, train_sampling_cfg)
-    virtual_records, repeat_limit_warnings = limit_empty_tile_share(
-        virtual_records,
-        train_sampling_cfg.max_empty_tile_share,
-        seed=seed,
-    )
-    virtual_records = [
-        record
-        for record in virtual_records
-        if (record.base_record_id or record.record_id) in base_id_to_sample_index
-    ]
-    epoch_record_indices, balance_warnings = build_balanced_epoch_indices(
-        virtual_records,
-        train_sampling_cfg,
-        seed=seed + 17,
-    )
-    sample_records: list[dict[str, Any]] = []
-    for virtual_index, record in enumerate(virtual_records):
-        base_id = record.base_record_id or record.record_id
-        row = record.to_dict()
-        row["sample_index"] = base_id_to_sample_index[base_id]
-        row["virtual_record_index"] = virtual_index
-        row["virtual_record"] = True
-        row["positive_tile"] = record.kind in {"positive", "partial_positive"}
-        row["gt_positive_pixels"] = int(record.positive_pixels)
-        if (record.metadata or {}).get("s3_key"):
-            row["s3_key"] = record.metadata.get("s3_key")
-        sample_records.append(row)
-    epoch_sample_indices = [
-        base_id_to_sample_index[virtual_records[index].base_record_id or virtual_records[index].record_id]
-        for index in epoch_record_indices
-        if 0 <= index < len(virtual_records)
-    ]
-    return virtual_records, sample_records, epoch_sample_indices, repeat_limit_warnings + balance_warnings
+def _write_training_annotation_geojson(config: PipelineConfig, annotation_uri: str, experiment_dir: Path) -> Path:
+    payload = _read_s3_json(config, annotation_uri)
+    path = experiment_dir / "training_annotation.geojson"
+    write_json(path, payload)
+    return path
 
 
 def _write_history(experiment_dir: Path, history: list[dict[str, float]]) -> list[Path]:
@@ -1011,27 +684,6 @@ def _default_tile_limits(job: JobSpec) -> tuple[int, int, int]:
         or default_tiles_per_scene
     )
     return max_train_tiles, max_val_tiles, max_tiles_per_scene
-
-
-def _tile_preparation_config_from_job(job: JobSpec, train_sampling_cfg: Any, *, tile_size: int, stride: int, seed: int) -> TilePreparationConfig:
-    return TilePreparationConfig(
-        tile_size=tile_size,
-        stride=stride,
-        positive_stride_factor=train_sampling_cfg.positive_stride_factor,
-        hard_negative_stride_factor=train_sampling_cfg.hard_negative_stride_factor,
-        negative_stride_factor=train_sampling_cfg.negative_stride_factor,
-        min_positive_pixels=train_sampling_cfg.min_positive_pixels,
-        include_partial_positive=train_sampling_cfg.include_partial_positive,
-        partial_positive_fraction=train_sampling_cfg.partial_positive_fraction,
-        max_empty_tile_share=train_sampling_cfg.max_empty_tile_share,
-        hard_negative_context_px=train_sampling_cfg.hard_negative_context_px,
-        virtual_epoch_multiplier=train_sampling_cfg.virtual_epoch_multiplier,
-        positive_repeat_factor=train_sampling_cfg.positive_repeat_factor,
-        hard_negative_repeat_factor=train_sampling_cfg.hard_negative_repeat_factor,
-        negative_repeat_factor=train_sampling_cfg.negative_repeat_factor,
-        augmentations=dict((job.train or {}).get("augmentations") or {}),
-        seed=seed,
-    )
 
 
 def _explicit_tile_total_limit(job: JobSpec, key: str) -> Any:
@@ -1767,217 +1419,96 @@ def run_real_train(
             max_train_tiles = max(1, len(train_matches) * max_tiles_per_scene)
         if explicit_max_val_tiles is None:
             max_val_tiles = max(1, len(val_matches) * max_tiles_per_scene)
-    train_sampling_cfg = resolve_train_sampling_config(job.preprocess, job.train)
-    train_sampling_enabled = bool(train_sampling_cfg.enabled)
+    annotation_geojson_path = _write_training_annotation_geojson(config, annotation_uri, experiment_dir)
+    annotation_input = AnnotationInput(
+        geojson_path=annotation_geojson_path,
+        annotation_crs=str(job.preprocess.get("annotation_crs") or "auto"),
+        allow_inferred_annotation_crs=bool(job.preprocess.get("allow_inferred_annotation_crs", True)),
+    )
+    train_sampling_enabled = resolve_train_sampling_enabled(job.preprocess)
     base_stride = int(job.preprocess.get("stride") or job.preprocess.get("train_stride") or patch_size)
-    tile_preparation_cfg = _tile_preparation_config_from_job(
-        job,
-        train_sampling_cfg,
+    train_tile_config = resolve_tile_preparation_config(
+        job.preprocess,
+        job.train,
         tile_size=patch_size,
         stride=base_stride,
+        input_bands=input_bands,
         seed=seed,
+        train_mode=True,
+        max_records=max_train_tiles,
+        max_records_per_scene=max_tiles_per_scene,
     )
-    train_epoch_sample_indices: list[int] | None = None
-    virtual_train_records: list[TileSampleRecord] = []
-    base_train_sample_records: list[dict[str, Any]] = []
-    kept_base_train_records: list[TileSampleRecord] = []
-    train_sampling_warnings: list[str] = []
+    val_tile_config = resolve_tile_preparation_config(
+        job.preprocess,
+        job.train,
+        tile_size=patch_size,
+        stride=int(job.preprocess.get("stride") or patch_size),
+        input_bands=input_bands,
+        seed=seed + 1000,
+        train_mode=False,
+        max_records=max_val_tiles,
+        max_records_per_scene=max(1, max_tiles_per_scene // 2),
+    )
+    train_scenes = _scene_inputs_for_matches(config, train_matches)
+    val_scenes = _scene_inputs_for_matches(config, val_matches)
+    train_dataset = TrainingTileDataset(train_scenes, annotation_input, train_tile_config, train=True)
+    val_dataset = TrainingTileDataset(val_scenes, annotation_input, val_tile_config, train=False)
+    if len(val_dataset) == 0 and len(train_dataset) > 0 and bool(job.train.get("allow_train_val_sample_fallback", False)):
+        fallback_count = max(1, min(max_val_tiles, max(1, len(train_dataset.base_records) // 4)))
+        fallback_records = list(train_dataset.base_records[-fallback_count:])
+        val_dataset = TrainingTileDataset(train_scenes, annotation_input, val_tile_config, records=fallback_records, train=False, build_result=train_dataset.build_result)
+        val_dataset.warnings.append("validation fallback used base train tile records; use a real val scene split for final runs")
+    if len(train_dataset) == 0 or len(val_dataset) == 0:
+        raise RuntimeError(f"Not enough samples: train={len(train_dataset)} val={len(val_dataset)}")
+
+    train_report = train_dataset.scene_reports
+    val_report = val_dataset.scene_reports
+    train_sample_records = train_dataset.sample_records()
+    val_sample_records = val_dataset.sample_records()
+    train_sampling_warnings: list[str] = list(train_dataset.warnings) + list(val_dataset.warnings)
+    train_record_summary = summarize_tile_records(train_dataset.records, prefix="train")
+    base_summary = summarize_tile_records(train_dataset.base_records, prefix="base_train")
+    val_record_summary = summarize_tile_records(val_dataset.records, prefix="val")
     train_sampling_summary: dict[str, Any] = {
         "train_sampling_enabled": train_sampling_enabled,
         "tile_preparation_module": "mlsystem.src.tile_preparation",
-        "base_train_tile_count": 0,
-        "virtual_train_tile_count": 0,
-        "effective_train_samples_per_epoch": 0,
-        "train_partial_positive_tiles": 0,
-        "train_hard_negative_tiles": 0,
-        "positive_stride": tile_preparation_cfg.positive_stride,
-        "hard_negative_stride": tile_preparation_cfg.hard_negative_stride,
-        "negative_stride": tile_preparation_cfg.negative_stride,
-        "virtual_epoch_multiplier": train_sampling_cfg.virtual_epoch_multiplier,
-        "positive_repeat_factor": train_sampling_cfg.positive_repeat_factor,
-        "hard_negative_repeat_factor": train_sampling_cfg.hard_negative_repeat_factor,
-        "negative_repeat_factor": train_sampling_cfg.negative_repeat_factor,
-        "max_empty_tile_share": train_sampling_cfg.max_empty_tile_share,
-        "batch_positive_fraction": train_sampling_cfg.batch_positive_fraction,
-        "batch_hard_negative_fraction": train_sampling_cfg.batch_hard_negative_fraction,
-        "batch_negative_fraction": train_sampling_cfg.batch_negative_fraction,
-        "warnings": [],
+        **base_summary,
+        **train_record_summary,
+        "base_train_tile_count": len(train_dataset.base_records),
+        "virtual_train_tile_count": len(train_dataset.records),
+        "effective_train_samples_per_epoch": len(train_dataset),
+        "val_partial_positive_tiles": val_record_summary["val_partial_positive_tiles"],
+        "val_hard_negative_tiles": val_record_summary["val_hard_negative_tiles"],
+        "positive_stride": train_tile_config.positive_stride,
+        "hard_negative_stride": train_tile_config.hard_negative_stride,
+        "negative_stride": train_tile_config.negative_stride,
+        "virtual_epoch_multiplier": train_tile_config.virtual_epoch_multiplier,
+        "positive_repeat_factor": train_tile_config.positive_repeat_factor,
+        "hard_negative_repeat_factor": train_tile_config.hard_negative_repeat_factor,
+        "negative_repeat_factor": train_tile_config.negative_repeat_factor,
+        "max_empty_tile_share": train_tile_config.max_empty_tile_share,
+        "batch_positive_fraction": train_tile_config.batch_positive_fraction,
+        "batch_hard_negative_fraction": train_tile_config.batch_hard_negative_fraction,
+        "batch_negative_fraction": train_tile_config.batch_negative_fraction,
+        "warnings": train_sampling_warnings,
     }
-    if train_sampling_enabled:
-        train_sources = _scene_sources_for_matches(config, train_matches)
-        val_sources = _scene_sources_for_matches(config, val_matches)
-        train_record_result = build_virtual_train_records(
-            train_sources,
-            shapes,
-            tile_size=patch_size,
-            stride=base_stride,
-            train_sampling=train_sampling_cfg,
-            max_records_total=max_train_tiles,
-            max_records_per_scene=max_tiles_per_scene,
-            seed=seed,
-        )
-        base_train_records, base_limit_warnings = limit_empty_tile_share(
-            train_record_result.records,
-            train_sampling_cfg.max_empty_tile_share,
-            seed=seed,
-        )
-        train_samples, base_train_sample_records, kept_base_train_records, skipped_train_records = _read_samples_from_tile_records(
-            base_train_records,
-            shapes,
-            input_bands,
-        )
-        virtual_train_records, train_sample_records, train_epoch_sample_indices, finalize_warnings = _finalize_virtual_train_records(
-            kept_base_train_records,
-            train_sampling_cfg,
-            seed=seed + 7,
-        )
-        val_record_result = build_validation_records(
-            val_sources,
-            shapes,
-            tile_size=patch_size,
-            stride=int(job.preprocess.get("stride") or patch_size),
-            max_records_total=max_val_tiles,
-            max_records_per_scene=max(1, max_tiles_per_scene // 2),
-            seed=seed + 1000,
-            min_positive_pixels=train_sampling_cfg.min_positive_pixels,
-            include_partial_positive=train_sampling_cfg.include_partial_positive,
-            partial_positive_fraction=train_sampling_cfg.partial_positive_fraction,
-        )
-        val_samples, val_sample_records, kept_val_records, skipped_val_records = _read_samples_from_tile_records(
-            val_record_result.records,
-            shapes,
-            input_bands,
-        )
-        train_report = train_record_result.scene_reports
-        val_report = val_record_result.scene_reports
-        train_sampling_warnings = (
-            train_record_result.warnings
-            + base_limit_warnings
-            + finalize_warnings
-            + val_record_result.warnings
-        )
-        if skipped_train_records:
-            train_sampling_warnings.append(f"skipped {skipped_train_records} train records while reading raster windows")
-        if skipped_val_records:
-            train_sampling_warnings.append(f"skipped {skipped_val_records} validation records while reading raster windows")
-        virtual_summary = summarize_tile_records(virtual_train_records, prefix="train")
-        base_summary = summarize_tile_records(kept_base_train_records, prefix="base_train")
-        val_virtual_summary = summarize_tile_records(kept_val_records, prefix="val")
-        train_sampling_summary.update(
-            {
-                **base_summary,
-                **virtual_summary,
-                "base_train_tile_count": len(kept_base_train_records),
-                "virtual_train_tile_count": len(virtual_train_records),
-                "effective_train_samples_per_epoch": len(train_epoch_sample_indices or []),
-                "val_partial_positive_tiles": val_virtual_summary["val_partial_positive_tiles"],
-                "val_hard_negative_tiles": val_virtual_summary["val_hard_negative_tiles"],
-                "positive_stride": train_record_result.metadata.get("positive_stride"),
-                "hard_negative_stride": train_record_result.metadata.get("hard_negative_stride"),
-                "negative_stride": train_record_result.metadata.get("negative_stride"),
-                "warnings": train_sampling_warnings,
-            }
-        )
-        log_fn(
-            job_log,
-            "real_train virtual_tile_sampling "
-            f"base={len(kept_base_train_records)} virtual={len(virtual_train_records)} "
-            f"epoch={len(train_epoch_sample_indices or [])} warnings={len(train_sampling_warnings)}",
-        )
-    else:
-        train_samples, train_report, train_sample_records = _read_samples(
-            config,
-            train_matches,
-            shapes,
-            input_bands,
-            patch_size,
-            max_tiles_per_scene,
-            max_train_tiles,
-            empty_share,
-            seed,
-        )
-        val_samples, val_report, val_sample_records = _read_samples(
-            config,
-            val_matches,
-            shapes,
-            input_bands,
-            patch_size,
-            max(1, max_tiles_per_scene // 2),
-            max_val_tiles,
-            empty_share,
-            seed + 1000,
-        )
-        train_sampling_summary.update(
-            {
-                "base_train_tile_count": len(train_samples),
-                "virtual_train_tile_count": len(train_samples),
-                "effective_train_samples_per_epoch": len(train_samples),
-                "positive_stride": int(job.preprocess.get("stride") or patch_size),
-                "hard_negative_stride": int(job.preprocess.get("stride") or patch_size),
-                "negative_stride": int(job.preprocess.get("stride") or patch_size),
-            }
-        )
-    if not val_samples and train_samples and bool(job.train.get("allow_train_val_sample_fallback", False)):
-        fallback_count = max(1, min(max_val_tiles, max(1, len(train_samples) // 4)))
-        if train_sampling_enabled and kept_base_train_records:
-            if len(train_samples) > fallback_count:
-                val_samples = train_samples[-fallback_count:]
-                val_sample_records = base_train_sample_records[-fallback_count:]
-                train_samples = train_samples[:-fallback_count]
-                kept_base_train_records = kept_base_train_records[:-fallback_count]
-                for sample_index, record in enumerate(kept_base_train_records):
-                    record.metadata["sample_index"] = sample_index
-                virtual_train_records, train_sample_records, train_epoch_sample_indices, fallback_warnings = _finalize_virtual_train_records(
-                    kept_base_train_records,
-                    train_sampling_cfg,
-                    seed=seed + 23,
-                )
-                train_sampling_warnings.extend(fallback_warnings)
-                train_sampling_warnings.append("validation fallback used base train samples; use a real val scene split for final runs")
-                train_sampling_summary.update(
-                    {
-                        "base_train_tile_count": len(kept_base_train_records),
-                        "virtual_train_tile_count": len(virtual_train_records),
-                        "effective_train_samples_per_epoch": len(train_epoch_sample_indices or []),
-                        "warnings": train_sampling_warnings,
-                    }
-                )
-            else:
-                val_samples = train_samples[-fallback_count:]
-                val_sample_records = base_train_sample_records[-fallback_count:]
-        elif len(train_samples) > fallback_count:
-            val_samples = train_samples[-fallback_count:]
-            val_sample_records = train_sample_records[-fallback_count:]
-            train_samples = train_samples[:-fallback_count]
-            train_sample_records = train_sample_records[:-fallback_count]
-        else:
-            val_samples = train_samples[-fallback_count:]
-            val_sample_records = train_sample_records[-fallback_count:]
-        fallback_report = dict(train_report[-1]) if train_report else {"scene": "train_holdout"}
-        fallback_report["validation_fallback_from_train_samples"] = True
-        val_report = [fallback_report]
-    if not train_samples or not val_samples:
-        raise RuntimeError(f"Not enough samples: train={len(train_samples)} val={len(val_samples)}")
-    if train_sampling_enabled and not train_epoch_sample_indices:
-        raise RuntimeError("Not enough virtual train samples: effective_train_samples_per_epoch=0")
+    log_fn(
+        job_log,
+        "real_train tile_preparation "
+        f"base={len(train_dataset.base_records)} train={len(train_dataset)} "
+        f"val={len(val_dataset)} warnings={len(train_sampling_warnings)}",
+    )
 
     train_positive_scene_count = sum(1 for row in train_report if row.get("positive_scene"))
     val_positive_scene_count = sum(1 for row in val_report if row.get("positive_scene"))
     train_negative_scene_count = max(0, len(train_report) - train_positive_scene_count)
     val_negative_scene_count = max(0, len(val_report) - val_positive_scene_count)
-    if train_sampling_enabled:
-        train_record_summary = summarize_tile_records(virtual_train_records, prefix="train")
-        train_positive_tiles = train_record_summary["train_positive_tiles"] + train_record_summary["train_partial_positive_tiles"]
-        train_negative_tiles = train_record_summary["train_negative_tiles"] + train_record_summary["train_hard_negative_tiles"]
-        train_partial_positive_tiles = train_record_summary["train_partial_positive_tiles"]
-        train_hard_negative_tiles = train_record_summary["train_hard_negative_tiles"]
-    else:
-        train_positive_tiles = sum(int(mask.sum() > 0) for _, mask in train_samples)
-        train_negative_tiles = sum(int(mask.sum() == 0) for _, mask in train_samples)
-        train_partial_positive_tiles = 0
-        train_hard_negative_tiles = 0
-    val_positive_tiles = sum(int(mask.sum() > 0) for _, mask in val_samples)
-    val_negative_tiles = sum(int(mask.sum() == 0) for _, mask in val_samples)
+    train_positive_tiles = train_record_summary["train_positive_tiles"] + train_record_summary["train_partial_positive_tiles"]
+    train_negative_tiles = train_record_summary["train_negative_tiles"] + train_record_summary["train_hard_negative_tiles"]
+    train_partial_positive_tiles = train_record_summary["train_partial_positive_tiles"]
+    train_hard_negative_tiles = train_record_summary["train_hard_negative_tiles"]
+    val_positive_tiles = val_record_summary["val_positive_tiles"] + val_record_summary["val_partial_positive_tiles"]
+    val_negative_tiles = val_record_summary["val_negative_tiles"] + val_record_summary["val_hard_negative_tiles"]
     dataset_report = {
         "annotation_source": scene_report["annotation_source"],
         "annotations": scene_report.get("annotations") or {},
@@ -1989,11 +1520,11 @@ def run_real_train(
         "train_negative_scene_count": train_negative_scene_count,
         "val_positive_scene_count": val_positive_scene_count,
         "val_negative_scene_count": val_negative_scene_count,
-        "train_tile_count": train_sampling_summary["effective_train_samples_per_epoch"] if train_sampling_enabled else len(train_samples),
+        "train_tile_count": len(train_dataset),
         "base_train_tile_count": train_sampling_summary["base_train_tile_count"],
         "virtual_train_tile_count": train_sampling_summary["virtual_train_tile_count"],
         "effective_train_samples_per_epoch": train_sampling_summary["effective_train_samples_per_epoch"],
-        "val_tile_count": len(val_samples),
+        "val_tile_count": len(val_dataset),
         "train_positive_tiles": train_positive_tiles,
         "train_partial_positive_tiles": train_partial_positive_tiles,
         "train_hard_negative_tiles": train_hard_negative_tiles,
@@ -2034,14 +1565,14 @@ def run_real_train(
             "positive_stride": train_sampling_summary.get("positive_stride"),
             "hard_negative_stride": train_sampling_summary.get("hard_negative_stride"),
             "negative_stride": train_sampling_summary.get("negative_stride"),
-            "virtual_epoch_multiplier": train_sampling_cfg.virtual_epoch_multiplier,
-            "positive_repeat_factor": train_sampling_cfg.positive_repeat_factor,
-            "hard_negative_repeat_factor": train_sampling_cfg.hard_negative_repeat_factor,
-            "negative_repeat_factor": train_sampling_cfg.negative_repeat_factor,
-            "max_empty_tile_share": train_sampling_cfg.max_empty_tile_share,
-            "batch_positive_fraction": train_sampling_cfg.batch_positive_fraction,
-            "batch_hard_negative_fraction": train_sampling_cfg.batch_hard_negative_fraction,
-            "batch_negative_fraction": train_sampling_cfg.batch_negative_fraction,
+            "virtual_epoch_multiplier": train_tile_config.virtual_epoch_multiplier,
+            "positive_repeat_factor": train_tile_config.positive_repeat_factor,
+            "hard_negative_repeat_factor": train_tile_config.hard_negative_repeat_factor,
+            "negative_repeat_factor": train_tile_config.negative_repeat_factor,
+            "max_empty_tile_share": train_tile_config.max_empty_tile_share,
+            "batch_positive_fraction": train_tile_config.batch_positive_fraction,
+            "batch_hard_negative_fraction": train_tile_config.batch_hard_negative_fraction,
+            "batch_negative_fraction": train_tile_config.batch_negative_fraction,
             "train_sampling_warnings": "; ".join(train_sampling_warnings[:20]),
         }
     )
@@ -2171,29 +1702,15 @@ def run_real_train(
         }
     )
 
-    train_tensor_pair: tuple[torch.Tensor, torch.Tensor] | None = None
-    val_tensor_pair: tuple[torch.Tensor, torch.Tensor] | None = None
-    if device.type == "cuda" and bool(job.train.get("cache_samples_on_gpu", True)):
-        train_x = torch.from_numpy(np.stack([item[0] for item in train_samples])).to(device)
-        train_y = torch.from_numpy(np.stack([item[1] for item in train_samples])).to(device)
-        val_x = torch.from_numpy(np.stack([item[0] for item in val_samples])).to(device)
-        val_y = torch.from_numpy(np.stack([item[1] for item in val_samples])).to(device)
-        train_tensor_pair = (train_x, train_y)
-        val_tensor_pair = (val_x, val_y)
-        cached_mb = (
-            train_x.numel() * train_x.element_size()
-            + train_y.numel() * train_y.element_size()
-            + val_x.numel() * val_x.element_size()
-            + val_y.numel() * val_y.element_size()
-        ) / (1024 * 1024)
-        mlflow_run.log_params({"train.cache_samples_on_gpu": True, "train.cached_samples_gpu_mb": round(cached_mb, 3)})
-        log_fn(job_log, f"real_train cached_samples_on_gpu=true cached_mb={cached_mb:.1f} batch_size={batch_size}")
-
-    def make_index_batches(count: int, shuffle: bool) -> list[list[int]]:
-        indices = list(range(count))
-        if shuffle:
-            random.shuffle(indices)
-        return [indices[i : i + batch_size] for i in range(0, len(indices), batch_size)]
+    if bool(job.train.get("cache_samples_on_gpu", False)):
+        log_fn(job_log, "real_train ignored cache_samples_on_gpu because tile_preparation reads tiles lazily")
+    mlflow_run.log_params(
+        {
+            "train.cache_samples_on_gpu": False,
+            "train.dataset_adapter": "mlsystem.src.tile_preparation.TrainingTileDataset",
+            "train.dataset_lazy_raster_reads": True,
+        }
+    )
 
     best_val_iou = -1.0
     best_objective_value = -math.inf if maximize_objective else math.inf
@@ -2214,42 +1731,25 @@ def run_real_train(
                 _set_batchnorm_eval(model)
             train_loss_acc = WeightedLossAccumulator()
             train_metric_acc = PixelMetricAccumulator(threshold=metric_threshold)
-            if train_tensor_pair is not None:
-                train_x, train_y = train_tensor_pair
-                train_batch_count = len(train_epoch_sample_indices) if train_epoch_sample_indices is not None else train_x.shape[0]
-                for batch_indices in make_index_batches(train_batch_count, shuffle=True):
-                    sample_indices = [train_epoch_sample_indices[item] for item in batch_indices] if train_epoch_sample_indices is not None else batch_indices
-                    idx = torch.as_tensor(sample_indices, dtype=torch.long, device=device)
-                    x = train_x.index_select(0, idx)
-                    y = train_y.index_select(0, idx)
-                    x, y = _apply_train_augmentations(x, y, augmentations_cfg)
-                    optimizer.zero_grad(set_to_none=True)
-                    logits = model(x)
-                    components = _loss_components(logits, y, loss_cfg)
-                    loss = components["loss_total"]
-                    loss.backward()
-                    if grad_clip_norm is not None:
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), float(grad_clip_norm))
-                    optimizer.step()
-                    train_loss_acc.update({name: float(value.detach().item()) for name, value in components.items()}, weight=int(y.shape[0]))
-                    train_metric_acc.update_from_logits(logits.detach(), y)
-            else:
-                train_batch_count = len(train_epoch_sample_indices) if train_epoch_sample_indices is not None else len(train_samples)
-                for batch_indices in make_index_batches(train_batch_count, shuffle=True):
-                    sample_indices = [train_epoch_sample_indices[item] for item in batch_indices] if train_epoch_sample_indices is not None else batch_indices
-                    x = torch.from_numpy(np.stack([train_samples[item][0] for item in sample_indices])).to(device)
-                    y = torch.from_numpy(np.stack([train_samples[item][1] for item in sample_indices])).to(device)
-                    x, y = _apply_train_augmentations(x, y, augmentations_cfg)
-                    optimizer.zero_grad(set_to_none=True)
-                    logits = model(x)
-                    components = _loss_components(logits, y, loss_cfg)
-                    loss = components["loss_total"]
-                    loss.backward()
-                    if grad_clip_norm is not None:
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), float(grad_clip_norm))
-                    optimizer.step()
-                    train_loss_acc.update({name: float(value.detach().item()) for name, value in components.items()}, weight=int(y.shape[0]))
-                    train_metric_acc.update_from_logits(logits.detach(), y)
+            train_dataset.set_epoch(epoch)
+            for _batch_indices, x_cpu, y_cpu in iter_dataset_batches(
+                train_dataset,
+                batch_size,
+                shuffle=True,
+                seed=seed + epoch,
+            ):
+                x = x_cpu.to(device)
+                y = y_cpu.to(device)
+                optimizer.zero_grad(set_to_none=True)
+                logits = model(x)
+                components = _loss_components(logits, y, loss_cfg)
+                loss = components["loss_total"]
+                loss.backward()
+                if grad_clip_norm is not None:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), float(grad_clip_norm))
+                optimizer.step()
+                train_loss_acc.update({name: float(value.detach().item()) for name, value in components.items()}, weight=int(y.shape[0]))
+                train_metric_acc.update_from_logits(logits.detach(), y)
 
             model.eval()
             val_loss_acc = WeightedLossAccumulator()
@@ -2258,52 +1758,33 @@ def run_real_train(
             val_sample_rows: list[dict[str, Any]] = []
             val_sample_payloads: list[dict[str, Any]] = []
             with torch.no_grad():
-                if val_tensor_pair is not None:
-                    val_x, val_y = val_tensor_pair
-                    for batch_indices in make_index_batches(val_x.shape[0], shuffle=False):
-                        idx = torch.as_tensor(batch_indices, dtype=torch.long, device=device)
-                        x = val_x.index_select(0, idx)
-                        y = val_y.index_select(0, idx)
-                        logits = model(x)
-                        components = _loss_components(logits, y, loss_cfg)
-                        val_loss_acc.update({name: float(value.detach().item()) for name, value in components.items()}, weight=int(y.shape[0]))
-                        val_metric_acc.update_from_logits(logits, y)
-                        for accumulator in val_threshold_accs.values():
-                            accumulator.update_from_logits(logits, y)
-                        if debug_enabled:
-                            _collect_val_debug_samples(
-                                batch_indices=batch_indices,
-                                x=x,
-                                y=y,
-                                logits=logits,
-                                val_sample_records=val_sample_records,
-                                threshold=metric_threshold,
-                                rows=val_sample_rows,
-                                payloads=val_sample_payloads,
-                                save_all=bool(metrics_debug_cfg.get("save_all_val_samples", True)),
-                            )
-                else:
-                    for batch_indices in make_index_batches(len(val_samples), shuffle=False):
-                        x = torch.from_numpy(np.stack([val_samples[item][0] for item in batch_indices])).to(device)
-                        y = torch.from_numpy(np.stack([val_samples[item][1] for item in batch_indices])).to(device)
-                        logits = model(x)
-                        components = _loss_components(logits, y, loss_cfg)
-                        val_loss_acc.update({name: float(value.detach().item()) for name, value in components.items()}, weight=int(y.shape[0]))
-                        val_metric_acc.update_from_logits(logits, y)
-                        for accumulator in val_threshold_accs.values():
-                            accumulator.update_from_logits(logits, y)
-                        if debug_enabled:
-                            _collect_val_debug_samples(
-                                batch_indices=batch_indices,
-                                x=x,
-                                y=y,
-                                logits=logits,
-                                val_sample_records=val_sample_records,
-                                threshold=metric_threshold,
-                                rows=val_sample_rows,
-                                payloads=val_sample_payloads,
-                                save_all=bool(metrics_debug_cfg.get("save_all_val_samples", True)),
-                            )
+                val_dataset.set_epoch(0)
+                for batch_indices, x_cpu, y_cpu in iter_dataset_batches(
+                    val_dataset,
+                    batch_size,
+                    shuffle=False,
+                    seed=seed,
+                ):
+                    x = x_cpu.to(device)
+                    y = y_cpu.to(device)
+                    logits = model(x)
+                    components = _loss_components(logits, y, loss_cfg)
+                    val_loss_acc.update({name: float(value.detach().item()) for name, value in components.items()}, weight=int(y.shape[0]))
+                    val_metric_acc.update_from_logits(logits, y)
+                    for accumulator in val_threshold_accs.values():
+                        accumulator.update_from_logits(logits, y)
+                    if debug_enabled:
+                        _collect_val_debug_samples(
+                            batch_indices=batch_indices,
+                            x=x,
+                            y=y,
+                            logits=logits,
+                            val_sample_records=val_sample_records,
+                            threshold=metric_threshold,
+                            rows=val_sample_rows,
+                            payloads=val_sample_payloads,
+                            save_all=bool(metrics_debug_cfg.get("save_all_val_samples", True)),
+                        )
 
             train_loss_values = train_loss_acc.averages("train")
             val_loss_values = val_loss_acc.averages("val")
@@ -2552,8 +2033,8 @@ def run_real_train(
         )
         artifacts.append(Path(str(metrics_debug_report["summary"])))
     artifacts.extend([dataset_report_path, train_scenes_path, val_scenes_path, checkpoint_path, *metrics_debug_artifacts])
-    train_tensor_pair = None
-    val_tensor_pair = None
+    train_dataset.close()
+    val_dataset.close()
     if device.type == "cuda":
         torch.cuda.empty_cache()
     pseudolabel_cfg = job.predict.get("pseudolabel") or job.params.get("pseudolabel") or {}
@@ -2702,7 +2183,7 @@ def run_real_train(
         "base_train_tile_count": dataset_report["base_train_tile_count"],
         "virtual_train_tile_count": dataset_report["virtual_train_tile_count"],
         "effective_train_samples_per_epoch": dataset_report["effective_train_samples_per_epoch"],
-        "val_tile_count": len(val_samples),
+        "val_tile_count": dataset_report["val_tile_count"],
         "train_positive_tiles": dataset_report["train_positive_tiles"],
         "train_partial_positive_tiles": dataset_report["train_partial_positive_tiles"],
         "train_hard_negative_tiles": dataset_report["train_hard_negative_tiles"],

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import json
 import random
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
@@ -1038,3 +1039,302 @@ def _sample_group_indices(group: list[int], count: int, rng: random.Random) -> l
         rng.shuffle(shuffled)
         result.extend(shuffled[: count - len(result)])
     return result[:count]
+
+
+# Compatibility API below. The training path uses mlsystem.src.tile_preparation
+# directly; these wrappers keep older debug scripts/tests on the same source of
+# truth without importing this module from real_train.py.
+from ..tile_preparation import (  # noqa: E402
+    AnnotationInput as _TPAnnotationInput,
+    SceneInput as _TPSceneInput,
+    TilePreparationConfig as _TPTilePreparationConfig,
+)
+from ..tile_preparation.iterator import (  # noqa: E402
+    apply_virtual_repeats as _tp_apply_virtual_repeats,
+    build_balanced_epoch_records as _tp_build_balanced_epoch_records,
+    build_tile_records as _tp_build_tile_records,
+    build_validation_tile_records as _tp_build_validation_tile_records,
+    limit_empty_tile_share as _tp_limit_empty_tile_share,
+)
+from ..tile_preparation.records import TileSampleRecord as _TPTileSampleRecord  # noqa: E402
+from ..tile_preparation.summary import summarize_tile_records as _tp_summarize_tile_records  # noqa: E402
+
+
+def _tp_config_from_sampling(cfg: TrainSamplingConfig, *, tile_size: int, stride: int, seed: int, max_records: int | None, max_records_per_scene: int | None) -> _TPTilePreparationConfig:
+    return _TPTilePreparationConfig(
+        tile_size=tile_size,
+        stride=stride,
+        positive_stride_factor=cfg.positive_stride_factor,
+        hard_negative_stride_factor=cfg.hard_negative_stride_factor,
+        negative_stride_factor=cfg.negative_stride_factor,
+        min_positive_pixels=cfg.min_positive_pixels,
+        include_partial_positive=cfg.include_partial_positive,
+        partial_positive_fraction=cfg.partial_positive_fraction,
+        max_empty_tile_share=cfg.max_empty_tile_share,
+        hard_negative_context_px=cfg.hard_negative_context_px,
+        virtual_epoch_multiplier=cfg.virtual_epoch_multiplier,
+        positive_repeat_factor=cfg.positive_repeat_factor,
+        hard_negative_repeat_factor=cfg.hard_negative_repeat_factor,
+        negative_repeat_factor=cfg.negative_repeat_factor,
+        batch_positive_fraction=cfg.batch_positive_fraction,
+        batch_hard_negative_fraction=cfg.batch_hard_negative_fraction,
+        batch_negative_fraction=cfg.batch_negative_fraction,
+        max_records=max_records,
+        max_records_per_scene=max_records_per_scene,
+        seed=seed,
+    )
+
+
+def _to_tp_scene(scene: Any) -> _TPSceneInput:
+    scene_id, image_path, metadata = _scene_fields(scene)
+    if not image_path:
+        raise ValueError(f"scene {scene_id} has no image_path")
+    return _TPSceneInput(image_path=str(image_path), scene_id=scene_id, metadata=metadata)
+
+
+def _tp_to_legacy_record(record: _TPTileSampleRecord) -> TileSampleRecord:
+    return TileSampleRecord(
+        scene_id=record.scene_id,
+        image_path=record.image_path,
+        x=record.x,
+        y=record.y,
+        width=record.width,
+        height=record.height,
+        tile_size=record.tile_size,
+        stride=record.stride,
+        kind=record.kind,
+        positive_pixels=record.positive_pixels,
+        source=record.source,
+        base_record_id=record.base_record_id,
+        repeat_index=record.repeat_index,
+        metadata={**dict(record.metadata), "geometries_intersecting": record.geometries_intersecting},
+    )
+
+
+def _legacy_to_tp_record(record: TileSampleRecord) -> _TPTileSampleRecord:
+    return _TPTileSampleRecord(
+        scene_id=record.scene_id,
+        image_path=record.image_path,
+        x=record.x,
+        y=record.y,
+        width=record.width,
+        height=record.height,
+        tile_size=record.tile_size,
+        stride=record.stride,
+        kind=record.kind,
+        positive_pixels=record.positive_pixels,
+        source=record.source,
+        base_record_id=record.base_record_id,
+        repeat_index=record.repeat_index,
+        metadata=dict(record.metadata),
+    )
+
+
+def _write_shapes_geojson_for_scene(shapes: list[Any], scene: _TPSceneInput) -> Path:
+    import tempfile
+    import rasterio
+    from shapely.geometry import mapping as shapely_mapping
+
+    with rasterio.open(str(scene.image_path)) as ds:
+        crs = str(ds.crs) if ds.crs else None
+    payload: dict[str, Any] = {
+        "type": "FeatureCollection",
+        "features": [{"type": "Feature", "properties": {}, "geometry": shapely_mapping(geom)} for geom in shapes],
+    }
+    if crs:
+        payload["crs"] = {"type": "name", "properties": {"name": crs}}
+    handle = tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".geojson", delete=False)
+    with handle:
+        json.dump(payload, handle)
+    return Path(handle.name)
+
+
+def build_virtual_train_records(  # type: ignore[no-redef]
+    scenes: list[Any],
+    shapes: list[Any],
+    *,
+    tile_size: int,
+    stride: int,
+    train_sampling: TrainSamplingConfig | Mapping[str, Any] | None = None,
+    max_records_total: int | None = None,
+    max_records_per_scene: int | None = None,
+    seed: int = 0,
+) -> TileRecordBuildResult:
+    cfg = train_sampling if isinstance(train_sampling, TrainSamplingConfig) else resolve_train_sampling_config({"train_sampling": train_sampling or {}})
+    tp_scenes = [_to_tp_scene(scene) for scene in scenes]
+    if not tp_scenes:
+        return TileRecordBuildResult(records=[], scene_reports=[], warnings=["no scenes were provided"])
+    annotation_path = _write_shapes_geojson_for_scene(shapes, tp_scenes[0])
+    try:
+        result = _tp_build_tile_records(
+            tp_scenes,
+            _TPAnnotationInput(annotation_path, annotation_crs="auto", allow_inferred_annotation_crs=True),
+            _tp_config_from_sampling(
+                cfg,
+                tile_size=tile_size,
+                stride=stride,
+                seed=seed,
+                max_records=max_records_total,
+                max_records_per_scene=max_records_per_scene,
+            ),
+        )
+        return TileRecordBuildResult(
+            records=[_tp_to_legacy_record(record) for record in result.records],
+            scene_reports=result.scene_reports,
+            warnings=result.warnings,
+            metadata=result.metadata,
+        )
+    finally:
+        try:
+            annotation_path.unlink()
+        except OSError:
+            pass
+
+
+def build_validation_records(  # type: ignore[no-redef]
+    scenes: list[Any],
+    shapes: list[Any],
+    *,
+    tile_size: int,
+    stride: int,
+    max_records_total: int | None = None,
+    max_records_per_scene: int | None = None,
+    seed: int = 0,
+    min_positive_pixels: int = 1,
+    include_partial_positive: bool = True,
+    partial_positive_fraction: float = 0.0,
+) -> TileRecordBuildResult:
+    tp_scenes = [_to_tp_scene(scene) for scene in scenes]
+    if not tp_scenes:
+        return TileRecordBuildResult(records=[], scene_reports=[], warnings=["no scenes were provided"])
+    annotation_path = _write_shapes_geojson_for_scene(shapes, tp_scenes[0])
+    try:
+        result = _tp_build_validation_tile_records(
+            tp_scenes,
+            _TPAnnotationInput(annotation_path, annotation_crs="auto", allow_inferred_annotation_crs=True),
+            _TPTilePreparationConfig(
+                tile_size=tile_size,
+                stride=stride,
+                min_positive_pixels=min_positive_pixels,
+                include_partial_positive=include_partial_positive,
+                partial_positive_fraction=partial_positive_fraction,
+                max_records=max_records_total,
+                max_records_per_scene=max_records_per_scene,
+                seed=seed,
+            ),
+        )
+        return TileRecordBuildResult(
+            records=[_tp_to_legacy_record(record) for record in result.records],
+            scene_reports=result.scene_reports,
+            warnings=result.warnings,
+            metadata=result.metadata,
+        )
+    finally:
+        try:
+            annotation_path.unlink()
+        except OSError:
+            pass
+
+
+def apply_virtual_repeats(records: list[TileSampleRecord], cfg: TrainSamplingConfig) -> list[TileSampleRecord]:  # type: ignore[no-redef]
+    tp_config = _tp_config_from_sampling(cfg, tile_size=1, stride=1, seed=0, max_records=None, max_records_per_scene=None)
+    repeated = _tp_apply_virtual_repeats([_legacy_to_tp_record(record) for record in records], tp_config)
+    return [_tp_to_legacy_record(record) for record in repeated]
+
+
+def limit_empty_tile_share(  # type: ignore[no-redef]
+    records: list[TileSampleRecord],
+    max_empty_tile_share: float | None,
+    *,
+    seed: int = 0,
+) -> tuple[list[TileSampleRecord], list[str]]:
+    limited, warnings = _tp_limit_empty_tile_share([_legacy_to_tp_record(record) for record in records], max_empty_tile_share, seed=seed)
+    return [_tp_to_legacy_record(record) for record in limited], warnings
+
+
+def build_balanced_epoch_indices(  # type: ignore[no-redef]
+    records: list[TileSampleRecord],
+    cfg: TrainSamplingConfig,
+    *,
+    seed: int = 0,
+) -> tuple[list[int], list[str]]:
+    tp_records = [_legacy_to_tp_record(record) for record in records]
+    tp_config = _tp_config_from_sampling(cfg, tile_size=1, stride=1, seed=seed, max_records=None, max_records_per_scene=None)
+    balanced, warnings = _tp_build_balanced_epoch_records(tp_records, tp_config, seed=seed)
+    available: dict[str, list[int]] = defaultdict(list)
+    for index, record in enumerate(tp_records):
+        available[record.record_id].append(index)
+    indices: list[int] = []
+    for record in balanced:
+        bucket = available.get(record.record_id) or []
+        indices.append(bucket[0] if bucket else 0)
+    return indices, warnings
+
+
+def summarize_tile_records(records: list[TileSampleRecord], *, prefix: str = "") -> dict[str, Any]:  # type: ignore[no-redef]
+    return _tp_summarize_tile_records([_legacy_to_tp_record(record) for record in records], prefix=prefix)
+
+
+def preview_from_manifest(  # type: ignore[no-redef]
+    *,
+    dataset_manifest: str | Path,
+    annotation: str | Path,
+    images_dir: str | Path,
+    config: Mapping[str, Any] | None = None,
+    max_scenes: int | None = None,
+    max_records_preview: int = 20,
+) -> dict[str, Any]:
+    import rasterio
+
+    manifest_path = Path(dataset_manifest)
+    images_root = Path(images_dir)
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    cfg_payload = dict(config or {})
+    preprocess = dict(cfg_payload.get("preprocess") or cfg_payload)
+    tile_size = int(preprocess.get("tile_size") or 768)
+    stride = int(preprocess.get("stride") or 512)
+    raw_sampling = dict(preprocess.get("train_sampling") or {})
+    train_cfg = resolve_train_sampling_config(preprocess)
+    train_scenes = [_to_tp_scene(row) for row in _manifest_scenes(payload, "train_scenes", images_root)]
+    val_scenes = [_to_tp_scene(row) for row in _manifest_scenes(payload, "val_scenes", images_root)]
+    if max_scenes is not None:
+        train_scenes = train_scenes[: max(1, int(max_scenes))]
+        val_scenes = val_scenes[: max(1, int(max_scenes))]
+    explicit_crs: str | None = None
+    first_scene = (train_scenes or val_scenes or [None])[0]
+    if first_scene is not None:
+        with rasterio.open(str(first_scene.image_path)) as ds:
+            explicit_crs = str(ds.crs) if ds.crs else None
+    annotation_input = _TPAnnotationInput(Path(annotation), annotation_crs=explicit_crs or "auto", allow_inferred_annotation_crs=True)
+    train_config = _tp_config_from_sampling(train_cfg, tile_size=tile_size, stride=stride, seed=0, max_records=None, max_records_per_scene=None)
+    val_config = _TPTilePreparationConfig(
+        tile_size=tile_size,
+        stride=stride,
+        min_positive_pixels=train_cfg.min_positive_pixels,
+        include_partial_positive=train_cfg.include_partial_positive,
+        partial_positive_fraction=train_cfg.partial_positive_fraction,
+    )
+    train_result = _tp_build_tile_records(train_scenes, annotation_input, train_config)
+    val_result = _tp_build_validation_tile_records(val_scenes, annotation_input, val_config)
+    train_summary = _tp_summarize_tile_records(train_result.records, prefix="train")
+    base_summary = _tp_summarize_tile_records(train_result.base_records, prefix="base_train")
+    val_summary = _tp_summarize_tile_records(val_result.records, prefix="val")
+    summary = {
+        "train_sampling_enabled": bool(raw_sampling.get("enabled", False)),
+        "base_train_records": len(train_result.base_records),
+        "virtual_train_records": len(train_result.records),
+        "effective_train_samples_per_epoch": len(train_result.records),
+        "positive_stride": train_config.positive_stride,
+        "hard_negative_stride": train_config.hard_negative_stride,
+        "negative_stride": train_config.negative_stride,
+        **base_summary,
+        **train_summary,
+        **val_summary,
+        "warnings": train_result.warnings + val_result.warnings,
+    }
+    return {
+        "status": "ok",
+        "summary": summary,
+        "preview": [record.to_dict() for record in train_result.records[: max(0, int(max_records_preview))]],
+        "warnings": summary["warnings"],
+    }

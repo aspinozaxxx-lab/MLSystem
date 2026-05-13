@@ -197,6 +197,104 @@ def apply_random_training_augmentation(
     return augmented, out_mask if out_mask is not None else mask, metadata
 
 
+def apply_training_augmentation(
+    image: np.ndarray,
+    mask: np.ndarray,
+    augmentations: dict[str, Any],
+    *,
+    seed: int,
+) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+    if not isinstance(augmentations, dict) or not any(bool(value) for value in augmentations.values()):
+        return image.copy(), _ensure_mask_uint8(mask), {"operation": "none", "seed": seed}
+    arr = np.asarray(image).astype("float32", copy=True)
+    if arr.ndim != 3:
+        raise ValueError(f"Expected CHW or HWC image, got shape={arr.shape}")
+    chw = arr.shape[0] <= 16
+    if not chw:
+        arr = np.transpose(arr, (2, 0, 1))
+    out_mask = _ensure_mask_uint8(mask)
+    rng = random.Random(seed)
+    np_rng = np.random.default_rng(seed)
+    metadata: dict[str, Any] = {"operation": "production_random", "seed": seed, "applied": []}
+
+    if augmentations.get("flips"):
+        h_flip = rng.random() < 0.5
+        v_flip = rng.random() < 0.5
+        if h_flip:
+            arr = arr[:, :, ::-1]
+            out_mask = out_mask[:, ::-1]
+            metadata["applied"].append("flip_horizontal")
+        if v_flip:
+            arr = arr[:, ::-1, :]
+            out_mask = out_mask[::-1, :]
+            metadata["applied"].append("flip_vertical")
+
+    if augmentations.get("rot90"):
+        k = rng.randint(0, 3)
+        if k:
+            arr = np.rot90(arr, k=k, axes=(1, 2)).copy()
+            out_mask = np.rot90(out_mask, k=k).copy()
+            metadata["applied"].append(f"rot90_{k * 90}")
+        metadata["rot90_k"] = k
+
+    if augmentations.get("brightness_contrast") or augmentations.get("color_jitter"):
+        brightness = 1.0 + (rng.random() - 0.5) * 0.18
+        contrast = 1.0 + (rng.random() - 0.5) * 0.30
+        mean = arr.mean(axis=(1, 2), keepdims=True)
+        arr = (arr - mean) * contrast + mean
+        arr = arr * brightness
+        metadata["applied"].append("brightness_contrast")
+        metadata["brightness"] = round(brightness, 6)
+        metadata["contrast"] = round(contrast, 6)
+
+    if augmentations.get("gamma"):
+        gamma = 0.80 + rng.random() * 0.45
+        arr = np.clip(arr, 0.0, 1.0) ** gamma
+        metadata["applied"].append("gamma")
+        metadata["gamma"] = round(gamma, 6)
+
+    if augmentations.get("noise"):
+        arr = arr + np_rng.normal(0.0, 0.02, size=arr.shape).astype("float32")
+        metadata["applied"].append("noise")
+        metadata["noise_std"] = 0.02
+
+    if augmentations.get("blur"):
+        blur_applied = rng.random() < 0.25
+        if blur_applied:
+            arr = _avg_blur_chw(arr)
+            metadata["applied"].append("blur")
+        metadata["blur_applied"] = blur_applied
+
+    if augmentations.get("cutout") or augmentations.get("coarse_dropout"):
+        cutout_applied = rng.random() < 0.35
+        if cutout_applied:
+            height = int(arr.shape[1])
+            width = int(arr.shape[2])
+            cut_h = max(8, height // 8)
+            cut_w = max(8, width // 8)
+            y0 = rng.randint(0, max(0, height - cut_h))
+            x0 = rng.randint(0, max(0, width - cut_w))
+            arr[:, y0 : y0 + cut_h, x0 : x0 + cut_w] = 0.0
+            metadata["applied"].append("cutout")
+            metadata["cutout"] = {"x": x0, "y": y0, "width": cut_w, "height": cut_h, "mask_behavior": "unchanged"}
+        metadata["cutout_applied"] = cutout_applied
+
+    arr = np.clip(arr, 0.0, 1.0).astype("float32")
+    if not chw:
+        arr = np.transpose(arr, (1, 2, 0)).astype("float32")
+    metadata["mask_behavior"] = "geometric transforms only; photometric/noise/blur/cutout keep mask unchanged"
+    return arr, out_mask, metadata
+
+
+def _avg_blur_chw(arr: np.ndarray) -> np.ndarray:
+    padded = np.pad(arr, ((0, 0), (1, 1), (1, 1)), mode="edge")
+    acc = np.zeros_like(arr, dtype="float32")
+    for dy in range(3):
+        for dx in range(3):
+            acc += padded[:, dy : dy + arr.shape[1], dx : dx + arr.shape[2]]
+    return acc / 9.0
+
+
 def _apply_operation(
     rgb: np.ndarray,
     mask: np.ndarray | None,
