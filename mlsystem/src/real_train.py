@@ -16,7 +16,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from rasterio.features import rasterize
-from shapely.geometry import box, mapping, shape
+from shapely.geometry import Point, box, mapping, shape
 from shapely.ops import transform as shapely_transform
 
 from .io_utils import write_json
@@ -716,22 +716,40 @@ def _sample_windows(
         return [(0, 0)]
 
     scene_bounds = box(*ds.bounds)
-    positives: list[tuple[int, int]] = []
+    max_empty = max(1, int(max_tiles * empty_share))
+    max_positive = max(1, max_tiles - max_empty)
+
+    intersections: list[Any] = []
     for geom in shapes:
         if not geom.is_valid or not geom.intersects(scene_bounds):
             continue
         inter = geom.intersection(scene_bounds)
         if inter.is_empty:
             continue
-        cx, cy = inter.centroid.x, inter.centroid.y
-        row, col = ds.index(cx, cy)
-        x = max(0, min(width - patch_size, int(col - patch_size / 2)))
-        y = max(0, min(height - patch_size, int(row - patch_size / 2)))
-        positives.append((x, y))
+        intersections.append(inter)
 
+    positives: list[tuple[int, int]] = []
+    if intersections:
+        per_geometry = max(1, math.ceil(max_positive / len(intersections)))
+        for inter in intersections:
+            candidate_points = [inter.representative_point(), inter.centroid]
+            minx, miny, maxx, maxy = inter.bounds
+            attempts = max(8, per_geometry * 8)
+            while len(candidate_points) < per_geometry + 2 and attempts > 0:
+                attempts -= 1
+                if minx == maxx or miny == maxy:
+                    break
+                point = Point(rng.uniform(minx, maxx), rng.uniform(miny, maxy))
+                if inter.contains(point) or inter.touches(point):
+                    candidate_points.append(point)
+            for point in candidate_points:
+                row, col = ds.index(point.x, point.y)
+                x = max(0, min(width - patch_size, int(col - patch_size / 2)))
+                y = max(0, min(height - patch_size, int(row - patch_size / 2)))
+                positives.append((x, y))
+
+    positives = list(dict.fromkeys(positives))
     rng.shuffle(positives)
-    max_empty = max(1, int(max_tiles * empty_share))
-    max_positive = max(1, max_tiles - max_empty)
     windows = positives[:max_positive]
     while len(windows) < max_tiles:
         windows.append((rng.randint(0, width - patch_size), rng.randint(0, height - patch_size)))
