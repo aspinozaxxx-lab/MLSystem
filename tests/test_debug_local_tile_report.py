@@ -69,7 +69,10 @@ class DebugLocalTileReportTests(unittest.TestCase):
                     stride=256,
                     max_overview_size=512,
                     max_tile_examples=4,
-                    augment_examples_per_tile=2,
+                    max_augmentation_tiles=2,
+                    augmentation_mode="individual",
+                    augmentations=["flip_horizontal", "brightness"],
+                    augmentation_seed=7,
                     seed=7,
                 )
             )
@@ -83,7 +86,14 @@ class DebugLocalTileReportTests(unittest.TestCase):
             summary = json.loads((scene_dir / "scene_summary.json").read_text(encoding="utf-8"))
             self.assertEqual(len(summary["example_tiles"]), 4)
             self.assertTrue((scene_dir / summary["example_tiles"][0]["preview_path"]).exists())
-            self.assertEqual(sum(len(tile["augmentations"]) for tile in summary["example_tiles"]), 8)
+            self.assertIn("augmentation_report", summary)
+            self.assertEqual(summary["augmentation_report"]["operations"], ["flip_horizontal", "brightness"])
+            self.assertEqual(summary["augmentation_report"]["total_augmentation_previews"], 4)
+            self.assertEqual(sum(len(tile["augmentations"]) for tile in summary["example_tiles"]), 4)
+            html = (scene_dir / "tile_sampling_report.html").read_text(encoding="utf-8")
+            self.assertIn("Аугментации: покрытие методов", html)
+            self.assertIn("Примеры всех аугментаций", html)
+            self.assertIn("Проверки аугментаций", html)
             self.assertEqual(sorted(path.name for path in root.rglob("*.tif")), ["scene.tif"])
 
     @unittest.skipUnless(HAS_RASTERIO and HAS_FASTAPI, "rasterio and fastapi are required for API smoke tests")
@@ -98,6 +108,7 @@ class DebugLocalTileReportTests(unittest.TestCase):
                 "stride_factors": [1.0, 0.5, 0.25],
                 "max_scenes": 1,
                 "max_records_preview": 3,
+                "include_augmentation_catalog": True,
             }
 
             os.environ.pop("MLSYSTEM_DEBUG_DATASET_ENDPOINTS", None)
@@ -116,6 +127,9 @@ class DebugLocalTileReportTests(unittest.TestCase):
             self.assertEqual(body["status"], "ok")
             self.assertEqual(body["summary"]["scene_count"], 1)
             self.assertEqual(body["scenes"][0]["tiling_checks"][2]["actual_total"], 169)
+            self.assertIn("flip_horizontal", body["summary"]["augmentation_operations_supported"])
+            self.assertIn("flips", body["summary"]["training_augmentation_keys_supported"])
+            self.assertFalse(body["summary"]["augmentation_report_available"])
             self.assertNotIn("array", json.dumps(body).lower())
             os.environ.pop("MLSYSTEM_DEBUG_DATASET_ENDPOINTS", None)
             importlib.reload(api_app)

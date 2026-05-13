@@ -146,6 +146,7 @@ if str(os.getenv("MLSYSTEM_DEBUG_DATASET_ENDPOINTS") or "").lower() in {"1", "tr
                 recursive=bool(request.get("recursive", False)),
                 max_scenes=request.get("max_scenes"),
                 max_records_preview=int(request.get("max_records_preview") or 20),
+                include_augmentation_catalog=bool(request.get("include_augmentation_catalog", False)),
             )
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc

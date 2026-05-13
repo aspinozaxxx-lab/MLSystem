@@ -13,12 +13,17 @@ import numpy as np
 from PIL import Image, ImageDraw
 from rasterio.windows import Window
 
-from .debug_augmentations import apply_debug_augmentation
+from .debug_augmentations import (
+    DEFAULT_AUGMENTATION_OPERATIONS,
+    TRAINING_AUGMENTATION_KEYS,
+    apply_debug_augmentation,
+    augmentation_catalog,
+    resolve_augmentation_operations,
+)
 from .virtual_tile_sampling import generate_window_grid_for_scene
 
 RASTER_SUFFIXES = (".tif", ".tiff")
 STRIDE_FACTORS = (1.0, 0.5, 0.25)
-AUGMENTATION_OPERATIONS = ("flip_rot90", "brightness_gamma_noise", "blur_cutout")
 
 
 @dataclass
@@ -36,6 +41,10 @@ class LocalTileReportConfig:
     max_overview_size: int = 1600
     max_tile_examples: int = 24
     augment_examples_per_tile: int = 3
+    max_augmentation_tiles: int = 8
+    augmentation_mode: str = "all"
+    augmentations: list[str] | None = None
+    augmentation_seed: int = 42
     recursive: bool = False
     seed: int = 42
 
@@ -110,6 +119,7 @@ def preview_local_tile_reports(
     recursive: bool = False,
     max_scenes: int | None = None,
     max_records_preview: int = 20,
+    include_augmentation_catalog: bool = False,
 ) -> dict[str, Any]:
     import rasterio
 
@@ -152,7 +162,7 @@ def preview_local_tile_reports(
                     "limitations": [_image_only_limitation()],
                 }
             )
-    return {
+    payload: dict[str, Any] = {
         "status": "ok",
         "summary": {
             "images_dir": str(root),
@@ -161,9 +171,15 @@ def preview_local_tile_reports(
             "stride": int(stride),
             "stride_factors": factors,
             "limitations": [_image_only_limitation()],
+            "augmentation_report_available": False,
         },
         "scenes": scenes,
     }
+    if include_augmentation_catalog:
+        payload["summary"]["augmentation_operations_supported"] = list(DEFAULT_AUGMENTATION_OPERATIONS)
+        payload["summary"]["training_augmentation_keys_supported"] = list(TRAINING_AUGMENTATION_KEYS)
+        payload["augmentation_catalog"] = augmentation_catalog()
+    return payload
 
 
 def generate_local_tile_reports(config: LocalTileReportConfig) -> dict[str, Any]:
@@ -180,20 +196,16 @@ def generate_local_tile_reports(config: LocalTileReportConfig) -> dict[str, Any]
             augmentations_dir = scene_dir / "augmentations"
             tiles_dir.mkdir(parents=True, exist_ok=True)
             augmentations_dir.mkdir(parents=True, exist_ok=True)
+            _clear_debug_pngs(tiles_dir)
+            _clear_debug_pngs(augmentations_dir)
 
             checks = [build_tiling_check(ds.width, ds.height, config.tile_size, config.stride, factor) for factor in STRIDE_FACTORS]
             metadata = _raster_metadata(ds, raster_path)
             overview_files = _write_overviews(ds, raster_path.stem, scene_dir, config, checks)
             windows = generate_window_grid_for_scene(ds.width, ds.height, config.tile_size, config.stride, scene_id=raster_path.stem)
             selected_windows = _select_example_windows(windows, config.max_tile_examples, seed=config.seed)
-            example_tiles = _write_tile_and_augmentation_examples(
-                ds,
-                selected_windows,
-                tiles_dir,
-                augmentations_dir,
-                config,
-            )
-            parameter_matrix = _image_only_parameter_matrix(checks, config)
+            example_tiles = _write_tile_and_augmentation_examples(ds, selected_windows, tiles_dir, augmentations_dir, config)
+            augmentation_report = _build_augmentation_report(example_tiles, config)
             summary = {
                 "scene": raster_path.stem,
                 "image_path": str(raster_path),
@@ -201,16 +213,17 @@ def generate_local_tile_reports(config: LocalTileReportConfig) -> dict[str, Any]
                 "tile_size": config.tile_size,
                 "base_stride": config.stride,
                 "tiling_checks": checks,
-                "parameter_matrix": parameter_matrix,
+                "parameter_matrix": _image_only_parameter_matrix(checks, config),
                 "overview_images": overview_files,
                 "example_tiles": example_tiles,
+                "augmentation_report": augmentation_report,
                 "limitations": [_image_only_limitation()],
                 "generated_at": datetime.now(timezone.utc).isoformat(),
             }
             summary_path = scene_dir / "scene_summary.json"
             summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
             html_path = scene_dir / "tile_sampling_report.html"
-            html_path.write_text(_render_scene_html(summary, config, raster_path, html_path), encoding="utf-8")
+            html_path.write_text(_render_scene_html(summary, config, raster_path), encoding="utf-8")
             scenes.append(
                 {
                     "scene": raster_path.stem,
@@ -229,6 +242,11 @@ def generate_local_tile_reports(config: LocalTileReportConfig) -> dict[str, Any]
                     "summary_path": str(summary_path),
                     "tile_preview_count": len(example_tiles),
                     "augmentation_preview_count": sum(len(item.get("augmentations") or []) for item in example_tiles),
+                    "augmentation_report": {
+                        "mode": augmentation_report["mode"],
+                        "operation_count": len(augmentation_report["operations"]),
+                        "checks_summary": augmentation_report["checks_summary"],
+                    },
                     "tiling_checks": checks,
                 }
             )
@@ -240,6 +258,8 @@ def generate_local_tile_reports(config: LocalTileReportConfig) -> dict[str, Any]
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "parameters": _config_parameters(config),
         "limitations": [_image_only_limitation()],
+        "augmentation_operations_supported": list(DEFAULT_AUGMENTATION_OPERATIONS),
+        "training_augmentation_keys_supported": list(TRAINING_AUGMENTATION_KEYS),
         "scenes": scenes,
     }
     (images_dir / "tile_sampling_index.json").write_text(json.dumps(index, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
@@ -272,15 +292,17 @@ def _write_overviews(ds: Any, scene_name: str, scene_dir: Path, config: LocalTil
         draw = ImageDraw.Draw(image)
         windows = generate_window_grid_for_scene(ds.width, ds.height, config.tile_size, int(check["effective_stride"]), scene_id=scene_name)
         for window in windows:
-            x0 = int(window.x * scale_x)
-            y0 = int(window.y * scale_y)
-            x1 = int((window.x + window.width) * scale_x)
-            y1 = int((window.y + window.height) * scale_y)
-            draw.rectangle((x0, y0, x1, y1), outline=(255, 220, 0, 210), width=1)
-        label = (
-            f"{scene_name} | {ds.width}x{ds.height} | tile={config.tile_size} "
-            f"| stride={check['effective_stride']} | tiles={check['actual_total']}"
-        )
+            draw.rectangle(
+                (
+                    int(window.x * scale_x),
+                    int(window.y * scale_y),
+                    int((window.x + window.width) * scale_x),
+                    int((window.y + window.height) * scale_y),
+                ),
+                outline=(255, 220, 0, 210),
+                width=1,
+            )
+        label = f"{scene_name} | {ds.width}x{ds.height} | tile={config.tile_size} | stride={check['effective_stride']} | tiles={check['actual_total']}"
         draw.rectangle((0, 0, min(image.width, max(460, len(label) * 8)), 28), fill=(0, 0, 0, 190))
         draw.text((8, 7), label, fill=(255, 255, 255, 255))
         out_path = scene_dir / filename
@@ -322,13 +344,14 @@ def _to_rgb_uint8(arr: np.ndarray) -> np.ndarray:
 def _select_example_windows(windows: list[Any], max_count: int, *, seed: int) -> list[Any]:
     if not windows or max_count <= 0:
         return []
-    edge = [window for window in windows if window.x == 0 or window.y == 0 or window.x + window.width == max(w.x + w.width for w in windows) or window.y + window.height == max(w.y + w.height for w in windows)]
+    max_x = max(window.x + window.width for window in windows)
+    max_y = max(window.y + window.height for window in windows)
+    edge = [window for window in windows if window.x == 0 or window.y == 0 or window.x + window.width == max_x or window.y + window.height == max_y]
     center_x = sum(window.x for window in windows) / len(windows)
     center_y = sum(window.y for window in windows) / len(windows)
     center = sorted(windows, key=lambda item: (item.x - center_x) ** 2 + (item.y - center_y) ** 2)[: max(1, max_count // 3)]
-    rng = random.Random(seed)
     random_windows = list(windows)
-    rng.shuffle(random_windows)
+    random.Random(seed).shuffle(random_windows)
     selected: list[Any] = []
     seen: set[tuple[int, int]] = set()
     for bucket in (center, edge, random_windows):
@@ -351,6 +374,8 @@ def _write_tile_and_augmentation_examples(
     config: LocalTileReportConfig,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    operations = resolve_augmentation_operations(config.augmentation_mode, config.augmentations)
+    matrix_limit = max(0, int(config.max_augmentation_tiles))
     for index, window in enumerate(windows):
         arr = ds.read(
             list(range(1, min(3, ds.count) + 1)),
@@ -361,7 +386,6 @@ def _write_tile_and_augmentation_examples(
         rgb = _to_rgb_uint8(arr)
         original_name = f"tile_{index:03d}_original.png"
         Image.fromarray(rgb, mode="RGB").save(tiles_dir / original_name)
-        nodata_share = _nodata_share(arr, ds.nodata)
         row = {
             "tile_id": f"tile_{index:03d}",
             "x": int(window.x),
@@ -370,18 +394,76 @@ def _write_tile_and_augmentation_examples(
             "height": int(window.height),
             "is_edge": bool(window.x == 0 or window.y == 0 or window.x + window.width >= ds.width or window.y + window.height >= ds.height),
             "classification": "unlabeled_image_only",
-            "nodata_share": nodata_share,
+            "nodata_share": _nodata_share(arr, ds.nodata),
             "preview_path": f"tiles/{original_name}",
             "augmentations": [],
         }
-        for aug_index, operation in enumerate(AUGMENTATION_OPERATIONS[: max(0, config.augment_examples_per_tile)]):
-            seed = config.seed + index * 100 + aug_index
+        for aug_index, operation in enumerate(operations if index < matrix_limit else []):
+            seed = config.augmentation_seed + index * 1000 + aug_index
             aug_rgb, metadata = apply_debug_augmentation(rgb, operation, seed=seed)
-            aug_name = f"tile_{index:03d}_aug_{aug_index:02d}_{operation}.png"
+            aug_name = f"tile_{index:03d}_{operation}.png"
             Image.fromarray(aug_rgb, mode="RGB").save(augmentations_dir / aug_name)
             row["augmentations"].append({"path": f"augmentations/{aug_name}", **metadata})
         rows.append(row)
     return rows
+
+
+def _build_augmentation_report(example_tiles: list[dict[str, Any]], config: LocalTileReportConfig) -> dict[str, Any]:
+    operations = resolve_augmentation_operations(config.augmentation_mode, config.augmentations)
+    examples_by_operation: dict[str, list[dict[str, Any]]] = {operation: [] for operation in operations}
+    status_counts = {"pass": 0, "warning": 0, "failed": 0}
+    for tile in example_tiles:
+        for aug in tile.get("augmentations") or []:
+            status = str(aug.get("check_status") or "failed")
+            status_counts[status] = status_counts.get(status, 0) + 1
+            examples_by_operation.setdefault(str(aug.get("operation")), []).append(
+                {
+                    "tile_id": tile["tile_id"],
+                    "path": aug.get("path"),
+                    "seed": aug.get("seed"),
+                    "check_status": status,
+                    "changed_pixels_fraction": aug.get("changed_pixels_fraction"),
+                    "checks": aug.get("checks"),
+                }
+            )
+    operation_checks: list[dict[str, Any]] = []
+    for operation in operations:
+        catalog_item = augmentation_catalog([operation])[0]
+        examples = examples_by_operation.get(operation) or []
+        statuses = [str(item.get("check_status")) for item in examples]
+        changed = [float(item.get("changed_pixels_fraction") or 0.0) for item in examples]
+        if any(item == "failed" for item in statuses):
+            status = "failed"
+        elif any(item == "warning" for item in statuses):
+            status = "warning"
+        else:
+            status = "pass"
+        operation_checks.append(
+            {
+                **catalog_item,
+                "status": status,
+                "changed_pixels_fraction_mean": round(sum(changed) / len(changed), 6) if changed else None,
+                "examples": examples[:10],
+            }
+        )
+    return {
+        "mode": config.augmentation_mode,
+        "seed": config.augmentation_seed,
+        "operations": operations,
+        "tile_count_with_full_augmentation_matrix": min(config.max_augmentation_tiles, len(example_tiles)),
+        "total_augmentation_previews": sum(len(tile.get("augmentations") or []) for tile in example_tiles),
+        "checks_summary": {
+            "passed": status_counts.get("pass", 0),
+            "warnings": status_counts.get("warning", 0),
+            "failed": status_counts.get("failed", 0),
+        },
+        "operation_checks": operation_checks,
+    }
+
+
+def _clear_debug_pngs(directory: Path) -> None:
+    for path in directory.glob("*.png"):
+        path.unlink(missing_ok=True)
 
 
 def _nodata_share(arr: np.ndarray, nodata: Any) -> float | None:
@@ -424,9 +506,9 @@ def _image_only_parameter_matrix(checks: list[dict[str, Any]], config: LocalTile
     ]
 
 
-def _render_scene_html(summary: dict[str, Any], config: LocalTileReportConfig, raster_path: Path, html_path: Path) -> str:
+def _render_scene_html(summary: dict[str, Any], config: LocalTileReportConfig, raster_path: Path) -> str:
     rel = lambda value: html.escape(str(value).replace("\\", "/"))
-    rows = "\n".join(
+    tiling_rows = "\n".join(
         "<tr>"
         f"<td>{check['stride_factor']}</td><td>{check['effective_stride']}</td>"
         f"<td>{check['expected_nx']}x{check['expected_ny']}={check['expected_total']}</td>"
@@ -436,22 +518,45 @@ def _render_scene_html(summary: dict[str, Any], config: LocalTileReportConfig, r
         "</tr>"
         for check in summary["tiling_checks"]
     )
-    parameters = _config_parameters(config)
-    param_rows = "\n".join(f"<tr><td>{html.escape(key)}</td><td>{html.escape(str(value))}</td></tr>" for key, value in parameters.items())
+    param_rows = "\n".join(f"<tr><td>{html.escape(key)}</td><td>{html.escape(str(value))}</td></tr>" for key, value in _config_parameters(config).items())
     overview_html = "\n".join(f'<figure><img src="{rel(path)}"><figcaption>{html.escape(name)}</figcaption></figure>' for name, path in summary["overview_images"].items())
     tile_html = "\n".join(
         f'<figure><img src="{rel(tile["preview_path"])}"><figcaption>{tile["tile_id"]}: x={tile["x"]}, y={tile["y"]}, edge={tile["is_edge"]}, nodata={tile["nodata_share"]}</figcaption></figure>'
         for tile in summary["example_tiles"]
     )
-    aug_html = "\n".join(
-        "<section class=\"aug-row\">"
-        f'<figure><img src="{rel(tile["preview_path"])}"><figcaption>{tile["tile_id"]} original</figcaption></figure>'
-        + "".join(
-            f'<figure><img src="{rel(aug["path"])}"><figcaption>{html.escape(aug["operation"])} seed={aug["seed"]}</figcaption></figure>'
-            for aug in tile.get("augmentations", [])
-        )
-        + "</section>"
+    aug_report = summary.get("augmentation_report") or {}
+    coverage_rows = "\n".join(
+        "<tr>"
+        f"<td>{html.escape(item['operation'])}</td><td>{html.escape(str(item.get('training_key')))}</td>"
+        f"<td>{html.escape(str(item.get('group')))}</td><td>{html.escape(json.dumps(item.get('parameters') or {}, ensure_ascii=False))}</td>"
+        f"<td>{html.escape(str(item.get('status')))}</td><td>{html.escape(str(item.get('changed_pixels_fraction_mean')))}</td>"
+        f"<td>{html.escape(str(item.get('debug_note')))}</td>"
+        "</tr>"
+        for item in aug_report.get("operation_checks", [])
+    )
+    check_rows = "\n".join(
+        "<tr>"
+        f"<td>{html.escape(aug['operation'])}</td><td>{html.escape(str(aug.get('training_key')))}</td>"
+        f"<td>{html.escape(str(aug.get('checks', {}).get('shape_preserved')))}</td>"
+        f"<td>{html.escape(str(aug.get('checks', {}).get('dtype_uint8')))}</td>"
+        f"<td>{html.escape(str(aug.get('checks', {}).get('range_0_255')))}</td>"
+        f"<td>{html.escape(str(aug.get('checks', {}).get('non_empty_output')))}</td>"
+        f"<td>{html.escape(str(aug.get('checks', {}).get('changed_when_expected')))}</td>"
+        f"<td>{html.escape(str(aug.get('check_status')))}</td>"
+        "</tr>"
         for tile in summary["example_tiles"]
+        for aug in tile.get("augmentations", [])
+    )
+    grouped_tiles: dict[str, list[str]] = {}
+    for tile in summary["example_tiles"]:
+        for aug in tile.get("augmentations", []):
+            group = str(aug.get("group") or "other")
+            grouped_tiles.setdefault(group, []).append(
+                f'<figure><img src="{rel(aug["path"])}"><figcaption>{tile["tile_id"]} | {html.escape(aug["operation"])} | seed={aug["seed"]} | changed={aug.get("changed_pixels_fraction")}</figcaption></figure>'
+            )
+    aug_sections = "\n".join(
+        f"<details open><summary>{html.escape(group)}</summary><section class=\"gallery\">{''.join(items)}</section></details>"
+        for group, items in grouped_tiles.items()
     )
     return f"""<!doctype html>
 <html lang="ru">
@@ -465,7 +570,8 @@ def _render_scene_html(summary: dict[str, Any], config: LocalTileReportConfig, r
     th {{ background: #f6f8fa; }}
     img {{ max-width: 100%; height: auto; border: 1px solid #d0d7de; }}
     .gallery {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }}
-    .aug-row {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 18px; }}
+    details {{ margin: 12px 0 20px; }}
+    summary {{ cursor: pointer; font-weight: bold; padding: 8px 0; }}
     figure {{ margin: 0; }}
     figcaption {{ font-size: 12px; margin-top: 4px; color: #4b5563; }}
     .warning {{ background: #fff7ed; border: 1px solid #fed7aa; padding: 12px; }}
@@ -489,16 +595,28 @@ def _render_scene_html(summary: dict[str, Any], config: LocalTileReportConfig, r
   <h2>Tiling summary</h2>
   <table>
     <tr><th>stride_factor</th><th>effective_stride</th><th>expected</th><th>actual</th><th>coverage x/y</th><th>last x/y</th><th>out of bounds</th><th>status</th></tr>
-    {rows}
+    {tiling_rows}
   </table>
   <h2>Overview</h2>
   <section class="gallery">{overview_html}</section>
   <h2>Tile examples</h2>
   <section class="gallery">{tile_html}</section>
-  <h2>Augmentation examples</h2>
-  {aug_html}
-  <h2>Current limitation</h2>
+  <h2>Аугментации: покрытие методов</h2>
+  <p>Показаны отдельные операции, production keys и debug metadata. Сводка проверок: {html.escape(str(aug_report.get('checks_summary')))}</p>
+  <table>
+    <tr><th>Operation</th><th>Training key</th><th>Group</th><th>Parameters</th><th>Status</th><th>Changed pixels mean</th><th>Notes</th></tr>
+    {coverage_rows}
+  </table>
+  <h2>Примеры всех аугментаций</h2>
+  {aug_sections}
+  <h2>Проверки аугментаций</h2>
+  <table>
+    <tr><th>operation</th><th>training key</th><th>shape</th><th>dtype</th><th>range</th><th>non-empty</th><th>changed expected</th><th>status</th></tr>
+    {check_rows}
+  </table>
+  <h2>Ограничение</h2>
   <p class="warning">{html.escape(_image_only_limitation())}</p>
+  <p class="warning">На локальных GeoTIFF проверена визуальная аугментация RGB preview. Согласованность image+mask проверяется unit-test на synthetic mask.</p>
   <h2>JSON summary</h2>
   <p><a href="scene_summary.json">scene_summary.json</a></p>
 </body>
@@ -557,8 +675,10 @@ def _config_parameters(config: LocalTileReportConfig) -> dict[str, Any]:
         "max_empty_tile_share": config.max_empty_tile_share,
         "max_overview_size": config.max_overview_size,
         "max_tile_examples": config.max_tile_examples,
-        "augment_examples_per_tile": config.augment_examples_per_tile,
-        "augmentations": ", ".join(AUGMENTATION_OPERATIONS),
+        "max_augmentation_tiles": config.max_augmentation_tiles,
+        "augmentation_mode": config.augmentation_mode,
+        "augmentations": ", ".join(resolve_augmentation_operations(config.augmentation_mode, config.augmentations)),
+        "augmentation_seed": config.augmentation_seed,
         "seed": config.seed,
     }
 

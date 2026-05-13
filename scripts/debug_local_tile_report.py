@@ -27,6 +27,24 @@ def main() -> int:
     parser.add_argument("--max-overview-size", type=int, default=1600)
     parser.add_argument("--max-tile-examples", type=int, default=24)
     parser.add_argument("--augment-examples-per-tile", type=int, default=3)
+    parser.add_argument(
+        "--augmentation-mode",
+        choices=("all", "individual", "production-groups", "random-training"),
+        default="all",
+        help="Which debug augmentation operations to render for the matrix.",
+    )
+    parser.add_argument(
+        "--max-augmentation-tiles",
+        type=int,
+        default=8,
+        help="How many selected tile previews receive the full augmentation matrix.",
+    )
+    parser.add_argument(
+        "--augmentations",
+        default=None,
+        help="Optional comma-separated operation names, overriding --augmentation-mode.",
+    )
+    parser.add_argument("--augmentation-seed", type=int, default=42)
     parser.add_argument("--recursive", action="store_true")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
@@ -45,6 +63,10 @@ def main() -> int:
         max_overview_size=max(1, int(args.max_overview_size)),
         max_tile_examples=max(0, int(args.max_tile_examples)),
         augment_examples_per_tile=max(0, int(args.augment_examples_per_tile)),
+        max_augmentation_tiles=max(0, int(args.max_augmentation_tiles)),
+        augmentation_mode=str(args.augmentation_mode),
+        augmentations=args.augmentations,
+        augmentation_seed=int(args.augmentation_seed),
         recursive=bool(args.recursive),
         seed=int(args.seed),
     )

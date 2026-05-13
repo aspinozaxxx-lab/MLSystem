@@ -122,10 +122,28 @@ python scripts/debug_local_tile_report.py `
   --max-empty-tile-share 0.35 `
   --max-overview-size 1600 `
   --max-tile-examples 24 `
-  --augment-examples-per-tile 3
+  --max-augmentation-tiles 8 `
+  --augmentation-mode all `
+  --augmentation-seed 42
 ```
 
 This creates `tile_sampling_index.html` in the images directory and one `tile_sampling_report.html` plus `scene_summary.json` per scene subdirectory. This mode is explicitly image-only: positive, partial-positive, hard-negative, and negative classes are not validated without annotation.
+
+Augmentation report controls:
+
+- `--augmentation-mode all`: render every supported operation.
+- `--augmentation-mode individual`: render deterministic individual operations, excluding random train-like combinations.
+- `--augmentation-mode production-groups`: render one or two representative operations for each production config group.
+- `--augmentation-mode random-training`: render only train-like random combinations.
+- `--augmentations flip_horizontal,rot90_90,gamma_low`: override the mode with an explicit comma-separated operation list.
+- `--max-augmentation-tiles 8`: apply the full augmentation matrix only to the first selected tile examples, keeping the report size bounded.
+- `--augmentation-seed 42`: seed deterministic debug previews and metadata.
+
+Supported local report augmentation operations:
+
+`original`, `flip_horizontal`, `flip_vertical`, `flip_horizontal_vertical`, `rot90_90`, `rot90_180`, `rot90_270`, `brightness`, `contrast`, `brightness_contrast`, `gamma_low`, `gamma_high`, `noise_low`, `noise_high`, `blur_light`, `blur_strong`, `cutout_small`, `cutout_medium`, `coarse_dropout`, `color_jitter`, `training_random_all_enabled_seed_1`, `training_random_all_enabled_seed_2`, `training_random_all_enabled_seed_3`.
+
+The debug implementation mirrors production augmentation groups used by `real_train.py`: `flips`, `rot90`, `brightness_contrast`/`color_jitter`, `gamma`, `noise`, `blur`, `cutout`/`coarse_dropout`. Random train-like examples are visual preview equivalents and are marked with `matches_training_semantics=false` in JSON metadata when they do not reuse the exact torch batch code path. Geometric image+mask consistency is covered by synthetic unit tests; local GeoTIFF reports without annotation only validate RGB preview behavior.
 
 ## Download A Few S3 Scenes
 
@@ -193,6 +211,7 @@ $payload = @{
   stride_factors = @(1.0, 0.5, 0.25)
   max_scenes = 2
   max_records_preview = 20
+  include_augmentation_catalog = $true
 } | ConvertTo-Json -Depth 5
 
 Invoke-RestMethod `
@@ -201,6 +220,8 @@ Invoke-RestMethod `
   -ContentType "application/json" `
   -Body $payload
 ```
+
+The local image-only endpoint does not return raster arrays or images. With `include_augmentation_catalog=true`, the response includes `augmentation_operations_supported`, `training_augmentation_keys_supported`, and `augmentation_report_available=false`; full HTML/PNG reports are generated only by the CLI script.
 
 ## What To Check
 
