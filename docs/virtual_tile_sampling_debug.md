@@ -145,6 +145,88 @@ Supported local report augmentation operations:
 
 The debug implementation mirrors production augmentation groups used by `real_train.py`: `flips`, `rot90`, `brightness_contrast`/`color_jitter`, `gamma`, `noise`, `blur`, `cutout`/`coarse_dropout`. Random train-like examples are visual preview equivalents and are marked with `matches_training_semantics=false` in JSON metadata when they do not reuse the exact torch batch code path. Geometric image+mask consistency is covered by synthetic unit tests; local GeoTIFF reports without annotation only validate RGB preview behavior.
 
+## Annotated Tile Preparation Module
+
+The reusable training tile preparation code lives in `mlsystem/src/tile_preparation/`. It is independent from Airflow, FastAPI, `real_train.py`, and pipeline stages. The public API accepts image and annotation paths, builds lightweight tile records, and reads raster windows plus rasterized masks lazily during iteration:
+
+```python
+from pathlib import Path
+from mlsystem.src.tile_preparation import (
+    AnnotationInput,
+    SceneInput,
+    TilePreparationConfig,
+    build_tile_records,
+    iter_training_tiles,
+)
+
+config = TilePreparationConfig(
+    tile_size=768,
+    stride=512,
+    positive_stride_factor=0.5,
+    hard_negative_stride_factor=0.5,
+    negative_stride_factor=1.0,
+    min_positive_pixels=1,
+    max_empty_tile_share=0.35,
+    positive_repeat_factor=4,
+    hard_negative_repeat_factor=2,
+    negative_repeat_factor=1,
+    seed=42,
+)
+
+scene = SceneInput(image_path=Path("E:/Projects/NSPD/Images/test/scene.tif"), scene_id="scene")
+annotation = AnnotationInput(
+    geojson_path=Path("E:/Projects/NSPD/Images/test/deforestation.geojson"),
+    annotation_crs="auto",
+    allow_inferred_annotation_crs=True,
+)
+
+records = build_tile_records([scene], annotation, config)
+for sample in iter_training_tiles([scene], annotation, config):
+    image = sample.image
+    mask = sample.mask
+    record = sample.record
+```
+
+The iterator does not materialize all image/mask tiles. It only keeps lightweight records, then opens the raster window and rasterizes the mask for each yielded sample. Masks are `uint8` binary `{0,1}` before conversion to the requested output format.
+
+## Annotated HTML Report
+
+When one GeoTIFF and one GeoJSON are present in a local folder, build a full annotated report:
+
+```powershell
+python scripts/debug_annotated_tile_report.py `
+  --input-dir E:\Projects\NSPD\Images\test `
+  --tile-size 768 `
+  --stride 512 `
+  --positive-stride-factor 0.5 `
+  --hard-negative-stride-factor 0.5 `
+  --negative-stride-factor 1.0 `
+  --positive-repeat-factor 4 `
+  --hard-negative-repeat-factor 2 `
+  --negative-repeat-factor 1 `
+  --max-empty-tile-share 0.35 `
+  --min-positive-pixels 1 `
+  --hard-negative-context-px 384 `
+  --annotation-crs auto `
+  --allow-inferred-annotation-crs `
+  --max-overview-size 1600 `
+  --max-tile-examples 32 `
+  --max-augmentation-tiles 8 `
+  --augmentation-mode all `
+  --augmentation-seed 42
+```
+
+The script writes `annotated_tile_sampling_index.html/json` in the input directory and `annotated_tile_sampling_report.html`, `annotated_scene_summary.json`, overview images, tile mask overlays, and augmentation mask overlays under the scene subdirectory. These are debug artifacts only and must not be committed.
+
+CRS behavior:
+
+- explicit `--annotation-crs` wins;
+- GeoJSON `crs` is used when present;
+- with `--allow-inferred-annotation-crs`, missing CRS can be inferred as EPSG:4326/EPSG:3857 or treated as raster CRS with a warning;
+- if raster and annotation CRS differ, geometries are transformed to raster CRS before rasterization.
+
+Cutout and coarse dropout match `real_train.py`: they modify image pixels only and keep the mask unchanged.
+
 ## Download A Few S3 Scenes
 
 ```powershell
@@ -222,6 +304,32 @@ Invoke-RestMethod `
 ```
 
 The local image-only endpoint does not return raster arrays or images. With `include_augmentation_catalog=true`, the response includes `augmentation_operations_supported`, `training_augmentation_keys_supported`, and `augmentation_report_available=false`; full HTML/PNG reports are generated only by the CLI script.
+
+For annotated lightweight preview:
+
+```powershell
+$payload = @{
+  input_dir = "E:\Projects\NSPD\Images\test"
+  tile_size = 768
+  stride = 512
+  positive_stride_factor = 0.5
+  hard_negative_stride_factor = 0.5
+  negative_stride_factor = 1.0
+  min_positive_pixels = 1
+  max_scenes = 1
+  max_records_preview = 20
+  include_annotation_summary = $true
+  include_augmentation_catalog = $true
+} | ConvertTo-Json -Depth 5
+
+Invoke-RestMethod `
+  -Method Post `
+  -Uri http://127.0.0.1:8088/api/debug/annotated-tile-report/preview `
+  -ContentType "application/json" `
+  -Body $payload
+```
+
+The annotated endpoint is also gated by `MLSYSTEM_DEBUG_DATASET_ENDPOINTS=1`. It returns raster metadata, annotation metadata, tiling summary, classification summary, augmentation catalog, and warnings. It does not generate HTML and does not return raster or mask arrays.
 
 ## What To Check
 

@@ -32,6 +32,7 @@ from .data.virtual_tile_sampling import (
     summarize_tile_records,
 )
 from .job_schema import JobSpec
+from .tile_preparation import TilePreparationConfig
 from .mlflow_adapter import MLflowJobRun, trace_stage
 from .metrics.debug_dump import (
     build_sample_payload,
@@ -1012,6 +1013,27 @@ def _default_tile_limits(job: JobSpec) -> tuple[int, int, int]:
     return max_train_tiles, max_val_tiles, max_tiles_per_scene
 
 
+def _tile_preparation_config_from_job(job: JobSpec, train_sampling_cfg: Any, *, tile_size: int, stride: int, seed: int) -> TilePreparationConfig:
+    return TilePreparationConfig(
+        tile_size=tile_size,
+        stride=stride,
+        positive_stride_factor=train_sampling_cfg.positive_stride_factor,
+        hard_negative_stride_factor=train_sampling_cfg.hard_negative_stride_factor,
+        negative_stride_factor=train_sampling_cfg.negative_stride_factor,
+        min_positive_pixels=train_sampling_cfg.min_positive_pixels,
+        include_partial_positive=train_sampling_cfg.include_partial_positive,
+        partial_positive_fraction=train_sampling_cfg.partial_positive_fraction,
+        max_empty_tile_share=train_sampling_cfg.max_empty_tile_share,
+        hard_negative_context_px=train_sampling_cfg.hard_negative_context_px,
+        virtual_epoch_multiplier=train_sampling_cfg.virtual_epoch_multiplier,
+        positive_repeat_factor=train_sampling_cfg.positive_repeat_factor,
+        hard_negative_repeat_factor=train_sampling_cfg.hard_negative_repeat_factor,
+        negative_repeat_factor=train_sampling_cfg.negative_repeat_factor,
+        augmentations=dict((job.train or {}).get("augmentations") or {}),
+        seed=seed,
+    )
+
+
 def _explicit_tile_total_limit(job: JobSpec, key: str) -> Any:
     if key in job.train:
         return job.train.get(key)
@@ -1747,6 +1769,14 @@ def run_real_train(
             max_val_tiles = max(1, len(val_matches) * max_tiles_per_scene)
     train_sampling_cfg = resolve_train_sampling_config(job.preprocess, job.train)
     train_sampling_enabled = bool(train_sampling_cfg.enabled)
+    base_stride = int(job.preprocess.get("stride") or job.preprocess.get("train_stride") or patch_size)
+    tile_preparation_cfg = _tile_preparation_config_from_job(
+        job,
+        train_sampling_cfg,
+        tile_size=patch_size,
+        stride=base_stride,
+        seed=seed,
+    )
     train_epoch_sample_indices: list[int] | None = None
     virtual_train_records: list[TileSampleRecord] = []
     base_train_sample_records: list[dict[str, Any]] = []
@@ -1754,14 +1784,15 @@ def run_real_train(
     train_sampling_warnings: list[str] = []
     train_sampling_summary: dict[str, Any] = {
         "train_sampling_enabled": train_sampling_enabled,
+        "tile_preparation_module": "mlsystem.src.tile_preparation",
         "base_train_tile_count": 0,
         "virtual_train_tile_count": 0,
         "effective_train_samples_per_epoch": 0,
         "train_partial_positive_tiles": 0,
         "train_hard_negative_tiles": 0,
-        "positive_stride": patch_size,
-        "hard_negative_stride": patch_size,
-        "negative_stride": patch_size,
+        "positive_stride": tile_preparation_cfg.positive_stride,
+        "hard_negative_stride": tile_preparation_cfg.hard_negative_stride,
+        "negative_stride": tile_preparation_cfg.negative_stride,
         "virtual_epoch_multiplier": train_sampling_cfg.virtual_epoch_multiplier,
         "positive_repeat_factor": train_sampling_cfg.positive_repeat_factor,
         "hard_negative_repeat_factor": train_sampling_cfg.hard_negative_repeat_factor,
@@ -1779,7 +1810,7 @@ def run_real_train(
             train_sources,
             shapes,
             tile_size=patch_size,
-            stride=int(job.preprocess.get("stride") or job.preprocess.get("train_stride") or patch_size),
+            stride=base_stride,
             train_sampling=train_sampling_cfg,
             max_records_total=max_train_tiles,
             max_records_per_scene=max_tiles_per_scene,

@@ -135,7 +135,7 @@ def _rgb_pattern() -> np.ndarray:
 def _mask_pattern() -> np.ndarray:
     mask = np.zeros((8, 8), dtype="uint8")
     mask[1:3, 2:6] = 1
-    mask[5, 6] = 2
+    mask[5, 6] = 1
     return mask
 
 
