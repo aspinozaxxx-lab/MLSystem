@@ -105,6 +105,32 @@ def run_summary_endpoint(run_id: str) -> dict[str, Any]:
     return run_summary(run_id, os.getenv("MLSYSTEM_AIRFLOW_STATE_DIR", "/data/mlsystem/airflow/status"))
 
 
+if str(os.getenv("MLSYSTEM_DEBUG_DATASET_ENDPOINTS") or "").lower() in {"1", "true", "yes", "on"}:
+
+    @app.post("/api/debug/virtual-dataset/preview")
+    def debug_virtual_dataset_preview_endpoint(request: dict[str, Any]) -> dict[str, Any]:
+        dataset_manifest = request.get("dataset_manifest")
+        annotation = request.get("annotation")
+        images_dir = request.get("images_dir")
+        if not dataset_manifest or not annotation or not images_dir:
+            raise HTTPException(status_code=400, detail="dataset_manifest, annotation, and images_dir are required")
+        try:
+            from ..data.virtual_tile_sampling import preview_from_manifest
+
+            return preview_from_manifest(
+                dataset_manifest=str(dataset_manifest),
+                annotation=str(annotation),
+                images_dir=str(images_dir),
+                config=request.get("config") or {},
+                max_scenes=request.get("max_scenes"),
+                max_records_preview=int(request.get("max_records_preview") or 20),
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail=f"{type(exc).__name__}: {exc}") from exc
+
+
 @app.post("/api/v1/debug/run-stage-sync", response_model=JobStatusResponse, dependencies=[Depends(require_api_token)])
 def debug_run_stage_sync_endpoint(request: StageStartRequest, run_id: str, stage_name: str) -> JobStatusResponse:
     try:

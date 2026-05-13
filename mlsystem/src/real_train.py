@@ -21,6 +21,16 @@ from shapely.ops import transform as shapely_transform
 
 from .io_utils import write_json
 from .data import scene_matching as scene_matching_mod
+from .data.virtual_tile_sampling import (
+    TileSampleRecord,
+    apply_virtual_repeats,
+    build_balanced_epoch_indices,
+    build_validation_records,
+    build_virtual_train_records,
+    limit_empty_tile_share,
+    resolve_train_sampling_config,
+    summarize_tile_records,
+)
 from .job_schema import JobSpec
 from .mlflow_adapter import MLflowJobRun, trace_stage
 from .metrics.debug_dump import (
@@ -849,6 +859,132 @@ def _read_samples(
     return samples, report, sample_records
 
 
+def _scene_sources_for_matches(config: PipelineConfig, matches: list[SceneMatch]) -> list[dict[str, Any]]:
+    sources: list[dict[str, Any]] = []
+    for match in matches:
+        image_path = s3_storage.raster_path_for_s3_key(config, match.key)
+        sources.append(
+            {
+                "scene_id": match.name,
+                "scene": match.name,
+                "entry": match.entry,
+                "name": match.name,
+                "key": match.key,
+                "s3_key": match.key,
+                "score": match.score,
+                "image_path": image_path,
+            }
+        )
+    return sources
+
+
+def _read_samples_from_tile_records(
+    records: list[TileSampleRecord],
+    shapes: list[Any],
+    input_bands: list[int],
+) -> tuple[list[tuple[np.ndarray, np.ndarray]], list[dict[str, Any]], list[TileSampleRecord], int]:
+    import rasterio
+    from rasterio.windows import Window
+
+    samples: list[tuple[np.ndarray, np.ndarray]] = []
+    sample_records: list[dict[str, Any]] = []
+    kept_records: list[TileSampleRecord] = []
+    skipped = 0
+    open_datasets: dict[str, Any] = {}
+    try:
+        for record in records:
+            if not record.image_path:
+                skipped += 1
+                continue
+            path = str(record.image_path)
+            ds = open_datasets.get(path)
+            if ds is None:
+                ds = rasterio.open(path)
+                open_datasets[path] = ds
+            usable_bands = [band for band in input_bands if band <= ds.count]
+            if len(usable_bands) != len(input_bands):
+                raise RuntimeError(f"{record.scene_id} has {ds.count} bands, expected {input_bands}")
+            window = Window(int(record.x), int(record.y), int(record.width), int(record.height))
+            arr = ds.read(usable_bands, window=window, boundless=True, fill_value=0)
+            if arr.shape[-2:] != (int(record.height), int(record.width)):
+                skipped += 1
+                continue
+            if np.count_nonzero(arr) == 0:
+                skipped += 1
+                continue
+            mask = rasterize(
+                [(geom, 1) for geom in shapes if geom.intersects(box(*ds.window_bounds(window)))],
+                out_shape=(int(record.height), int(record.width)),
+                transform=ds.window_transform(window),
+                fill=0,
+                dtype="uint8",
+            )
+            sample_index = len(samples)
+            record.metadata["sample_index"] = sample_index
+            record.metadata.setdefault("base_record_id", record.record_id)
+            samples.append((_normalize_image(arr), mask.astype("float32")[None, :, :]))
+            row = record.to_dict()
+            row["sample_index"] = sample_index
+            row["positive_tile"] = bool(mask.sum() > 0)
+            row["gt_positive_pixels"] = int(mask.sum())
+            row["virtual_record"] = False
+            if (record.metadata or {}).get("s3_key"):
+                row["s3_key"] = record.metadata.get("s3_key")
+            sample_records.append(row)
+            kept_records.append(record)
+    finally:
+        for ds in open_datasets.values():
+            ds.close()
+    return samples, sample_records, kept_records, skipped
+
+
+def _finalize_virtual_train_records(
+    base_records: list[TileSampleRecord],
+    train_sampling_cfg: Any,
+    *,
+    seed: int,
+) -> tuple[list[TileSampleRecord], list[dict[str, Any]], list[int], list[str]]:
+    base_id_to_sample_index = {
+        record.record_id: int(record.metadata["sample_index"])
+        for record in base_records
+        if record.metadata.get("sample_index") is not None
+    }
+    virtual_records = apply_virtual_repeats(base_records, train_sampling_cfg)
+    virtual_records, repeat_limit_warnings = limit_empty_tile_share(
+        virtual_records,
+        train_sampling_cfg.max_empty_tile_share,
+        seed=seed,
+    )
+    virtual_records = [
+        record
+        for record in virtual_records
+        if (record.base_record_id or record.record_id) in base_id_to_sample_index
+    ]
+    epoch_record_indices, balance_warnings = build_balanced_epoch_indices(
+        virtual_records,
+        train_sampling_cfg,
+        seed=seed + 17,
+    )
+    sample_records: list[dict[str, Any]] = []
+    for virtual_index, record in enumerate(virtual_records):
+        base_id = record.base_record_id or record.record_id
+        row = record.to_dict()
+        row["sample_index"] = base_id_to_sample_index[base_id]
+        row["virtual_record_index"] = virtual_index
+        row["virtual_record"] = True
+        row["positive_tile"] = record.kind in {"positive", "partial_positive"}
+        row["gt_positive_pixels"] = int(record.positive_pixels)
+        if (record.metadata or {}).get("s3_key"):
+            row["s3_key"] = record.metadata.get("s3_key")
+        sample_records.append(row)
+    epoch_sample_indices = [
+        base_id_to_sample_index[virtual_records[index].base_record_id or virtual_records[index].record_id]
+        for index in epoch_record_indices
+        if 0 <= index < len(virtual_records)
+    ]
+    return virtual_records, sample_records, epoch_sample_indices, repeat_limit_warnings + balance_warnings
+
+
 def _write_history(experiment_dir: Path, history: list[dict[str, float]]) -> list[Path]:
     json_path = experiment_dir / "history.json"
     csv_path = experiment_dir / "history.csv"
@@ -1578,7 +1714,7 @@ def run_real_train(
 
     input_bands = job.params.get("input_bands") or model_cfg.get("input_bands") or [1, 2, 3, 4]
     input_bands = [int(band) for band in input_bands]
-    patch_size = int(job.train.get("patch_size") or job.train.get("train_patch_size") or 256)
+    patch_size = int(job.train.get("patch_size") or job.train.get("train_patch_size") or job.preprocess.get("tile_size") or 256)
     max_train_tiles, max_val_tiles, max_tiles_per_scene = _default_tile_limits(job)
     explicit_max_train_tiles = _explicit_tile_total_limit(job, "max_train_tiles")
     explicit_max_val_tiles = _explicit_tile_total_limit(job, "max_val_tiles")
@@ -1609,31 +1745,176 @@ def run_real_train(
             max_train_tiles = max(1, len(train_matches) * max_tiles_per_scene)
         if explicit_max_val_tiles is None:
             max_val_tiles = max(1, len(val_matches) * max_tiles_per_scene)
-    train_samples, train_report, train_sample_records = _read_samples(
-        config,
-        train_matches,
-        shapes,
-        input_bands,
-        patch_size,
-        max_tiles_per_scene,
-        max_train_tiles,
-        empty_share,
-        seed,
-    )
-    val_samples, val_report, val_sample_records = _read_samples(
-        config,
-        val_matches,
-        shapes,
-        input_bands,
-        patch_size,
-        max(1, max_tiles_per_scene // 2),
-        max_val_tiles,
-        empty_share,
-        seed + 1000,
-    )
+    train_sampling_cfg = resolve_train_sampling_config(job.preprocess, job.train)
+    train_sampling_enabled = bool(train_sampling_cfg.enabled)
+    train_epoch_sample_indices: list[int] | None = None
+    virtual_train_records: list[TileSampleRecord] = []
+    base_train_sample_records: list[dict[str, Any]] = []
+    kept_base_train_records: list[TileSampleRecord] = []
+    train_sampling_warnings: list[str] = []
+    train_sampling_summary: dict[str, Any] = {
+        "train_sampling_enabled": train_sampling_enabled,
+        "base_train_tile_count": 0,
+        "virtual_train_tile_count": 0,
+        "effective_train_samples_per_epoch": 0,
+        "train_partial_positive_tiles": 0,
+        "train_hard_negative_tiles": 0,
+        "positive_stride": patch_size,
+        "hard_negative_stride": patch_size,
+        "negative_stride": patch_size,
+        "virtual_epoch_multiplier": train_sampling_cfg.virtual_epoch_multiplier,
+        "positive_repeat_factor": train_sampling_cfg.positive_repeat_factor,
+        "hard_negative_repeat_factor": train_sampling_cfg.hard_negative_repeat_factor,
+        "negative_repeat_factor": train_sampling_cfg.negative_repeat_factor,
+        "max_empty_tile_share": train_sampling_cfg.max_empty_tile_share,
+        "batch_positive_fraction": train_sampling_cfg.batch_positive_fraction,
+        "batch_hard_negative_fraction": train_sampling_cfg.batch_hard_negative_fraction,
+        "batch_negative_fraction": train_sampling_cfg.batch_negative_fraction,
+        "warnings": [],
+    }
+    if train_sampling_enabled:
+        train_sources = _scene_sources_for_matches(config, train_matches)
+        val_sources = _scene_sources_for_matches(config, val_matches)
+        train_record_result = build_virtual_train_records(
+            train_sources,
+            shapes,
+            tile_size=patch_size,
+            stride=int(job.preprocess.get("stride") or job.preprocess.get("train_stride") or patch_size),
+            train_sampling=train_sampling_cfg,
+            max_records_total=max_train_tiles,
+            max_records_per_scene=max_tiles_per_scene,
+            seed=seed,
+        )
+        base_train_records, base_limit_warnings = limit_empty_tile_share(
+            train_record_result.records,
+            train_sampling_cfg.max_empty_tile_share,
+            seed=seed,
+        )
+        train_samples, base_train_sample_records, kept_base_train_records, skipped_train_records = _read_samples_from_tile_records(
+            base_train_records,
+            shapes,
+            input_bands,
+        )
+        virtual_train_records, train_sample_records, train_epoch_sample_indices, finalize_warnings = _finalize_virtual_train_records(
+            kept_base_train_records,
+            train_sampling_cfg,
+            seed=seed + 7,
+        )
+        val_record_result = build_validation_records(
+            val_sources,
+            shapes,
+            tile_size=patch_size,
+            stride=int(job.preprocess.get("stride") or patch_size),
+            max_records_total=max_val_tiles,
+            max_records_per_scene=max(1, max_tiles_per_scene // 2),
+            seed=seed + 1000,
+            min_positive_pixels=train_sampling_cfg.min_positive_pixels,
+            include_partial_positive=train_sampling_cfg.include_partial_positive,
+            partial_positive_fraction=train_sampling_cfg.partial_positive_fraction,
+        )
+        val_samples, val_sample_records, kept_val_records, skipped_val_records = _read_samples_from_tile_records(
+            val_record_result.records,
+            shapes,
+            input_bands,
+        )
+        train_report = train_record_result.scene_reports
+        val_report = val_record_result.scene_reports
+        train_sampling_warnings = (
+            train_record_result.warnings
+            + base_limit_warnings
+            + finalize_warnings
+            + val_record_result.warnings
+        )
+        if skipped_train_records:
+            train_sampling_warnings.append(f"skipped {skipped_train_records} train records while reading raster windows")
+        if skipped_val_records:
+            train_sampling_warnings.append(f"skipped {skipped_val_records} validation records while reading raster windows")
+        virtual_summary = summarize_tile_records(virtual_train_records, prefix="train")
+        base_summary = summarize_tile_records(kept_base_train_records, prefix="base_train")
+        val_virtual_summary = summarize_tile_records(kept_val_records, prefix="val")
+        train_sampling_summary.update(
+            {
+                **base_summary,
+                **virtual_summary,
+                "base_train_tile_count": len(kept_base_train_records),
+                "virtual_train_tile_count": len(virtual_train_records),
+                "effective_train_samples_per_epoch": len(train_epoch_sample_indices or []),
+                "val_partial_positive_tiles": val_virtual_summary["val_partial_positive_tiles"],
+                "val_hard_negative_tiles": val_virtual_summary["val_hard_negative_tiles"],
+                "positive_stride": train_record_result.metadata.get("positive_stride"),
+                "hard_negative_stride": train_record_result.metadata.get("hard_negative_stride"),
+                "negative_stride": train_record_result.metadata.get("negative_stride"),
+                "warnings": train_sampling_warnings,
+            }
+        )
+        log_fn(
+            job_log,
+            "real_train virtual_tile_sampling "
+            f"base={len(kept_base_train_records)} virtual={len(virtual_train_records)} "
+            f"epoch={len(train_epoch_sample_indices or [])} warnings={len(train_sampling_warnings)}",
+        )
+    else:
+        train_samples, train_report, train_sample_records = _read_samples(
+            config,
+            train_matches,
+            shapes,
+            input_bands,
+            patch_size,
+            max_tiles_per_scene,
+            max_train_tiles,
+            empty_share,
+            seed,
+        )
+        val_samples, val_report, val_sample_records = _read_samples(
+            config,
+            val_matches,
+            shapes,
+            input_bands,
+            patch_size,
+            max(1, max_tiles_per_scene // 2),
+            max_val_tiles,
+            empty_share,
+            seed + 1000,
+        )
+        train_sampling_summary.update(
+            {
+                "base_train_tile_count": len(train_samples),
+                "virtual_train_tile_count": len(train_samples),
+                "effective_train_samples_per_epoch": len(train_samples),
+                "positive_stride": int(job.preprocess.get("stride") or patch_size),
+                "hard_negative_stride": int(job.preprocess.get("stride") or patch_size),
+                "negative_stride": int(job.preprocess.get("stride") or patch_size),
+            }
+        )
     if not val_samples and train_samples and bool(job.train.get("allow_train_val_sample_fallback", False)):
         fallback_count = max(1, min(max_val_tiles, max(1, len(train_samples) // 4)))
-        if len(train_samples) > fallback_count:
+        if train_sampling_enabled and kept_base_train_records:
+            if len(train_samples) > fallback_count:
+                val_samples = train_samples[-fallback_count:]
+                val_sample_records = base_train_sample_records[-fallback_count:]
+                train_samples = train_samples[:-fallback_count]
+                kept_base_train_records = kept_base_train_records[:-fallback_count]
+                for sample_index, record in enumerate(kept_base_train_records):
+                    record.metadata["sample_index"] = sample_index
+                virtual_train_records, train_sample_records, train_epoch_sample_indices, fallback_warnings = _finalize_virtual_train_records(
+                    kept_base_train_records,
+                    train_sampling_cfg,
+                    seed=seed + 23,
+                )
+                train_sampling_warnings.extend(fallback_warnings)
+                train_sampling_warnings.append("validation fallback used base train samples; use a real val scene split for final runs")
+                train_sampling_summary.update(
+                    {
+                        "base_train_tile_count": len(kept_base_train_records),
+                        "virtual_train_tile_count": len(virtual_train_records),
+                        "effective_train_samples_per_epoch": len(train_epoch_sample_indices or []),
+                        "warnings": train_sampling_warnings,
+                    }
+                )
+            else:
+                val_samples = train_samples[-fallback_count:]
+                val_sample_records = base_train_sample_records[-fallback_count:]
+        elif len(train_samples) > fallback_count:
             val_samples = train_samples[-fallback_count:]
             val_sample_records = train_sample_records[-fallback_count:]
             train_samples = train_samples[:-fallback_count]
@@ -1646,14 +1927,25 @@ def run_real_train(
         val_report = [fallback_report]
     if not train_samples or not val_samples:
         raise RuntimeError(f"Not enough samples: train={len(train_samples)} val={len(val_samples)}")
+    if train_sampling_enabled and not train_epoch_sample_indices:
+        raise RuntimeError("Not enough virtual train samples: effective_train_samples_per_epoch=0")
 
     train_positive_scene_count = sum(1 for row in train_report if row.get("positive_scene"))
     val_positive_scene_count = sum(1 for row in val_report if row.get("positive_scene"))
     train_negative_scene_count = max(0, len(train_report) - train_positive_scene_count)
     val_negative_scene_count = max(0, len(val_report) - val_positive_scene_count)
-    train_positive_tiles = sum(int(mask.sum() > 0) for _, mask in train_samples)
+    if train_sampling_enabled:
+        train_record_summary = summarize_tile_records(virtual_train_records, prefix="train")
+        train_positive_tiles = train_record_summary["train_positive_tiles"] + train_record_summary["train_partial_positive_tiles"]
+        train_negative_tiles = train_record_summary["train_negative_tiles"] + train_record_summary["train_hard_negative_tiles"]
+        train_partial_positive_tiles = train_record_summary["train_partial_positive_tiles"]
+        train_hard_negative_tiles = train_record_summary["train_hard_negative_tiles"]
+    else:
+        train_positive_tiles = sum(int(mask.sum() > 0) for _, mask in train_samples)
+        train_negative_tiles = sum(int(mask.sum() == 0) for _, mask in train_samples)
+        train_partial_positive_tiles = 0
+        train_hard_negative_tiles = 0
     val_positive_tiles = sum(int(mask.sum() > 0) for _, mask in val_samples)
-    train_negative_tiles = sum(int(mask.sum() == 0) for _, mask in train_samples)
     val_negative_tiles = sum(int(mask.sum() == 0) for _, mask in val_samples)
     dataset_report = {
         "annotation_source": scene_report["annotation_source"],
@@ -1666,9 +1958,14 @@ def run_real_train(
         "train_negative_scene_count": train_negative_scene_count,
         "val_positive_scene_count": val_positive_scene_count,
         "val_negative_scene_count": val_negative_scene_count,
-        "train_tile_count": len(train_samples),
+        "train_tile_count": train_sampling_summary["effective_train_samples_per_epoch"] if train_sampling_enabled else len(train_samples),
+        "base_train_tile_count": train_sampling_summary["base_train_tile_count"],
+        "virtual_train_tile_count": train_sampling_summary["virtual_train_tile_count"],
+        "effective_train_samples_per_epoch": train_sampling_summary["effective_train_samples_per_epoch"],
         "val_tile_count": len(val_samples),
         "train_positive_tiles": train_positive_tiles,
+        "train_partial_positive_tiles": train_partial_positive_tiles,
+        "train_hard_negative_tiles": train_hard_negative_tiles,
         "val_positive_tiles": val_positive_tiles,
         "train_negative_tiles": train_negative_tiles,
         "val_negative_tiles": val_negative_tiles,
@@ -1680,6 +1977,7 @@ def run_real_train(
         "train_sample_records": train_sample_records,
         "val_sample_records": val_sample_records,
         "prepared_dataset_manifest": prepared_split_metadata,
+        "train_sampling": train_sampling_summary,
     }
     dataset_report_path = experiment_dir / "train_dataset_report.json"
     write_json(dataset_report_path, dataset_report)
@@ -1691,6 +1989,29 @@ def run_real_train(
             "negative_scene_count": dataset_report["negative_scene_count"],
             "positive_tile_count": dataset_report["positive_tile_count"],
             "negative_tile_count": dataset_report["negative_tile_count"],
+            "train_sampling_enabled": train_sampling_enabled,
+            "base_train_tile_count": dataset_report["base_train_tile_count"],
+            "virtual_train_tile_count": dataset_report["virtual_train_tile_count"],
+            "effective_train_samples_per_epoch": dataset_report["effective_train_samples_per_epoch"],
+            "train_positive_tiles": dataset_report["train_positive_tiles"],
+            "train_partial_positive_tiles": dataset_report["train_partial_positive_tiles"],
+            "train_hard_negative_tiles": dataset_report["train_hard_negative_tiles"],
+            "train_negative_tiles": dataset_report["train_negative_tiles"],
+            "val_tile_count": dataset_report["val_tile_count"],
+            "val_positive_tiles": dataset_report["val_positive_tiles"],
+            "val_negative_tiles": dataset_report["val_negative_tiles"],
+            "positive_stride": train_sampling_summary.get("positive_stride"),
+            "hard_negative_stride": train_sampling_summary.get("hard_negative_stride"),
+            "negative_stride": train_sampling_summary.get("negative_stride"),
+            "virtual_epoch_multiplier": train_sampling_cfg.virtual_epoch_multiplier,
+            "positive_repeat_factor": train_sampling_cfg.positive_repeat_factor,
+            "hard_negative_repeat_factor": train_sampling_cfg.hard_negative_repeat_factor,
+            "negative_repeat_factor": train_sampling_cfg.negative_repeat_factor,
+            "max_empty_tile_share": train_sampling_cfg.max_empty_tile_share,
+            "batch_positive_fraction": train_sampling_cfg.batch_positive_fraction,
+            "batch_hard_negative_fraction": train_sampling_cfg.batch_hard_negative_fraction,
+            "batch_negative_fraction": train_sampling_cfg.batch_negative_fraction,
+            "train_sampling_warnings": "; ".join(train_sampling_warnings[:20]),
         }
     )
     prepare_duration_sec = round(time.time() - prepare_started, 3)
@@ -1864,8 +2185,10 @@ def run_real_train(
             train_metric_acc = PixelMetricAccumulator(threshold=metric_threshold)
             if train_tensor_pair is not None:
                 train_x, train_y = train_tensor_pair
-                for batch_indices in make_index_batches(train_x.shape[0], shuffle=True):
-                    idx = torch.as_tensor(batch_indices, dtype=torch.long, device=device)
+                train_batch_count = len(train_epoch_sample_indices) if train_epoch_sample_indices is not None else train_x.shape[0]
+                for batch_indices in make_index_batches(train_batch_count, shuffle=True):
+                    sample_indices = [train_epoch_sample_indices[item] for item in batch_indices] if train_epoch_sample_indices is not None else batch_indices
+                    idx = torch.as_tensor(sample_indices, dtype=torch.long, device=device)
                     x = train_x.index_select(0, idx)
                     y = train_y.index_select(0, idx)
                     x, y = _apply_train_augmentations(x, y, augmentations_cfg)
@@ -1880,9 +2203,11 @@ def run_real_train(
                     train_loss_acc.update({name: float(value.detach().item()) for name, value in components.items()}, weight=int(y.shape[0]))
                     train_metric_acc.update_from_logits(logits.detach(), y)
             else:
-                for batch_indices in make_index_batches(len(train_samples), shuffle=True):
-                    x = torch.from_numpy(np.stack([train_samples[item][0] for item in batch_indices])).to(device)
-                    y = torch.from_numpy(np.stack([train_samples[item][1] for item in batch_indices])).to(device)
+                train_batch_count = len(train_epoch_sample_indices) if train_epoch_sample_indices is not None else len(train_samples)
+                for batch_indices in make_index_batches(train_batch_count, shuffle=True):
+                    sample_indices = [train_epoch_sample_indices[item] for item in batch_indices] if train_epoch_sample_indices is not None else batch_indices
+                    x = torch.from_numpy(np.stack([train_samples[item][0] for item in sample_indices])).to(device)
+                    y = torch.from_numpy(np.stack([train_samples[item][1] for item in sample_indices])).to(device)
                     x, y = _apply_train_augmentations(x, y, augmentations_cfg)
                     optimizer.zero_grad(set_to_none=True)
                     logits = model(x)
@@ -2169,6 +2494,7 @@ def run_real_train(
             "explicit_max_train_tiles": explicit_max_train_tiles,
             "explicit_max_val_tiles": explicit_max_val_tiles,
             "max_tiles_per_scene": max_tiles_per_scene,
+            "train_sampling": train_sampling_summary,
         }
         run_metadata = {
             "branch": os.getenv("MLSYSTEM_GIT_BRANCH") or job.params.get("git_branch") or "",
@@ -2341,12 +2667,18 @@ def run_real_train(
         "ambiguous_scenes": ambiguous,
         "train_scene_count": len(train_matches),
         "val_scene_count": len(val_matches),
-        "train_tile_count": len(train_samples),
+        "train_tile_count": dataset_report["train_tile_count"],
+        "base_train_tile_count": dataset_report["base_train_tile_count"],
+        "virtual_train_tile_count": dataset_report["virtual_train_tile_count"],
+        "effective_train_samples_per_epoch": dataset_report["effective_train_samples_per_epoch"],
         "val_tile_count": len(val_samples),
         "train_positive_tiles": dataset_report["train_positive_tiles"],
+        "train_partial_positive_tiles": dataset_report["train_partial_positive_tiles"],
+        "train_hard_negative_tiles": dataset_report["train_hard_negative_tiles"],
         "val_positive_tiles": dataset_report["val_positive_tiles"],
         "train_negative_tiles": dataset_report["train_negative_tiles"],
         "val_negative_tiles": dataset_report["val_negative_tiles"],
+        "train_sampling": train_sampling_summary,
         "positive_scene_count": dataset_report["positive_scene_count"],
         "negative_scene_count": dataset_report["negative_scene_count"],
         "positive_tile_count": dataset_report["positive_tile_count"],
@@ -2355,5 +2687,5 @@ def run_real_train(
         "train_dataset_report": str(dataset_report_path),
         "history_path": str(experiment_dir / "history.json"),
         "history_csv_path": str(experiment_dir / "history.csv"),
-        "warnings": [f"{len(missing)} scenes from scenes.txt were not matched"] if missing else [],
+        "warnings": ([f"{len(missing)} scenes from scenes.txt were not matched"] if missing else []) + train_sampling_warnings,
     }
