@@ -104,6 +104,29 @@ python scripts/debug_virtual_tile_sampling_selfcheck.py `
   --output-json outputs/debug_virtual_tile_sampling/parameter_matrix.json
 ```
 
+## Local Image-Only HTML Report
+
+When GeoTIFF files are already available locally but there is no `dataset_manifest.json` or annotation, build image-only reports:
+
+```powershell
+python scripts/debug_local_tile_report.py `
+  --images-dir E:\Projects\NSPD\Images\test `
+  --tile-size 768 `
+  --stride 512 `
+  --positive-stride-factor 0.5 `
+  --hard-negative-stride-factor 0.5 `
+  --negative-stride-factor 1.0 `
+  --positive-repeat-factor 4 `
+  --hard-negative-repeat-factor 2 `
+  --negative-repeat-factor 1 `
+  --max-empty-tile-share 0.35 `
+  --max-overview-size 1600 `
+  --max-tile-examples 24 `
+  --augment-examples-per-tile 3
+```
+
+This creates `tile_sampling_index.html` in the images directory and one `tile_sampling_report.html` plus `scene_summary.json` per scene subdirectory. This mode is explicitly image-only: positive, partial-positive, hard-negative, and negative classes are not validated without annotation.
+
 ## Download A Few S3 Scenes
 
 ```powershell
@@ -156,6 +179,25 @@ $payload = @{
 Invoke-RestMethod `
   -Method Post `
   -Uri http://127.0.0.1:8088/api/debug/virtual-dataset/preview `
+  -ContentType "application/json" `
+  -Body $payload
+```
+
+For local image-only preview:
+
+```powershell
+$payload = @{
+  images_dir = "E:\Projects\NSPD\Images\test"
+  tile_size = 768
+  stride = 512
+  stride_factors = @(1.0, 0.5, 0.25)
+  max_scenes = 2
+  max_records_preview = 20
+} | ConvertTo-Json -Depth 5
+
+Invoke-RestMethod `
+  -Method Post `
+  -Uri http://127.0.0.1:8088/api/debug/local-tile-report/preview `
   -ContentType "application/json" `
   -Body $payload
 ```
