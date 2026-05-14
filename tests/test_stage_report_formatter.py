@@ -9,12 +9,12 @@ from mlsystem.src.pipeline.stage_report_formatter import compact_xcom_summary, f
 class StageReportFormatterTests(unittest.TestCase):
     def test_path_views_maps_container_status_path_to_host_path(self) -> None:
         views = path_views(
-            "/opt/airflow/mlsystem_runs/run1/stages/inventory_scenes.json",
-            container_status_root="/opt/airflow/mlsystem_runs",
-            host_status_root="/data/mlsystem/airflow/status",
+            "/data/mlsystem/runs/run1/stages/inventory_scenes.json",
+            container_status_root="/data/mlsystem/runs",
+            host_status_root="/data/mlsystem/runs",
         )
-        self.assertEqual(views["container_path"], "/opt/airflow/mlsystem_runs/run1/stages/inventory_scenes.json")
-        self.assertEqual(views["host_path"], "/data/mlsystem/airflow/status/run1/stages/inventory_scenes.json")
+        self.assertEqual(views["container_path"], "/data/mlsystem/runs/run1/stages/inventory_scenes.json")
+        self.assertEqual(views["host_path"], "/data/mlsystem/runs/run1/stages/inventory_scenes.json")
 
     def test_format_stage_report_contains_human_sections_and_diagnostics(self) -> None:
         report = {
@@ -22,7 +22,7 @@ class StageReportFormatterTests(unittest.TestCase):
             "checks": [{"name": "files found", "status": "failed", "message": "missing=1"}],
             "counters": {"missing_scenes": 1},
             "errors": ["missing_scene.tif"],
-            "artifacts": {"missing_scenes.txt": "/opt/airflow/mlsystem_runs/run1/missing_scenes.txt"},
+            "artifacts": {"missing_scenes.txt": "/data/mlsystem/runs/run1/missing_scenes.txt"},
             "resources": {"sample_count": 2},
         }
         text = format_stage_report(
@@ -30,12 +30,12 @@ class StageReportFormatterTests(unittest.TestCase):
             stage="inventory_scenes",
             run_id="run1",
             job_id="job1",
-            stage_json_path="/opt/airflow/mlsystem_runs/run1/stages/inventory_scenes.json",
-            report_path="/opt/airflow/mlsystem_runs/run1/stages/inventory_scenes.report.md",
+            stage_json_path="/data/mlsystem/runs/run1/stages/inventory_scenes.json",
+            report_path="/data/mlsystem/runs/run1/stages/inventory_scenes.report.md",
         )
         self.assertIn("MLSystem stage report", text)
         self.assertIn("missing_scene.tif", text)
-        self.assertIn("host_path: `/data/mlsystem/airflow/status/run1/missing_scenes.txt`", text)
+        self.assertIn("host_path: `/data/mlsystem/runs/run1/missing_scenes.txt`", text)
         self.assertIn("docker logs --tail 300 mlsystem-gpu-api", text)
 
     def test_format_stage_report_contains_input_lineage(self) -> None:
@@ -47,7 +47,7 @@ class StageReportFormatterTests(unittest.TestCase):
                     "inventory_matched_count": 24,
                     "selected_count": 2,
                     "dataset_input_limit": 2,
-                    "limit_source": "dag_run.conf.preprocess.max_dataset_scenes",
+                    "limit_source": "pipeline_trace.preprocess.max_dataset_scenes",
                     "limit_reason": "unit mini dataset",
                     "invariant_status": "OK with explicit limit",
                     "excluded_count": 22,
@@ -58,7 +58,7 @@ class StageReportFormatterTests(unittest.TestCase):
         self.assertIn("## Input lineage", text)
         self.assertIn("inventory matched scenes: `24`", text)
         self.assertIn("selected scenes for dataset: `2`", text)
-        self.assertIn("limit source: `dag_run.conf.preprocess.max_dataset_scenes`", text)
+        self.assertIn("limit source: `pipeline_trace.preprocess.max_dataset_scenes`", text)
         self.assertIn("excluded scenes: `22`", text)
 
     def test_compact_xcom_summary_excludes_full_payload(self) -> None:

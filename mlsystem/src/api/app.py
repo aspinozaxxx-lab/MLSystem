@@ -6,11 +6,15 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from fastapi import Depends, FastAPI, Header, HTTPException, Response
+    from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 except Exception as exc:  # noqa: BLE001
     raise RuntimeError("FastAPI is required for mlsystem-api. Install fastapi and uvicorn.") from exc
 
 from ..pipeline.stages.registry import known_stages
+from ..pipeline_runner.config import PipelineRunConfig, load_trace_payload
+from ..pipeline_runner.run_store import PipelineRunStore
+from ..pipeline_runner.runner import PipelineRunner
+from ..pipeline_runner.stages import DEFAULT_PIPELINE_STAGES
 from . import __version__
 from .job_runner import JobRunner
 from .job_store import JobStore
@@ -41,29 +45,38 @@ def health() -> dict[str, Any]:
 @app.get("/ready")
 def ready(response: Response) -> dict[str, Any]:
     checks: dict[str, Any] = {}
-    status_root = Path(os.getenv("MLSYSTEM_AIRFLOW_STATE_DIR", "/data/mlsystem/airflow/status"))
+    run_root = Path(os.getenv("MLSYSTEM_RUN_ROOT", "/data/mlsystem/runs"))
     job_root = Path(os.getenv("MLSYSTEM_API_JOB_ROOT", "/data/mlsystem/api/jobs"))
     try:
-        status_root.mkdir(parents=True, exist_ok=True)
-        checks["status_root"] = {"status": "ok", "path": str(status_root)}
+        run_root.mkdir(parents=True, exist_ok=True)
+        probe = run_root / ".ready-write-test"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        checks["run_root"] = {"status": "ok", "path": str(run_root)}
     except Exception as exc:  # noqa: BLE001
-        checks["status_root"] = {"status": "failed", "message": mask_text(str(exc))}
+        checks["run_root"] = {"status": "failed", "message": mask_text(str(exc))}
     try:
         job_root.mkdir(parents=True, exist_ok=True)
         checks["job_root"] = {"status": "ok", "path": str(job_root)}
     except Exception as exc:  # noqa: BLE001
         checks["job_root"] = {"status": "failed", "message": mask_text(str(exc))}
     try:
-        checks["stage_registry"] = {"status": "ok", "stages": known_stages()}
+        checks["stage_registry"] = {"status": "ok", "registry_stages": known_stages(), "pipeline_stages": DEFAULT_PIPELINE_STAGES}
     except Exception as exc:  # noqa: BLE001
         checks["stage_registry"] = {"status": "failed", "message": mask_text(str(exc))}
+    try:
+        from ..mlflow_adapter import check_mlflow
+        from ..pipeline_config import load_config
+
+        checks["mlflow"] = {"status": "ok", "details": check_mlflow(load_config())}
+    except Exception as exc:  # noqa: BLE001
+        checks["mlflow"] = {"status": "degraded", "message": mask_text(str(exc))}
     env = masked_env_snapshot()
     checks["env"] = {"status": "ok", "keys": sorted(env)}
     required_env = [
+        "MLSYSTEM_RUN_ROOT",
         "MLSYSTEM_API_JOB_ROOT",
         "MLSYSTEM_API_TOKEN",
-        "MLSYSTEM_AIRFLOW_STATE_DIR",
-        "MLSYSTEM_AIRFLOW_EXECUTION_MODE",
         "MLFLOW_TRACKING_URI",
         "MLFLOW_S3_ENDPOINT_URL",
         "AWS_ACCESS_KEY_ID",
@@ -73,7 +86,8 @@ def ready(response: Response) -> dict[str, Any]:
     ]
     missing_env = [key for key in required_env if not os.getenv(key)]
     checks["required_env"] = {"status": "failed" if missing_env else "ok", "missing": missing_env}
-    status = "ok" if all(item.get("status") == "ok" for item in checks.values()) else "degraded"
+    critical_checks = {key: value for key, value in checks.items() if key != "mlflow"}
+    status = "ok" if all(item.get("status") == "ok" for item in critical_checks.values()) else "degraded"
     if status != "ok":
         response.status_code = 503
     return {"status": status, "service": "mlsystem-api", "checks": checks}
@@ -102,7 +116,109 @@ def job_status_endpoint(job_id: str) -> JobStatusResponse:
 
 @app.get("/api/v1/runs/{run_id}/summary")
 def run_summary_endpoint(run_id: str) -> dict[str, Any]:
-    return run_summary(run_id, os.getenv("MLSYSTEM_AIRFLOW_STATE_DIR", "/data/mlsystem/airflow/status"))
+    return run_summary(run_id, os.getenv("MLSYSTEM_RUN_ROOT", "/data/mlsystem/runs"))
+
+
+@app.post("/api/v1/pipeline-runs", dependencies=[Depends(require_api_token)])
+async def start_pipeline_run_endpoint(request: Request) -> dict[str, Any]:
+    try:
+        config = await _pipeline_config_from_request(request)
+        run = PipelineRunner(PipelineRunStore()).start_run(config, source="api")
+        return {
+            "run_id": run.run_id,
+            "state": run.state,
+            "status_url": f"/api/v1/pipeline-runs/{run.run_id}",
+            "log_url": f"/api/v1/pipeline-runs/{run.run_id}/log",
+            "created_at": run.created_at,
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/api/v1/pipeline-runs/{run_id}", dependencies=[Depends(require_api_token)])
+def pipeline_run_status_endpoint(run_id: str) -> dict[str, Any]:
+    store = PipelineRunStore()
+    try:
+        run = PipelineRunner(store).refresh_run(run_id).model_dump()
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Pipeline run not found: {run_id}") from exc
+    run["log_tail"] = store.tail_log(run_id, max_chars=20000)
+    return run
+
+
+@app.get("/api/v1/pipeline-runs/{run_id}/log", dependencies=[Depends(require_api_token)])
+def pipeline_run_log_endpoint(run_id: str, tail: int = 20000) -> dict[str, Any]:
+    store = PipelineRunStore()
+    try:
+        run = store.read_run(run_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Pipeline run not found: {run_id}") from exc
+    return {"run_id": run_id, "log_tail": store.tail_log(run_id, max_chars=max(1, min(int(tail), 1_000_000))), "updated_at": run.get("updated_at")}
+
+
+@app.get("/api/v1/pipeline-runs/{run_id}/stages", dependencies=[Depends(require_api_token)])
+def pipeline_run_stages_endpoint(run_id: str) -> dict[str, Any]:
+    store = PipelineRunStore()
+    try:
+        run = store.read_run(run_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Pipeline run not found: {run_id}") from exc
+    reports = []
+    for path in sorted((store.root / run_id / "stages").glob("*.json")):
+        try:
+            import json
+
+            reports.append(json.loads(path.read_text(encoding="utf-8")))
+        except Exception as exc:  # noqa: BLE001
+            reports.append({"stage": path.stem, "status": "unreadable", "error": mask_text(str(exc))})
+    return {"run_id": run_id, "stages": run.get("stages") or [], "reports": reports}
+
+
+@app.post("/api/v1/pipeline-runs/{run_id}/cancel", dependencies=[Depends(require_api_token)])
+def pipeline_run_cancel_endpoint(run_id: str) -> dict[str, Any]:
+    try:
+        return PipelineRunner(PipelineRunStore()).cancel_run(run_id).model_dump()
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Pipeline run not found: {run_id}") from exc
+
+
+async def _pipeline_config_from_request(request: Request) -> PipelineRunConfig:
+    content_type = request.headers.get("content-type", "")
+    dry_run = False
+    if content_type.startswith("multipart/form-data"):
+        form = await request.form()
+        upload = form.get("trace_file")
+        if upload is None or not hasattr(upload, "read"):
+            raise ValueError("multipart request must include trace_file")
+        raw = await upload.read()  # type: ignore[attr-defined]
+        filename = str(getattr(upload, "filename", None) or "trace.yaml")
+        trace = load_trace_payload(raw.decode("utf-8-sig"), source_name=filename)
+        dry_run = _truthy(form.get("dry_run"))
+    else:
+        try:
+            body = await request.json()
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError(f"request body must be JSON or multipart trace_file: {exc}") from exc
+        if not isinstance(body, dict):
+            raise ValueError("request body must be an object")
+        trace = body.get("trace") if "trace" in body else body
+        if not isinstance(trace, dict):
+            raise ValueError("trace must be an object")
+        dry_run = _truthy(body.get("dry_run"))
+    config = PipelineRunConfig.model_validate(trace)
+    if dry_run:
+        config = config.model_copy(update={"pipeline": config.pipeline.model_copy(update={"dry_run": True})})
+    return config
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 if str(os.getenv("MLSYSTEM_DEBUG_DATASET_ENDPOINTS") or "").lower() in {"1", "true", "yes", "on"}:

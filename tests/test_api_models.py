@@ -9,8 +9,8 @@ from mlsystem.src.api.security import mask_secrets, mask_text
 class ApiModelsTests(unittest.TestCase):
     def test_stage_start_request_defaults(self) -> None:
         request = StageStartRequest(experiment_config={"experiment_id": "unit"})
-        self.assertEqual(request.status_root, "/data/mlsystem/airflow/status")
-        self.assertEqual(request.source, "airflow")
+        self.assertEqual(request.status_root, "/data/mlsystem/runs")
+        self.assertEqual(request.source, "api")
 
     def test_mask_secrets_masks_nested_values(self) -> None:
         payload = {

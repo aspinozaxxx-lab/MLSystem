@@ -1,14 +1,18 @@
 # MLSystem API Service
 
-`mlsystem-api` is the production stage execution endpoint used by Airflow and frontend tools. It owns MLSystem orchestration, job persistence, training dispatch, MLflow lifecycle, dataset preparation, and metric summaries. It does not own pseudolabel inference domain logic.
+`mlsystem-api` is the production pipeline execution endpoint used by the MLSystem pipeline runner and frontend tools. It owns MLSystem orchestration, run persistence, training dispatch, MLflow lifecycle, dataset preparation, and metric summaries. It does not own pseudolabel inference domain logic.
 
 ## Endpoints
 
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /health` | Process health and deployed commit. |
-| `GET /ready` | Checks job root, status root, env, and stage registry. |
-| `GET /api/v1/stages` | Current `MAIN_DAG_STAGES`, registry stages, dispatcher stages, and pools. |
+| `GET /ready` | Checks job root, run root, env, and stage registry. |
+| `GET /api/v1/stages` | Current pipeline stages, registry stages, dispatcher stages, and pools. |
+| `POST /api/v1/pipeline-runs` | Starts a complete pipeline run from JSON/YAML trace. |
+| `GET /api/v1/pipeline-runs/{run_id}` | Returns run status, progress, stages, artifacts, MLflow info, and log tail. |
+| `GET /api/v1/pipeline-runs/{run_id}/log` | Returns the current pipeline log tail. |
+| `POST /api/v1/pipeline-runs/{run_id}/cancel` | Requests cancellation before the next stage. |
 | `POST /api/v1/runs/{run_id}/stages/{stage}/start` | Creates a persisted API job for a stage. |
 | `GET /api/v1/jobs/{job_id}` | Returns job state, stage report, artifacts, and error details. |
 | `GET /api/v1/runs/{run_id}/summary` | Reads run summary from status artifacts. |
@@ -38,7 +42,7 @@ The stage report records:
 - `source=inference_engine`
 - `request_submitted_via_http=true`
 
-The old internal pseudolabel stages are no longer production stages and should not appear in `/api/v1/stages` `main_dag_stages` or in the Airflow task list:
+The old internal pseudolabel stages are no longer production stages and should not appear in `/api/v1/stages` production output:
 
 - `prepare_inference_scenes`
 - `run_pseudolabel_inference`
@@ -50,9 +54,8 @@ The old internal pseudolabel stages are no longer production stages and should n
 ## Required Environment
 
 - `MLSYSTEM_API_JOB_ROOT`
+- `MLSYSTEM_RUN_ROOT`
 - `MLSYSTEM_API_TOKEN`
-- `MLSYSTEM_AIRFLOW_STATE_DIR`
-- `MLSYSTEM_AIRFLOW_EXECUTION_MODE`
 - `MLFLOW_TRACKING_URI`
 - `MLFLOW_S3_ENDPOINT_URL`
 - `AWS_ACCESS_KEY_ID`
@@ -69,10 +72,10 @@ API job state is outside git:
 /data/mlsystem/api/jobs/<job_id>/
 ```
 
-Airflow stage artifacts are outside git:
+Pipeline run artifacts are outside git:
 
 ```text
-/data/mlsystem/airflow/status/<run_id>/
+/data/mlsystem/runs/<run_id>/
 ```
 
 Runtime outputs, probability maps, accepted GeoJSON, env files, and secrets must not be committed.

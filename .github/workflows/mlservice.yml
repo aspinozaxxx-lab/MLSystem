@@ -5,13 +5,11 @@ on:
   pull_request:
     paths:
       - "mlsystem/**"
-      - "airflow/**"
       - ".github/workflows/mlservice.yml"
   push:
     branches: [main, master]
     paths:
       - "mlsystem/**"
-      - "airflow/**"
       - ".github/workflows/mlservice.yml"
 
 permissions:
@@ -43,7 +41,7 @@ jobs:
         run: python -m unittest discover -s tests
 
       - name: Compile Python modules
-        run: python -m compileall -q mlsystem airflow tests
+        run: python -m compileall -q mlsystem tests
 
       - name: Check whitespace
         run: git diff --check
@@ -51,9 +49,9 @@ jobs:
       - name: Validate stage contracts
         run: |
           python - <<'PY'
-          from mlsystem.src.pipeline.airflow_tasks import MAIN_DAG_STAGES, STAGE_POOLS
-          print("stages", len(MAIN_DAG_STAGES))
-          missing = [stage for stage in MAIN_DAG_STAGES if stage not in STAGE_POOLS]
+          from mlsystem.src.pipeline_runner.stages import DEFAULT_PIPELINE_STAGES, STAGE_POOLS
+          print("stages", len(DEFAULT_PIPELINE_STAGES))
+          missing = [stage for stage in DEFAULT_PIPELINE_STAGES if stage not in STAGE_POOLS]
           assert not missing, missing
           PY
           python - <<'PY'
@@ -72,7 +70,7 @@ jobs:
           mkdir -p build
           printf '%s\n' "${GITHUB_SHA}" > build/mlsystem_commit.txt
           tar --exclude='.git' --exclude='build' -czf build/mlsystem-service-source.tgz \
-            mlsystem airflow tests README.md docs
+            mlsystem tests README.md docs configs scripts
 
       - uses: actions/upload-artifact@v4
         with:
@@ -161,16 +159,12 @@ jobs:
           test "$commit" = "$GITHUB_SHA"
           $SSH "curl -fsS http://127.0.0.1:8088/ready | python3 -m json.tool"
           COMPOSE="docker compose --env-file /etc/mlsystem/gpu-platform.env -f /data/mlsystem/platform/docker-compose.yml"
-          $SSH "$COMPOSE exec -T airflow-scheduler airflow dags list-import-errors"
-          $SSH "$COMPOSE exec -T airflow-scheduler airflow dags list | grep mlsystem"
-          $SSH "$COMPOSE exec -T airflow-scheduler airflow tasks list mlsystem_experiment_pipeline"
-          stages="$($SSH "$COMPOSE exec -T airflow-scheduler curl -fsS http://mlsystem-api:8088/api/v1/stages")"
+          stages="$($SSH "curl -fsS http://127.0.0.1:8088/api/v1/stages")"
           echo "$stages" | python3 -m json.tool
           STAGES_JSON="$stages" python3 - <<'PY'
           import json, os
           data = json.loads(os.environ["STAGES_JSON"])
-          assert data.get("aliases") == {}, data.get("aliases")
-          main = set(data.get("main_dag_stages") or [])
+          main = set(data.get("pipeline_stages") or [])
           registry = set(data.get("registry_stages") or [])
           assert "inference_engine_pipeline" in main, main
           assert "inference_engine_pipeline" in registry, registry
@@ -185,7 +179,3 @@ jobs:
           assert not (old & main), old & main
           assert not (old & registry), old & registry
           PY
-          tasks="$($SSH "$COMPOSE exec -T airflow-scheduler airflow tasks list mlsystem_experiment_pipeline")"
-          echo "$tasks"
-          grep -q inference_engine_pipeline <<< "$tasks"
-          ! grep -E 'prepare_inference_scenes|run_pseudolabel_inference|validate_probability_maps|vectorize_pseudolabel|postprocess_pseudolabel|export_pseudolabel_artifacts' <<< "$tasks"

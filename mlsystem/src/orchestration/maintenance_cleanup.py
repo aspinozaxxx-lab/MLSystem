@@ -9,8 +9,8 @@ from pathlib import Path
 from typing import Any
 
 
-AIRFLOW_STATE_DIR = Path(os.getenv("MLSYSTEM_AIRFLOW_STATE_DIR", "/opt/airflow/mlsystem_runs"))
-AIRFLOW_LOG_DIR = Path(os.getenv("MLSYSTEM_AIRFLOW_LOG_DIR", "/opt/airflow/logs"))
+RUN_ROOT = Path(os.getenv("MLSYSTEM_RUN_ROOT", "/data/mlsystem/runs"))
+PIPELINE_LOG_DIR = Path(os.getenv("MLSYSTEM_PIPELINE_LOG_DIR", "/data/mlsystem/runs"))
 MLSYSTEM_CACHE_DIR = Path(os.getenv("MLSYSTEM_CACHE_DIR", "/data/mlsystem/cache"))
 
 
@@ -60,7 +60,7 @@ def _remove_empty_dirs(root: Path) -> int:
 
 
 def _write_report(report: dict[str, Any]) -> dict[str, Any]:
-    report_dir = AIRFLOW_STATE_DIR / "_maintenance"
+    report_dir = RUN_ROOT / "_maintenance"
     report_dir.mkdir(parents=True, exist_ok=True)
     path = report_dir / f"cleanup_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.json"
     path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -69,7 +69,7 @@ def _write_report(report: dict[str, Any]) -> dict[str, Any]:
 
 
 def cleanup_runtime_intermediates() -> dict[str, Any]:
-    root = AIRFLOW_STATE_DIR.resolve()
+    root = RUN_ROOT.resolve()
     min_age_hours = _safe_float_env("MLSYSTEM_CLEANUP_INTERMEDIATE_MIN_AGE_HOURS", 24.0)
     cutoff = time.time() - min_age_hours * 3600.0
     allowed_names = {"pseudolabel_scene_results", "vectorization_work"}
@@ -149,12 +149,12 @@ def cleanup_local_cache() -> dict[str, Any]:
     return _write_report(report)
 
 
-def cleanup_airflow_logs() -> dict[str, Any]:
-    root = AIRFLOW_LOG_DIR.resolve()
+def cleanup_pipeline_logs() -> dict[str, Any]:
+    root = PIPELINE_LOG_DIR.resolve()
     retention_days = _safe_int_env("MLSYSTEM_CLEANUP_LOG_RETENTION_DAYS", 14)
     cutoff = time.time() - retention_days * 86400.0
     report: dict[str, Any] = {
-        "task": "cleanup_airflow_logs",
+        "task": "cleanup_pipeline_logs",
         "created_at": _utc_now(),
         "root": str(root),
         "retention_days": retention_days,

@@ -8,8 +8,8 @@ from typing import Any
 
 from ..api.security import mask_text
 
-DEFAULT_HOST_STATUS_ROOT = "/data/mlsystem/airflow/status"
-DEFAULT_CONTAINER_STATUS_ROOT = "/opt/airflow/mlsystem_runs"
+DEFAULT_HOST_STATUS_ROOT = "/data/mlsystem/runs"
+DEFAULT_CONTAINER_STATUS_ROOT = "/data/mlsystem/runs"
 MAX_COMPACT_XCOM_BYTES = 10_000
 
 
@@ -23,8 +23,8 @@ def path_views(
     if path is None:
         return {}
     text = str(path)
-    container_root = str(container_status_root or os.getenv("MLSYSTEM_AIRFLOW_CONTAINER_STATUS_DIR") or DEFAULT_CONTAINER_STATUS_ROOT).rstrip("/\\")
-    configured_host_root = host_status_root or os.getenv("MLSYSTEM_AIRFLOW_HOST_STATUS_DIR")
+    container_root = str(container_status_root or os.getenv("MLSYSTEM_RUN_CONTAINER_ROOT") or DEFAULT_CONTAINER_STATUS_ROOT).rstrip("/\\")
+    configured_host_root = host_status_root or os.getenv("MLSYSTEM_RUN_HOST_ROOT")
     default_container_selected = container_root.replace("\\", "/").rstrip("/") == DEFAULT_CONTAINER_STATUS_ROOT
     host_root = str(configured_host_root or (DEFAULT_HOST_STATUS_ROOT if default_container_selected else "")).rstrip("/\\")
     views = {"path": text}

@@ -4,14 +4,14 @@ FastAPI BFF for the MLSystem web UI.
 
 The annotation check page accepts a GeoJSON annotation file and a TXT scene list,
 uploads them to a temporary MinIO prefix, and runs the same production
-`mlsystem-api` stages used by Airflow:
+`mlsystem-api` stages used by the MLSystem pipeline runner:
 
 - `inventory_scenes`
 - `prepare_dataset`
 
 The frontend does not count objects, match scenes, or split train/val itself.
 It only renders stage reports and artifacts from
-`/data/mlsystem/airflow/status/<run_id>/`.
+`/data/mlsystem/runs/<run_id>/`.
 
 Public URL after deploy:
 
@@ -30,7 +30,7 @@ Required environment:
 - `MLSYSTEM_API_BASE_URL`
 - `MLSYSTEM_API_TOKEN`
 - `MLSYSTEM_FRONTEND_UPLOAD_ROOT`
-- `MLSYSTEM_AIRFLOW_STATUS_ROOT`
+- `MLSYSTEM_RUN_ROOT`
 
 Runtime uploads are stored outside git under
 `/data/mlsystem/frontend/uploads/<run_id>/`.

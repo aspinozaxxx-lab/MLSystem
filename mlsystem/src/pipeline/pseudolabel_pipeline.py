@@ -271,7 +271,7 @@ def _save_scene_result(result: Any, out_dir: Path) -> dict[str, Any]:
     prob_uint8 = np.clip(probability_map.prob, 0.0, 1.0)
     prob_uint8 = np.rint(prob_uint8 * 255.0).astype(np.uint8, copy=False)
     # Keep this uncompressed: compression is CPU-heavy and can hold the
-    # Airflow GPU slot after inference. Quantizing probabilities keeps the
+    # pipeline runner GPU slot after inference. Quantizing probabilities keeps the
     # all-images intermediate set bounded while preserving threshold tuning.
     np.savez(
         npz_path,

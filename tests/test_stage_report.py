@@ -13,7 +13,7 @@ class StageReportTests(unittest.TestCase):
             counters={"matched_scenes": 3},
             artifacts={"inventory_scenes.json": "/tmp/inventory_scenes.json"},
         )
-        text = report.to_airflow_log()
+        text = report.to_pipeline_log()
         self.assertIn("=== inventory_scenes summary ===", text)
         self.assertIn("config - OK: valid", text)
         self.assertIn("- matched_scenes: 3", text)
@@ -26,7 +26,7 @@ class StageReportTests(unittest.TestCase):
             warnings=["zero-object scene"],
             errors=["validation split is empty"],
         )
-        text = report.to_airflow_log()
+        text = report.to_pipeline_log()
         self.assertIn("=== prepare_dataset FAILED ===", text)
         self.assertIn("zero-object scene", text)
         self.assertIn("validation split is empty", text)

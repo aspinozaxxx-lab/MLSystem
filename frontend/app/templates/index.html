@@ -10,7 +10,7 @@
   <div class="monitor-heading">
     <div>
       <h2>Мониторинг MLSystem</h2>
-      <p>Ресурсы машины, GPU, очереди RabbitMQ, InferenceEngine, Airflow, storage и состояние сервисов в одном Grafana dashboard.</p>
+      <p>Ресурсы машины, GPU, очереди RabbitMQ, InferenceEngine, pipeline runner, storage и состояние сервисов в одном Grafana dashboard.</p>
     </div>
     <div class="monitor-actions">
       <a class="primary-link" href="{{ grafana_url }}">Открыть Grafana</a>
@@ -26,8 +26,7 @@
 </section>
 
 <section class="status-strip" id="service-status" aria-label="Статус сервисов">
-  <span data-service="airflow">Airflow: <b>...</b></span>
-  <span data-service="mlflow">MLflow: <b>...</b></span>
+    <span data-service="mlflow">MLflow: <b>...</b></span>
   <span data-service="minio">MinIO: <b>...</b></span>
   <span data-service="inference_engine">InferenceEngine: <b>...</b></span>
   <span data-service="rabbitmq">RabbitMQ: <b>...</b></span>
@@ -48,17 +47,12 @@
 
   <a class="card active" href="{{ grafana_url }}">
     <h2>Grafana</h2>
-    <p>Главный dashboard MLSystem: машина, GPU, очереди, InferenceEngine, Airflow и storage/IO.</p>
+    <p>Главный dashboard MLSystem: машина, GPU, очереди, InferenceEngine, pipeline runner и storage/IO.</p>
   </a>
 
   <a class="card active" href="{{ prometheus_url }}">
     <h2>Prometheus</h2>
     <p>Targets, PromQL и raw metrics для диагностики мониторинга.</p>
-  </a>
-
-  <a class="card active" href="{{ airflow_ui_url }}">
-    <h2>Airflow</h2>
-    <p>Запуск и мониторинг DAG runs через authenticated gateway.</p>
   </a>
 
   <a class="card active" href="{{ mlflow_ui_url }}">

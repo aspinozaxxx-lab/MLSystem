@@ -44,7 +44,7 @@ class StageReport:
             payload["error"] = "; ".join(self.errors)
         return payload
 
-    def to_airflow_log(self, *, max_items: int = 1000) -> str:
+    def to_pipeline_log(self, *, max_items: int = 1000) -> str:
         header_status = "FAILED" if self.status == "failed" else "summary"
         lines = [f"=== {self.stage_id} {header_status} ==="]
         for check in self.checks:

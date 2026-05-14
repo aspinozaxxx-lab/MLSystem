@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from mlsystem.src.storage.local_io import write_json
-from mlsystem.src.pipeline.airflow_tasks import AirflowRunStore
+from mlsystem.src.pipeline_runner.run_store import PipelineRunStore
 from mlsystem.src.pipeline.stages.context import StageContext
 from mlsystem.src.pipeline.stages.inventory_scenes import run as run_inventory_scenes
 from mlsystem.src.pipeline.stages.inference_engine_pipeline import _shared_run_dir_for_inference_engine, run as run_inference_engine_pipeline
@@ -138,7 +138,7 @@ class PipelineStagesTests(unittest.TestCase):
             self.assertEqual(report.counters["selected_dataset_scenes"], 2)
             self.assertEqual(report.counters["excluded_dataset_scenes"], 22)
             self.assertTrue(report.counters["limit_applied"])
-            self.assertEqual(audit["limit_source"], "dag_run.conf.preprocess.max_dataset_scenes")
+            self.assertEqual(audit["limit_source"], "pipeline_trace.preprocess.max_dataset_scenes")
             self.assertEqual(audit["invariant_status"], "OK with explicit limit")
             self.assertEqual(len(audit["excluded_scenes"]), 22)
             self.assertTrue(any("Dataset input was explicitly limited" in warning for warning in report.warnings))
@@ -227,7 +227,7 @@ class PipelineStagesTests(unittest.TestCase):
                     return FakeResponse({"job_id": "job-unit", "artifacts": {"accepted_geojson": "ok"}})
                 raise AssertionError(f"unexpected request {method} {url}")
 
-            with patch.dict("os.environ", {"INFERENCE_ENGINE_API_URL": "http://ie.local", "INFERENCE_ENGINE_AIRFLOW_POLL_SEC": "0"}), \
+            with patch.dict("os.environ", {"INFERENCE_ENGINE_API_URL": "http://ie.local", "INFERENCE_ENGINE_PIPELINE_POLL_SEC": "0"}), \
                 patch("urllib.request.urlopen", side_effect=fake_urlopen):
                 report = run_inference_engine_pipeline(ctx)
 
@@ -244,9 +244,9 @@ class PipelineStagesTests(unittest.TestCase):
             self.assertEqual(report.counters["backend"], "inference_engine")
             self.assertEqual(report.counters["inference_engine_http_submitted"], 1)
 
-    def test_inference_engine_payload_uses_shared_airflow_status_path(self) -> None:
-        mapped = _shared_run_dir_for_inference_engine(Path("/opt/airflow/mlsystem_runs/unit_run"))
-        self.assertEqual(mapped, Path("/data/mlsystem/airflow/status/unit_run"))
+    def test_inference_engine_payload_uses_shared_pipeline_run_path(self) -> None:
+        mapped = _shared_run_dir_for_inference_engine(Path("/data/mlsystem/runs/unit_run"))
+        self.assertEqual(mapped, Path("/data/mlsystem/runs/unit_run"))
         unchanged = _shared_run_dir_for_inference_engine(Path("/tmp/unit_run"))
         self.assertEqual(unchanged, Path("/tmp/unit_run"))
 
@@ -264,7 +264,7 @@ class PipelineStagesTests(unittest.TestCase):
             preprocess=preprocess,
             pseudolabel=pseudolabel,
         )
-        store = AirflowRunStore(Path(tmp), "manual__unit", {"experiment_id": "unit_stage"})
+        store = PipelineRunStore(Path(tmp), "manual__unit", {"experiment_id": "unit_stage"})
         raw_conf = {"experiment_id": "unit_stage", "preprocess": dict(preprocess), "pseudolabel": dict(pseudolabel)}
         return StageContext("unit_stage", "manual__unit", conf, raw_conf, Path(tmp), store, logging.getLogger("test"))
 

@@ -61,11 +61,6 @@ jobs:
           MINIO_ROOT_USER=minio
           MINIO_ROOT_PASSWORD=miniosecret
           MLFLOW_DB_PASSWORD=mlflowsecret
-          AIRFLOW_POSTGRES_PASSWORD=airflowsecret
-          AIRFLOW_ADMIN_USER=admin
-          AIRFLOW_ADMIN_PASSWORD=adminsecret
-          AIRFLOW_FERNET_KEY=dummy
-          AIRFLOW_SECRET_KEY=dummy
           RABBITMQ_DEFAULT_USER=mlsystem
           RABBITMQ_DEFAULT_PASS=rabbitsecret
           INFERENCE_ENGINE_API_TOKEN=ietoken
@@ -76,7 +71,6 @@ jobs:
           MINIO_ROOT_USER: minio
           MINIO_ROOT_PASSWORD: miniosecret
           MLFLOW_DB_PASSWORD: mlflowsecret
-          AIRFLOW_POSTGRES_PASSWORD: airflowsecret
           RABBITMQ_DEFAULT_USER: mlsystem
           RABBITMQ_DEFAULT_PASS: rabbitsecret
           RABBITMQ_MANAGEMENT_LISTEN_HOST: 127.0.0.1
@@ -100,11 +94,6 @@ jobs:
       MINIO_ROOT_USER: ${{ secrets.MINIO_ROOT_USER }}
       MINIO_ROOT_PASSWORD: ${{ secrets.MINIO_ROOT_PASSWORD }}
       MLFLOW_DB_PASSWORD: ${{ secrets.MLFLOW_DB_PASSWORD }}
-      AIRFLOW_ADMIN_USER: ${{ secrets.AIRFLOW_ADMIN_USER }}
-      AIRFLOW_ADMIN_PASSWORD: ${{ secrets.AIRFLOW_ADMIN_PASSWORD }}
-      AIRFLOW_POSTGRES_PASSWORD: ${{ secrets.AIRFLOW_POSTGRES_PASSWORD }}
-      AIRFLOW_FERNET_KEY: ${{ secrets.AIRFLOW_FERNET_KEY }}
-      AIRFLOW_SECRET_KEY: ${{ secrets.AIRFLOW_SECRET_KEY }}
       MLSYSTEM_API_TOKEN: ${{ secrets.MLSYSTEM_API_TOKEN }}
       RABBITMQ_DEFAULT_USER: ${{ secrets.RABBITMQ_DEFAULT_USER }}
       RABBITMQ_DEFAULT_PASS: ${{ secrets.RABBITMQ_DEFAULT_PASS }}
@@ -177,4 +166,4 @@ jobs:
           $SSH "curl -fsS http://127.0.0.1:8095/metrics"
           $SSH "curl -fsS http://127.0.0.1:8000/v2/health/ready"
           COMPOSE="docker compose --env-file /etc/mlsystem/gpu-platform.env -f /data/mlsystem/platform/docker-compose.yml"
-          $SSH "$COMPOSE exec -T airflow-scheduler python -c \"import urllib.request; urllib.request.urlopen('http://inference-engine-api:8095/health', timeout=5)\""
+          $SSH "$COMPOSE exec -T mlsystem-api python -c \"import urllib.request; urllib.request.urlopen('http://inference-engine-api:8095/health', timeout=5)\""

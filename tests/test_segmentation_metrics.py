@@ -211,7 +211,7 @@ class SegmentationMetricsTests(unittest.TestCase):
                 debug_root=root / "r1",
                 report_root=report_root,
                 report_name="report",
-                run_metadata={"airflow": {"dag_id": "mlsystem_experiment_pipeline", "run_id": "airflow_run"}},
+                run_metadata={"pipeline": {"run_id": "pipeline_run"}},
                 dataset_check={"class_name": "вырубки", "full_dataset": True, "synthetic": False},
             )
             report_dir = Path(result["report_dir"])

@@ -77,11 +77,6 @@ jobs:
           MINIO_ROOT_USER=mlsystem
           MINIO_ROOT_PASSWORD=mlsystem-password
           MLFLOW_DB_PASSWORD=mlflow-password
-          AIRFLOW_POSTGRES_PASSWORD=airflow-password
-          AIRFLOW_ADMIN_USER=admin
-          AIRFLOW_ADMIN_PASSWORD=airflow-admin-password
-          AIRFLOW_FERNET_KEY=00000000000000000000000000000000000000000000
-          AIRFLOW_SECRET_KEY=airflow-secret
           RABBITMQ_DEFAULT_USER=mlsystem
           RABBITMQ_DEFAULT_PASS=rabbit-password
           INFERENCE_ENGINE_API_TOKEN=ie-token
@@ -140,18 +135,13 @@ jobs:
       MINIO_ROOT_USER: ${{ secrets.MINIO_ROOT_USER }}
       MINIO_ROOT_PASSWORD: ${{ secrets.MINIO_ROOT_PASSWORD }}
       MLFLOW_DB_PASSWORD: ${{ secrets.MLFLOW_DB_PASSWORD }}
-      AIRFLOW_ADMIN_USER: ${{ secrets.AIRFLOW_ADMIN_USER }}
-      AIRFLOW_ADMIN_PASSWORD: ${{ secrets.AIRFLOW_ADMIN_PASSWORD }}
-      AIRFLOW_POSTGRES_PASSWORD: ${{ secrets.AIRFLOW_POSTGRES_PASSWORD }}
-      AIRFLOW_FERNET_KEY: ${{ secrets.AIRFLOW_FERNET_KEY }}
-      AIRFLOW_SECRET_KEY: ${{ secrets.AIRFLOW_SECRET_KEY }}
       MLSYSTEM_API_TOKEN: ${{ secrets.MLSYSTEM_API_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - name: Check required deployment secrets
         run: |
           missing=0
-          for name in GPU_SERVER_HOST GPU_SERVER_USER MINIO_ROOT_USER MINIO_ROOT_PASSWORD MLFLOW_DB_PASSWORD AIRFLOW_ADMIN_USER AIRFLOW_ADMIN_PASSWORD AIRFLOW_POSTGRES_PASSWORD AIRFLOW_FERNET_KEY AIRFLOW_SECRET_KEY; do
+          for name in GPU_SERVER_HOST GPU_SERVER_USER MINIO_ROOT_USER MINIO_ROOT_PASSWORD MLFLOW_DB_PASSWORD MLSYSTEM_API_TOKEN; do
             if [ -z "${!name:-}" ]; then
               echo "Missing GitHub secret: ${name}" >&2
               missing=1
@@ -202,13 +192,12 @@ jobs:
       - name: Validate Prometheus, Grafana and metrics targets
         run: |
           SSH="ssh -i ~/.ssh/gpu_server_key -o StrictHostKeyChecking=yes ${GPU_SERVER_USER}@${GPU_SERVER_HOST}"
-          $SSH "docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | grep -E 'prometheus|grafana|node-exporter|cadvisor|dcgm|statsd|monitor-exporter'"
+          $SSH "docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | grep -E 'prometheus|grafana|node-exporter|cadvisor|dcgm|monitor-exporter'"
           $SSH "curl -fsS http://127.0.0.1:9090/prometheus/-/ready"
           $SSH "curl -fsS http://127.0.0.1:3000/api/health | python3 -m json.tool"
           $SSH "curl -fsS http://127.0.0.1:9100/metrics | head"
           $SSH "curl -fsS http://127.0.0.1:8080/metrics | head"
           $SSH "curl -fsS http://127.0.0.1:9400/metrics | head || true"
-          $SSH "curl -fsS http://127.0.0.1:9102/metrics | head"
           $SSH "curl -fsS http://127.0.0.1:9200/metrics | head"
           $SSH "curl -fsS http://127.0.0.1:8095/metrics/prometheus | head"
           $SSH "curl -fsS http://127.0.0.1:8002/metrics | head"
@@ -219,7 +208,7 @@ jobs:
           import json
           from pathlib import Path
           targets = json.loads(Path('/tmp/prom-targets.json').read_text())['data']['activeTargets']
-          required = {'node-exporter', 'cadvisor', 'rabbitmq', 'triton', 'airflow-statsd', 'inference-engine', 'mlsystem-monitor-exporter'}
+          required = {'node-exporter', 'cadvisor', 'rabbitmq', 'triton', 'inference-engine', 'mlsystem-monitor-exporter'}
           up = {t['labels'].get('job') for t in targets if t.get('health') == 'up'}
           print('targets up', sorted(up))
           missing = required - up

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Production Airflow pseudolabel stage.
+"""Production pseudolabel stage for the built-in MLSystem pipeline runner.
 
 This stage is intentionally orchestration-only: it submits an HTTP job to
 InferenceEngine, polls the job, and validates compatibility artifacts.
@@ -30,8 +30,8 @@ COMPATIBILITY_ARTIFACTS = [
     "prediction_examples.html",
 ]
 
-AIRFLOW_CONTAINER_RUN_ROOT = Path("/opt/airflow/mlsystem_runs")
-DEFAULT_SHARED_RUN_ROOT = Path("/data/mlsystem/airflow/status")
+PIPELINE_CONTAINER_RUN_ROOT = Path("/data/mlsystem/runs")
+DEFAULT_SHARED_RUN_ROOT = Path("/data/mlsystem/runs")
 
 
 def run(ctx: StageContext) -> StageReport:
@@ -46,7 +46,7 @@ def run(ctx: StageContext) -> StageReport:
 
     warnings: list[str] = []
     if not _is_inference_engine_source(pseudolabel_cfg):
-        warnings.append("pseudolabel.source was not inference_engine; production Airflow now routes pseudolabels to InferenceEngine.")
+        warnings.append("pseudolabel.source was not inference_engine; the production pipeline runner routes pseudolabels to InferenceEngine.")
 
     inference_manifest = _ensure_inference_manifest(ctx)
     payload = _build_payload(ctx, inference_manifest)
@@ -56,8 +56,8 @@ def run(ctx: StageContext) -> StageReport:
     client = InferenceEngineClient()
     created = client.create_job(payload)
     job_id = str(created["job_id"])
-    poll_sec = float(os.getenv("INFERENCE_ENGINE_AIRFLOW_POLL_SEC") or "10")
-    timeout_sec = float(os.getenv("INFERENCE_ENGINE_AIRFLOW_TIMEOUT_SEC") or str(24 * 3600))
+    poll_sec = float(os.getenv("INFERENCE_ENGINE_PIPELINE_POLL_SEC") or "10")
+    timeout_sec = float(os.getenv("INFERENCE_ENGINE_PIPELINE_TIMEOUT_SEC") or str(24 * 3600))
     final_state = client.wait(job_id, poll_sec=poll_sec, timeout_sec=timeout_sec)
     artifacts_response: dict[str, Any] = {}
     try:
@@ -192,7 +192,7 @@ def run(ctx: StageContext) -> StageReport:
             },
         },
         warnings=warnings,
-        summary="InferenceEngine completed the full pseudolabel pipeline via HTTP API and wrote Airflow-compatible artifacts.",
+        summary="InferenceEngine completed the full pseudolabel pipeline via HTTP API and wrote pipeline artifacts.",
     )
 
 
@@ -220,9 +220,9 @@ def _cfg_dict(value: Any) -> dict[str, Any]:
 
 
 def _shared_run_dir_for_inference_engine(run_dir: Path) -> Path:
-    shared_root = Path(os.getenv("MLSYSTEM_AIRFLOW_STATUS_ROOT") or os.getenv("MLSYSTEM_AIRFLOW_STATE_DIR") or DEFAULT_SHARED_RUN_ROOT)
+    shared_root = Path(os.getenv("MLSYSTEM_RUN_ROOT") or DEFAULT_SHARED_RUN_ROOT)
     try:
-        return shared_root / run_dir.relative_to(AIRFLOW_CONTAINER_RUN_ROOT)
+        return shared_root / run_dir.relative_to(PIPELINE_CONTAINER_RUN_ROOT)
     except ValueError:
         return run_dir
 
@@ -245,7 +245,7 @@ def _build_payload(ctx: StageContext, inference_manifest: dict[str, Any]) -> dic
         "layout_uri": ctx.config.layout_uri,
         "run_dir": str(shared_run_dir),
         "storage": {
-            "source": "airflow",
+            "source": "pipeline_runner",
             "state_dir": str(ctx.status_dir),
         },
         "model": {
