@@ -1,0 +1,42 @@
+schema_version: 1
+project_root: ${MLSYSTEM_REPO_ROOT}
+storage_root: ${MLSYSTEM_DATA_ROOT}/storage
+logs_root: ${MLSYSTEM_DATA_ROOT}/logs
+
+mlflow:
+  tracking_uri_internal: ${MLFLOW_TRACKING_URI}
+  tracking_uri_external: ${MLSYSTEM_FRONTEND_PUBLIC_BASE_URL}/mlflow/
+  default_experiment: mlsystem
+
+storage:
+  local_root: ${MLSYSTEM_DATA_ROOT}/storage
+  heavy_backend: s3
+  s3_bucket: ${MLSYSTEM_BUCKET}
+  s3_prefix: ""
+
+s3_paths:
+  images: s3://${MLSYSTEM_BUCKET}/images/
+  layouts: s3://${MLSYSTEM_BUCKET}/layouts/
+  datasets: s3://${MLSYSTEM_BUCKET}/datasets/
+  cache: s3://${MLSYSTEM_BUCKET}/cache/
+  models: s3://${MLSYSTEM_BUCKET}/models/
+  predictions: s3://${MLSYSTEM_BUCKET}/predictions/
+  pseudolabels: s3://${MLSYSTEM_BUCKET}/pseudolabels/
+  reports: s3://${MLSYSTEM_BUCKET}/reports/
+  experiments: s3://${MLSYSTEM_BUCKET}/experiments/
+  system: s3://${MLSYSTEM_BUCKET}/system/
+
+s3_endpoint_url: ${MLFLOW_S3_ENDPOINT_URL}
+artifact_bucket: ${MLFLOW_BUCKET}
+dataset_cache_bucket: ml-datasets
+s3_write_test_enabled: false
+
+cpu_only: false
+max_gpu_train_jobs: 1
+max_cpu_train_jobs: 1
+max_cpu_preprocess_jobs: 1
+default_workers: 0
+known_data_roots:
+  - ${MLSYSTEM_DATA_ROOT}
+max_inventory_files: 2000
+max_inventory_depth: 5
