@@ -122,6 +122,8 @@ class RealTrainPreparedSplitTests(unittest.TestCase):
         self.assertIsInstance(optimizer, torch.optim.Adam)
         self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 1e-4)
         self.assertAlmostEqual(optimizer.param_groups[0]["weight_decay"], 0.01)
+        zero_lr_optimizer = _build_optimizer(model, {"optimizer": "adamw", "learning_rate": 0.0, "weight_decay": 0.0})
+        self.assertAlmostEqual(zero_lr_optimizer.param_groups[0]["lr"], 0.0)
 
         scheduler = _build_scheduler(optimizer, {"scheduler": {"name": "cosine", "t_max": 3, "eta_min": 1e-6}}, epochs=5)
         self.assertIsInstance(scheduler, torch.optim.lr_scheduler.CosineAnnealingLR)

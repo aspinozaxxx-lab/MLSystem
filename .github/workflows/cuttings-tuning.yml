@@ -70,7 +70,7 @@ jobs:
           Environment=PYTHONUNBUFFERED=1
           Environment=PYTHONIOENCODING=utf-8
           Environment=MLSYSTEM_RUN_ROOT=/data/mlsystem/runs
-          ExecStart=/usr/bin/python3 /opt/mlsystem/repo/scripts/tune_cuttings_forever.py --api-url http://127.0.0.1:8088 --token-file /etc/mlsystem/gpu-platform.env --mlmarkup-repo /data/mlsystem/MLMarkup --experiment-name mlsystem-cuttings-tuning --work-dir /data/mlsystem/tuning/cuttings --max-active-train-runs 1 --pending-queue-size 3 --poll-sec 45
+          ExecStart=/usr/bin/python3 /opt/mlsystem/repo/scripts/tune_cuttings_forever.py --api-url http://127.0.0.1:8088 --token-file /etc/mlsystem/gpu-platform.env --mlmarkup-repo /data/mlsystem/MLMarkup --experiment-name mlsystem-cuttings-tuning --work-dir /data/mlsystem/tuning/cuttings --max-active-train-runs 1 --pending-queue-size 3 --poll-sec 45 --start-from-checkpoints
           Restart=on-failure
           RestartSec=30
           StandardOutput=append:/data/mlsystem/tuning/cuttings/supervisor.log

@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,12 +23,15 @@ LEADERBOARD_FIELDS = [
     "rank",
     "run_id",
     "mlflow_run_id",
+    "parent_checkpoint_id",
+    "parent_checkpoint_path",
     "status",
     "valid_status",
     "val_pixel_f1",
     "val_pixel_iou",
     "val_precision",
     "val_recall",
+    "object_f1",
     "best_epoch",
     "best_threshold",
     "epoch_duration_median_sec",
@@ -42,6 +46,43 @@ LEADERBOARD_FIELDS = [
     "train_positive_tiles",
     "val_positive_tiles",
     "MLMarkup commit",
+    "notes",
+]
+PREVIOUS_CHECKPOINT_FIELDS = [
+    "source",
+    "mlflow_experiment",
+    "mlflow_run_id",
+    "run_name",
+    "checkpoint_path_or_uri",
+    "model_name",
+    "architecture",
+    "input_bands",
+    "tile_size",
+    "stride",
+    "loss",
+    "lr",
+    "old_val_pixel_f1",
+    "old_val_pixel_iou",
+    "old_object_f1",
+    "old_best_epoch",
+    "old_dataset_info",
+    "artifact_exists",
+    "checkpoint_loadable",
+    "notes",
+]
+CHECKPOINT_REEVAL_FIELDS = [
+    "checkpoint_id",
+    "old_val_pixel_f1",
+    "new_val_pixel_f1",
+    "new_val_pixel_iou",
+    "new_precision",
+    "new_recall",
+    "new_object_f1",
+    "threshold",
+    "val_scene_count",
+    "val_positive_tiles",
+    "duration",
+    "valid_status",
     "notes",
 ]
 RESOURCE_FIELDS = [
@@ -136,7 +177,7 @@ def api_json(api_url: str, token: str, method: str, path: str, payload: dict[str
 
 
 def ensure_work_dirs(work_dir: Path) -> None:
-    for name in ("queue", "traces", "runs", "reports"):
+    for name in ("queue", "traces", "runs", "reports", "checkpoints"):
         (work_dir / name).mkdir(parents=True, exist_ok=True)
 
 
@@ -249,6 +290,376 @@ def snapshot_mlmarkup(work_dir: Path, repo_path: Path, class_dir_arg: str | None
             encoding="utf-8",
         )
     return snapshot
+
+
+def metric_value(metrics: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in metrics and metrics[key] not in (None, ""):
+            return metrics[key]
+    return ""
+
+
+def trace_for_run_dir(run_dir: Path) -> dict[str, Any]:
+    for name in ("trace.json", "pipeline_trace.json", "run.json"):
+        payload = read_json(run_dir / name, default={})
+        if isinstance(payload, dict):
+            if "trace" in payload and isinstance(payload["trace"], dict):
+                return payload["trace"]
+            if "experiment_id" in payload or "model" in payload or "train" in payload:
+                return payload
+    return {}
+
+
+def looks_like_cuttings(trace: dict[str, Any], training_result: dict[str, Any], run_dir: Path) -> bool:
+    text = json.dumps({"trace": trace, "training": training_result, "path": str(run_dir)}, ensure_ascii=False).lower()
+    return any(marker in text for marker in ("cuttings", "deforest", "clearcut", "clear_cut", "deforestation"))
+
+
+def discover_checkpoint_file(run_dir: Path, training_result: dict[str, Any]) -> Path | None:
+    configured = training_result.get("checkpoint_path")
+    if configured:
+        path = Path(str(configured))
+        if path.exists():
+            return path
+        relative = run_dir / str(configured)
+        if relative.exists():
+            return relative
+    names = (
+        "best_model.pt",
+        "best_checkpoint.pt",
+        "checkpoint_best.pt",
+        "model_best.pth",
+        "tiny_unet_4ch.pt",
+        "unet_resnet34.pt",
+        "deeplabv3plus_resnet34.pt",
+        "segformer_b0.pt",
+    )
+    for name in names:
+        matches = sorted(run_dir.rglob(name))
+        if matches:
+            return matches[0]
+    generic = sorted([*run_dir.rglob("*.pt"), *run_dir.rglob("*.pth")], key=lambda item: item.stat().st_mtime if item.exists() else 0, reverse=True)
+    return generic[0] if generic else None
+
+
+def checkpoint_id_for(path: str, run_id: str | None = None) -> str:
+    source = f"{run_id or ''}_{Path(path).stem}"
+    return "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in source).strip("_")[:120] or f"checkpoint_{utc_stamp()}"
+
+
+def infer_model_name_from_path(path: str) -> str:
+    name = Path(path).stem.lower()
+    for candidate in (
+        "deeplabv3plus_resnet50",
+        "deeplabv3plus_resnet34",
+        "unet_resnet50",
+        "unet_resnet34",
+        "unet_resnet18",
+        "segformer_b3",
+        "segformer_b2",
+        "segformer_b1",
+        "segformer_b0",
+        "tiny_unet_4ch",
+    ):
+        if candidate in name:
+            return candidate
+    return ""
+
+
+def normalize_previous_checkpoint_row(row: dict[str, Any]) -> dict[str, Any]:
+    normalized = {field: row.get(field, "") for field in PREVIOUS_CHECKPOINT_FIELDS}
+    if not normalized.get("model_name"):
+        normalized["model_name"] = infer_model_name_from_path(str(normalized.get("checkpoint_path_or_uri") or ""))
+    normalized["checkpoint_id"] = row.get("checkpoint_id") or checkpoint_id_for(str(row.get("checkpoint_path_or_uri") or ""), str(row.get("mlflow_run_id") or ""))
+    return normalized
+
+
+def run_dir_checkpoint_rows(run_root: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    if not run_root.exists():
+        return rows
+    for result_path in sorted(run_root.rglob("training_result.json")):
+        run_dir = result_path.parent
+        training_result = read_json(result_path, default={}) or {}
+        trace = trace_for_run_dir(run_dir)
+        if not looks_like_cuttings(trace, training_result, run_dir):
+            continue
+        checkpoint_path = discover_checkpoint_file(run_dir, training_result)
+        if checkpoint_path is None:
+            continue
+        last_metrics = training_result.get("last_epoch_metrics") or {}
+        model_cfg = trace.get("model") if isinstance(trace.get("model"), dict) else {}
+        train_cfg = trace.get("train") if isinstance(trace.get("train"), dict) else {}
+        preprocess_cfg = trace.get("preprocess") if isinstance(trace.get("preprocess"), dict) else {}
+        row = {
+            "source": "run_dir",
+            "mlflow_experiment": ((trace.get("mlflow") or {}) if isinstance(trace.get("mlflow"), dict) else {}).get("experiment", ""),
+            "mlflow_run_id": ((training_result.get("mlflow") or {}) if isinstance(training_result.get("mlflow"), dict) else {}).get("run_id", ""),
+            "run_name": trace.get("experiment_id") or run_dir.name,
+            "checkpoint_path_or_uri": str(checkpoint_path),
+            "model_name": model_cfg.get("name") or training_result.get("model_name") or "",
+            "architecture": model_cfg.get("architecture", ""),
+            "input_bands": json.dumps(model_cfg.get("input_bands") or [1, 2, 3, 4]),
+            "tile_size": preprocess_cfg.get("tile_size") or train_cfg.get("patch_size") or "",
+            "stride": preprocess_cfg.get("stride") or "",
+            "loss": (train_cfg.get("loss") or {}).get("name") if isinstance(train_cfg.get("loss"), dict) else train_cfg.get("loss", ""),
+            "lr": train_cfg.get("learning_rate", ""),
+            "old_val_pixel_f1": training_result.get("best_val_pixel_f1_best_threshold")
+            or training_result.get("best_val_pixel_f1")
+            or metric_value(last_metrics, "val/pixel_f1_best_threshold", "val/pixel_f1"),
+            "old_val_pixel_iou": metric_value(last_metrics, "val/pixel_iou_best_threshold", "val/pixel_iou"),
+            "old_object_f1": metric_value(last_metrics, "val/object_f1", "object_f1"),
+            "old_best_epoch": training_result.get("best_epoch", ""),
+            "old_dataset_info": json.dumps(
+                {
+                    "train_tile_count": training_result.get("train_tile_count"),
+                    "val_tile_count": training_result.get("val_tile_count"),
+                    "train_positive_tiles": training_result.get("train_positive_tiles"),
+                    "val_positive_tiles": training_result.get("val_positive_tiles"),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            "artifact_exists": checkpoint_path.exists(),
+            "checkpoint_loadable": "",
+            "notes": "",
+        }
+        row["checkpoint_id"] = checkpoint_id_for(str(checkpoint_path), str(row["mlflow_run_id"] or run_dir.name))
+        rows.append(row)
+    return rows
+
+
+def mlflow_tracking_base(mlflow_uri: str) -> str:
+    return mlflow_uri.rstrip("/")
+
+
+def mlflow_get_json(mlflow_uri: str, path: str, query: dict[str, Any] | None = None) -> dict[str, Any]:
+    if not mlflow_uri:
+        return {}
+    url = mlflow_tracking_base(mlflow_uri) + path
+    if query:
+        encoded = urllib.parse.urlencode({key: value for key, value in query.items() if value is not None})
+        url = f"{url}?{encoded}"
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"Accept": "application/json"}), timeout=30) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return {}
+
+
+def mlflow_post_json(mlflow_uri: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    if not mlflow_uri:
+        return {}
+    url = mlflow_tracking_base(mlflow_uri) + path
+    body = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(url, data=body, headers={"Accept": "application/json", "Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return {}
+
+
+def mlflow_list_checkpoint_artifacts(mlflow_uri: str, run_id: str, path: str = "", depth: int = 0) -> list[str]:
+    if depth > 4:
+        return []
+    payload = mlflow_get_json(mlflow_uri, "/api/2.0/mlflow/artifacts/list", {"run_id": run_id, "path": path or None})
+    result: list[str] = []
+    for item in payload.get("files") or []:
+        artifact_path = str(item.get("path") or "")
+        if item.get("is_dir"):
+            result.extend(mlflow_list_checkpoint_artifacts(mlflow_uri, run_id, artifact_path, depth + 1))
+        elif artifact_path.lower().endswith((".pt", ".pth")):
+            result.append(artifact_path)
+    return result
+
+
+def mlflow_checkpoint_rows(mlflow_uri: str) -> list[dict[str, Any]]:
+    experiments = mlflow_get_json(mlflow_uri, "/api/2.0/mlflow/experiments/search", {"max_results": 200}).get("experiments") or []
+    rows: list[dict[str, Any]] = []
+    for experiment in experiments:
+        name = str(experiment.get("name") or "")
+        if not any(marker in name.lower() for marker in ("deforest", "cutting", "clearcut")):
+            continue
+        experiment_id = str(experiment.get("experiment_id") or "")
+        runs_payload = mlflow_post_json(
+            mlflow_uri,
+            "/api/2.0/mlflow/runs/search",
+            {
+                "experiment_ids": [experiment_id],
+                "max_results": 50,
+                "order_by": ["metrics.`val/pixel_f1_best_threshold` DESC", "metrics.`val/pixel_f1` DESC"],
+            },
+        )
+        for run in runs_payload.get("runs") or []:
+            info = run.get("info") or {}
+            data = run.get("data") or {}
+            params = {item.get("key"): item.get("value") for item in data.get("params") or []}
+            metrics = {item.get("key"): item.get("value") for item in data.get("metrics") or []}
+            checkpoint_path = (
+                params.get("train.initial_checkpoint_path")
+                or params.get("checkpoint_path")
+                or params.get("model.checkpoint_path")
+                or ""
+            )
+            artifact_path = ""
+            if not checkpoint_path:
+                artifacts = mlflow_list_checkpoint_artifacts(mlflow_uri, str(info.get("run_id") or ""))
+                artifact_path = artifacts[0] if artifacts else ""
+                checkpoint_path = f"runs:/{info.get('run_id')}/{artifact_path}" if artifact_path else ""
+            if not checkpoint_path:
+                continue
+            row = {
+                "source": "mlflow",
+                "mlflow_experiment": name,
+                "mlflow_run_id": info.get("run_id", ""),
+                "run_name": info.get("run_name") or params.get("mlflow.runName") or "",
+                "checkpoint_path_or_uri": checkpoint_path,
+                "model_name": params.get("model.name") or params.get("model_name") or "",
+                "architecture": params.get("model.architecture") or "",
+                "input_bands": params.get("model.input_bands") or "[1, 2, 3, 4]",
+                "tile_size": params.get("preprocess.tile_size") or params.get("train.patch_size") or "",
+                "stride": params.get("preprocess.stride") or "",
+                "loss": params.get("train.loss") or "",
+                "lr": params.get("train.learning_rate") or "",
+                "old_val_pixel_f1": metric_value(metrics, "val/pixel_f1_best_threshold", "val/pixel_f1"),
+                "old_val_pixel_iou": metric_value(metrics, "val/pixel_iou_best_threshold", "val/pixel_iou"),
+                "old_object_f1": metric_value(metrics, "val/object_f1", "object_f1"),
+                "old_best_epoch": params.get("best_epoch") or "",
+                "old_dataset_info": "",
+                "artifact_exists": Path(str(checkpoint_path)).exists() or bool(artifact_path),
+                "checkpoint_loadable": "",
+                "notes": f"mlflow_artifact={artifact_path}" if artifact_path else "",
+            }
+            row["checkpoint_id"] = checkpoint_id_for(str(checkpoint_path), str(row["mlflow_run_id"]))
+            rows.append(row)
+    return rows
+
+
+def validate_checkpoint(row: dict[str, Any], api_container: str) -> dict[str, Any]:
+    path = str(row.get("checkpoint_path_or_uri") or "")
+    model_name = str(row.get("model_name") or "")
+    if not path or not Path(path).exists():
+        row["checkpoint_loadable"] = False
+        row["notes"] = "; ".join(filter(None, [str(row.get("notes") or ""), "checkpoint file missing or not local"]))
+        return row
+    if not model_name:
+        row["checkpoint_loadable"] = False
+        row["notes"] = "; ".join(filter(None, [str(row.get("notes") or ""), "model_name is unknown"]))
+        return row
+    script = (
+        "import json, torch; "
+        "from src.real_train import _build_model; "
+        f"path={path!r}; model_name={model_name!r}; "
+        "payload=torch.load(path, map_location='cpu'); "
+        "state=payload.get('model_state_dict') if isinstance(payload, dict) else payload; "
+        "state=state or (payload.get('state_dict') if isinstance(payload, dict) else None); "
+        "model=_build_model(model_name, in_channels=4, out_channels=1, base_channels=8); "
+        "incomp=model.load_state_dict(state, strict=True); "
+        "out=model(torch.zeros(1,4,32,32)); "
+        "print(json.dumps({'ok': True, 'missing': len(incomp.missing_keys), 'unexpected': len(incomp.unexpected_keys), 'out_shape': list(out.shape)}))"
+    )
+    output = run_command(["docker", "exec", api_container, "python", "-c", script], timeout=120)
+    payload = read_json_from_string(output)
+    row["checkpoint_loadable"] = bool(payload.get("ok")) if isinstance(payload, dict) else False
+    if payload:
+        row["notes"] = "; ".join(
+            filter(
+                None,
+                [
+                    str(row.get("notes") or ""),
+                    f"missing={payload.get('missing', '')}",
+                    f"unexpected={payload.get('unexpected', '')}",
+                ],
+            )
+        )
+    else:
+        row["notes"] = "; ".join(filter(None, [str(row.get("notes") or ""), "checkpoint validation failed"]))
+    return row
+
+
+def read_json_from_string(text: str) -> dict[str, Any]:
+    if not text:
+        return {}
+    try:
+        return json.loads(text.splitlines()[-1])
+    except Exception:
+        return {}
+
+
+def materialize_checkpoint(row: dict[str, Any], args: argparse.Namespace, work_dir: Path) -> dict[str, Any]:
+    path = str(row.get("checkpoint_path_or_uri") or "")
+    if not path.startswith("runs:/"):
+        return row
+    parts = path[len("runs:/") :].split("/", 1)
+    if len(parts) != 2:
+        row["notes"] = "; ".join(filter(None, [str(row.get("notes") or ""), "invalid runs:/ checkpoint uri"]))
+        return row
+    run_id, artifact_path = parts
+    dst = work_dir / "checkpoints" / run_id
+    dst.mkdir(parents=True, exist_ok=True)
+    tracking_stmt = ""
+    if args.mlflow_container_uri:
+        tracking_stmt = f"mlflow.set_tracking_uri({args.mlflow_container_uri!r}); "
+    script = (
+        "import mlflow; "
+        f"{tracking_stmt}"
+        f"p=mlflow.artifacts.download_artifacts(run_id={run_id!r}, artifact_path={artifact_path!r}, dst_path={str(dst)!r}); "
+        "print(p)"
+    )
+    output = run_command(["docker", "exec", args.api_container, "python", "-c", script], timeout=300)
+    downloaded = Path(output.splitlines()[-1].strip()) if output else None
+    if downloaded and downloaded.exists():
+        row["checkpoint_path_or_uri"] = str(downloaded)
+        row["artifact_exists"] = True
+        row["notes"] = "; ".join(filter(None, [str(row.get("notes") or ""), f"downloaded_from={path}"]))
+    else:
+        row["notes"] = "; ".join(filter(None, [str(row.get("notes") or ""), f"download_failed={path}"]))
+    return row
+
+
+def discover_previous_checkpoints(args: argparse.Namespace, work_dir: Path, state: dict[str, Any]) -> list[dict[str, Any]]:
+    if state.get("checkpoint_discovery_done") and (work_dir / "previous_checkpoints.csv").exists():
+        rows_payload = read_json(work_dir / "previous_checkpoints.json", default=[]) or []
+        return [row for row in rows_payload if isinstance(row, dict)]
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in [*run_dir_checkpoint_rows(Path(args.run_root)), *mlflow_checkpoint_rows(args.mlflow_uri)]:
+        normalized = normalize_previous_checkpoint_row(row)
+        key = str(normalized.get("checkpoint_path_or_uri") or normalized.get("mlflow_run_id"))
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        rows.append(normalized)
+    rows.sort(
+        key=lambda row: (
+            float(row.get("old_val_pixel_f1") or 0.0),
+            float(row.get("old_object_f1") or 0.0),
+        ),
+        reverse=True,
+    )
+    validated: list[dict[str, Any]] = []
+    for row in rows[: max(1, int(args.previous_checkpoint_limit) * 3)]:
+        row = materialize_checkpoint(row, args, work_dir)
+        validated.append(validate_checkpoint(row, args.api_container))
+    validated.sort(
+        key=lambda row: (
+            bool(row.get("checkpoint_loadable")),
+            float(row.get("old_val_pixel_f1") or 0.0),
+            float(row.get("old_object_f1") or 0.0),
+        ),
+        reverse=True,
+    )
+    selected = validated[: max(1, int(args.previous_checkpoint_limit))]
+    write_json(work_dir / "previous_checkpoints.json", selected)
+    with (work_dir / "previous_checkpoints.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=PREVIOUS_CHECKPOINT_FIELDS)
+        writer.writeheader()
+        for row in selected:
+            writer.writerow({field: row.get(field, "") for field in PREVIOUS_CHECKPOINT_FIELDS})
+    state["checkpoint_discovery_done"] = True
+    state["previous_checkpoint_count"] = len(selected)
+    return selected
 
 
 def base_trace(experiment_id: str, snapshot: dict[str, Any], experiment_name: str, *, max_epochs: int, dry_run: bool = False) -> dict[str, Any]:
@@ -397,6 +808,111 @@ def build_tuning_trace(candidate: dict[str, Any], snapshot: dict[str, Any], expe
     return trace
 
 
+def build_checkpoint_reeval_trace(checkpoint: dict[str, Any], snapshot: dict[str, Any], experiment_name: str) -> dict[str, Any]:
+    checkpoint_id = str(checkpoint.get("checkpoint_id") or checkpoint_id_for(str(checkpoint.get("checkpoint_path_or_uri") or ""), str(checkpoint.get("mlflow_run_id") or "")))
+    experiment_id = f"cuttings_reeval_{utc_stamp()}_{checkpoint_id}".replace(".", "p")
+    tile_size = int(float(checkpoint.get("tile_size") or 512))
+    stride = int(float(checkpoint.get("stride") or tile_size))
+    model_name = str(checkpoint.get("model_name") or "tiny_unet_4ch")
+    trace = base_trace(experiment_id, snapshot, experiment_name, max_epochs=0)
+    trace["preprocess"].update({"tile_size": tile_size, "stride": stride})
+    trace["train"].update(
+        {
+            "mode": "eval_only",
+            "max_epochs": 0,
+            "epochs": 0,
+            "augmentation_level": 0,
+            "learning_rate": 0.0,
+            "weight_decay": 0.0,
+            "initial_checkpoint_path": str(checkpoint.get("checkpoint_path_or_uri") or ""),
+            "checkpoint_source_run_id": str(checkpoint.get("mlflow_run_id") or ""),
+            "checkpoint_source_metric": checkpoint.get("old_val_pixel_f1") or "",
+            "checkpoint_finetune": False,
+            "initial_checkpoint_strict": True,
+            "max_train_batches": None,
+            "max_val_batches": None,
+        }
+    )
+    trace["model"]["name"] = model_name
+    trace["params"].update(
+        {
+            "tuning.phase": "checkpoint_reeval",
+            "tuning.hypothesis": "Re-evaluate a previous cuttings checkpoint on the fresh MLMarkup validation split before fine-tuning.",
+            "checkpoint.parent_run_id": str(checkpoint.get("mlflow_run_id") or ""),
+            "checkpoint.path": str(checkpoint.get("checkpoint_path_or_uri") or ""),
+            "checkpoint.loaded": bool(checkpoint.get("checkpoint_loadable")),
+            "checkpoint.id": checkpoint_id,
+            "checkpoint.old_val_pixel_f1": checkpoint.get("old_val_pixel_f1") or "",
+        }
+    )
+    return trace
+
+
+def build_finetune_trace(parent: dict[str, Any], snapshot: dict[str, Any], experiment_name: str, candidate: dict[str, Any]) -> dict[str, Any]:
+    checkpoint_id = str(parent.get("checkpoint_id") or parent.get("parent_checkpoint_id") or "checkpoint")
+    model_name = str(parent.get("model_name") or candidate.get("model_name") or "tiny_unet_4ch")
+    short = f"{checkpoint_id}_{model_name}_t{candidate['tile_size']}_s{candidate['stride']}_lr{candidate['lr']}_e{candidate['max_epochs']}"
+    experiment_id = f"cuttings_ft_{utc_stamp()}_{short}".replace(".", "p")
+    trace = base_trace(experiment_id, snapshot, experiment_name, max_epochs=int(candidate["max_epochs"]))
+    trace["preprocess"].update({"tile_size": int(candidate["tile_size"]), "stride": int(candidate["stride"])})
+    trace["train"].update(
+        {
+            "mode": "train",
+            "batch_size": int(candidate["batch_size"]),
+            "augmentation_level": int(candidate["augmentation_level"]),
+            "learning_rate": float(candidate["lr"]),
+            "weight_decay": float(candidate["weight_decay"]),
+            "scheduler": str(candidate["scheduler"]),
+            "loss": {"name": str(candidate["loss"])},
+            "initial_checkpoint_path": str(parent.get("checkpoint_path_or_uri") or parent.get("parent_checkpoint_path") or ""),
+            "checkpoint_source_run_id": str(parent.get("mlflow_run_id") or parent.get("parent_run_id") or ""),
+            "checkpoint_source_metric": parent.get("new_val_pixel_f1") or parent.get("old_val_pixel_f1") or "",
+            "checkpoint_finetune": True,
+            "initial_checkpoint_strict": True,
+            "max_train_batches": None,
+            "max_val_batches": None,
+        }
+    )
+    trace["model"]["name"] = model_name
+    trace["params"].update(
+        {
+            "tuning.phase": str(candidate.get("phase") or "short_finetune"),
+            "tuning.hypothesis": str(candidate["hypothesis"]),
+            "tuning.parent_checkpoint": str(parent.get("checkpoint_path_or_uri") or parent.get("parent_checkpoint_path") or ""),
+            "tuning.parent_run_id": str(parent.get("mlflow_run_id") or parent.get("parent_run_id") or ""),
+            "checkpoint.parent_run_id": str(parent.get("mlflow_run_id") or parent.get("parent_run_id") or ""),
+            "checkpoint.path": str(parent.get("checkpoint_path_or_uri") or parent.get("parent_checkpoint_path") or ""),
+            "checkpoint.id": checkpoint_id,
+            "checkpoint.loaded": True,
+        }
+    )
+    return trace
+
+
+def short_finetune_candidates(parent: dict[str, Any]) -> list[dict[str, Any]]:
+    tile_size = int(float(parent.get("tile_size") or 512))
+    stride = int(float(parent.get("stride") or tile_size))
+    model_name = str(parent.get("model_name") or "tiny_unet_4ch")
+    return [
+        {
+            "kind": "fine_tune",
+            "phase": "short_finetune",
+            "model_name": model_name,
+            "tile_size": tile_size,
+            "stride": stride,
+            "augmentation_level": 1,
+            "loss": "bce_dice",
+            "lr": lr,
+            "weight_decay": wd,
+            "scheduler": "cosine",
+            "max_epochs": 15,
+            "batch_size": 2,
+            "hypothesis": f"Short fine-tune from checkpoint {parent.get('checkpoint_id')} with lr={lr} wd={wd}.",
+        }
+        for lr, wd in ((1e-5, 1e-5), (2e-5, 1e-5), (5e-5, 1e-4))
+    ]
+
+
 def load_state(work_dir: Path) -> dict[str, Any]:
     return read_json(work_dir / "tuning_state.json", default={}) or {}
 
@@ -406,7 +922,23 @@ def save_state(work_dir: Path, state: dict[str, Any]) -> None:
     write_json(work_dir / "tuning_state.json", state)
 
 
-def fill_pending_queue(state: dict[str, Any], snapshot: dict[str, Any], experiment_name: str, pending_size: int) -> None:
+def top_reevaluated_checkpoints(work_dir: Path, limit: int = 3) -> list[dict[str, Any]]:
+    rows = read_json(work_dir / "checkpoint_reeval_leaderboard.json", default=[]) or []
+    valid = [row for row in rows if row.get("valid_status") == "valid"]
+    valid.sort(key=lambda row: float(row.get("new_val_pixel_f1") or 0.0), reverse=True)
+    return valid[:limit]
+
+
+def fill_pending_queue(
+    state: dict[str, Any],
+    snapshot: dict[str, Any],
+    experiment_name: str,
+    pending_size: int,
+    previous_checkpoints: list[dict[str, Any]],
+    *,
+    start_from_checkpoints: bool,
+    work_dir: Path,
+) -> None:
     active = state.setdefault("active", [])
     pending = state.setdefault("pending", [])
     if state.get("diagnostic_failed"):
@@ -419,6 +951,43 @@ def fill_pending_queue(state: dict[str, Any], snapshot: dict[str, Any], experime
     if snapshot.get("dirty"):
         state["paused_reason"] = "MLMarkup is dirty; full tuning is paused after diagnostic."
         return
+    if start_from_checkpoints:
+        active_or_pending_reeval = any(item.get("kind") == "checkpoint_reeval" for item in active + pending)
+        if not state.get("checkpoint_reeval_queued"):
+            loadable = [row for row in previous_checkpoints if str(row.get("checkpoint_loadable")).lower() in {"true", "1"}]
+            if not loadable:
+                state["paused_reason"] = "No loadable previous checkpoints found; falling back to baseline search."
+            else:
+                for checkpoint in loadable[: max(1, int(state.get("previous_checkpoint_limit") or 5))]:
+                    trace = build_checkpoint_reeval_trace(checkpoint, snapshot, experiment_name)
+                    pending.append(
+                        {
+                            "kind": "checkpoint_reeval",
+                            "experiment_id": trace["experiment_id"],
+                            "trace": trace,
+                            "checkpoint": checkpoint,
+                            "hypothesis": trace["params"]["tuning.hypothesis"],
+                        }
+                    )
+                state["checkpoint_reeval_queued"] = True
+                return
+        if state.get("checkpoint_reeval_queued") and not state.get("checkpoint_reeval_done") and not active_or_pending_reeval:
+            state["checkpoint_reeval_done"] = True
+        if state.get("checkpoint_reeval_queued") and not state.get("checkpoint_reeval_done"):
+            return
+        if state.get("checkpoint_reeval_done") and not state.get("finetune_queue_seeded"):
+            parents = top_reevaluated_checkpoints(work_dir, limit=3)
+            if not parents:
+                state["paused_reason"] = "No valid checkpoint re-evaluation result; falling back to baseline search."
+            else:
+                for parent in parents:
+                    for candidate in short_finetune_candidates(parent):
+                        trace = build_finetune_trace(parent, snapshot, experiment_name, candidate)
+                        candidate["trace"] = trace
+                        candidate["parent_checkpoint"] = parent
+                        pending.append(candidate)
+                state["finetune_queue_seeded"] = True
+                return
     library = candidate_library()
     cursor = int(state.get("candidate_cursor") or 0)
     while len(pending) < pending_size and cursor < len(library):
@@ -507,6 +1076,8 @@ def evaluate_run(work_dir: Path, active: dict[str, Any], status: dict[str, Any])
     mlflow_info = status.get("mlflow") or summary.get("mlflow") or training_result.get("mlflow") or {}
     candidate = active.get("candidate") or {}
     is_diagnostic = active.get("kind") == "diagnostic"
+    is_checkpoint_reeval = active.get("kind") == "checkpoint_reeval"
+    is_full_training = not is_diagnostic and not is_checkpoint_reeval
     errors: list[str] = []
     warnings: list[str] = []
     state = str(status.get("state") or summary.get("status") or "").lower()
@@ -520,7 +1091,7 @@ def evaluate_run(work_dir: Path, active: dict[str, Any], status: dict[str, Any])
     if not history:
         errors.append("history missing")
     train_cfg = trace.get("train") or {}
-    if not is_diagnostic and (train_cfg.get("max_train_batches") is not None or train_cfg.get("max_val_batches") is not None):
+    if is_full_training and (train_cfg.get("max_train_batches") is not None or train_cfg.get("max_val_batches") is not None):
         errors.append("full tuning run has max_train_batches/max_val_batches")
     train_tile_count = int(training_result.get("train_tile_count") or dataset_report.get("train_tile_count") or 0)
     val_tile_count = int(training_result.get("val_tile_count") or dataset_report.get("val_tile_count") or 0)
@@ -549,28 +1120,37 @@ def evaluate_run(work_dir: Path, active: dict[str, Any], status: dict[str, Any])
     median_epoch_duration = training_result.get("epoch_duration", {}).get("median_sec") if isinstance(training_result.get("epoch_duration"), dict) else None
     if median_epoch_duration is None:
         median_epoch_duration = median(epoch_durations)
-    if median_epoch_duration is not None and float(median_epoch_duration) < 10.0:
+    if is_full_training and median_epoch_duration is not None and float(median_epoch_duration) < 10.0:
         errors.append(f"median epoch duration below guard: {median_epoch_duration}")
     best_epoch = int(float(best_row.get("epoch", training_result.get("best_epoch") or 0) or 0))
     max_epochs = int(train_cfg.get("max_epochs") or train_cfg.get("epochs") or 0)
-    if not is_diagnostic:
+    if is_full_training:
         if best_epoch <= 5:
             warnings.append("best epoch is <= 5")
         if max_epochs >= 50 and best_epoch < 10:
             warnings.append("best epoch is < 10 for a long run")
+        if max_epochs >= 50 and best_epoch < max(1, int(max_epochs * 0.1)):
+            warnings.append("best epoch is within the first 10% of a long run")
         if val_positive_tiles < 10:
             warnings.append("validation positive tile count is very low")
+    if is_checkpoint_reeval and best_pixel_f1 is not None and best_pixel_f1 > 0.8:
+        warnings.append("previous checkpoint has unusually high fresh validation F1; verify leakage")
     valid_status = "invalid" if errors else ("suspicious" if warnings else "valid")
+    parent_checkpoint = candidate.get("parent_checkpoint") or candidate.get("checkpoint") or {}
+    object_f1 = best_row.get("val/object_f1", (training_result.get("postprocess_metrics") or {}).get("val_object_f1", ""))
     row = {
         "rank": "",
         "run_id": run_id,
         "mlflow_run_id": (mlflow_info or {}).get("run_id", ""),
+        "parent_checkpoint_id": parent_checkpoint.get("checkpoint_id", ""),
+        "parent_checkpoint_path": parent_checkpoint.get("checkpoint_path_or_uri", ""),
         "status": state,
         "valid_status": valid_status,
         "val_pixel_f1": best_pixel_f1 if best_pixel_f1 is not None else "",
         "val_pixel_iou": best_row.get("val/pixel_iou_best_threshold", best_row.get("val/pixel_iou", "")),
         "val_precision": best_row.get("val/precision_best_threshold", best_row.get("val/precision", "")),
         "val_recall": best_row.get("val/recall_best_threshold", best_row.get("val/recall", "")),
+        "object_f1": object_f1,
         "best_epoch": best_epoch,
         "best_threshold": best_row.get("val/best_threshold", best_row.get("val/threshold", "")),
         "epoch_duration_median_sec": median_epoch_duration if median_epoch_duration is not None else "",
@@ -595,6 +1175,7 @@ def evaluate_run(work_dir: Path, active: dict[str, Any], status: dict[str, Any])
         "errors": errors,
         "warnings": warnings,
         "leaderboard_row": row,
+        "parent_checkpoint": parent_checkpoint,
         "mlflow": mlflow_info,
         "training_result": {
             "best_epoch": best_epoch,
@@ -602,6 +1183,7 @@ def evaluate_run(work_dir: Path, active: dict[str, Any], status: dict[str, Any])
             "epoch_duration_median_sec": median_epoch_duration,
             "train_tile_count": train_tile_count,
             "val_tile_count": val_tile_count,
+            "val_scene_count": training_result.get("val_scene_count") or dataset_report.get("val_scene_count"),
             "train_positive_tiles": train_positive_tiles,
             "val_positive_tiles": val_positive_tiles,
         },
@@ -653,6 +1235,11 @@ def rebuild_leaderboard(work_dir: Path) -> tuple[list[dict[str, Any]], list[dict
         writer.writeheader()
         for row in invalid_rows:
             writer.writerow({field: row.get(field, "") for field in LEADERBOARD_FIELDS})
+    with (work_dir / "suspicious_runs.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=LEADERBOARD_FIELDS)
+        writer.writeheader()
+        for row in suspicious_rows:
+            writer.writerow({field: row.get(field, "") for field in LEADERBOARD_FIELDS})
     lines = ["# Cuttings Tuning Leaderboard", ""]
     if leaderboard:
         lines.append("| rank | run_id | validity | val_pixel_f1 | threshold | model | tile/stride | loss | notes |")
@@ -666,6 +1253,45 @@ def rebuild_leaderboard(work_dir: Path) -> tuple[list[dict[str, Any]], list[dict
         lines.append("No valid or suspicious runs yet.")
     (work_dir / "leaderboard.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return leaderboard, invalid_rows
+
+
+def rebuild_checkpoint_reeval_leaderboard(work_dir: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for path in sorted((work_dir / "runs").glob("*.decision.json")):
+        decision = read_json(path, default={})
+        if not decision or decision.get("kind") != "checkpoint_reeval":
+            continue
+        parent = decision.get("parent_checkpoint") or {}
+        row = decision.get("leaderboard_row") or {}
+        training = decision.get("training_result") or {}
+        rows.append(
+            {
+                "checkpoint_id": parent.get("checkpoint_id") or row.get("parent_checkpoint_id") or "",
+                "old_val_pixel_f1": parent.get("old_val_pixel_f1", ""),
+                "new_val_pixel_f1": row.get("val_pixel_f1", ""),
+                "new_val_pixel_iou": row.get("val_pixel_iou", ""),
+                "new_precision": row.get("val_precision", ""),
+                "new_recall": row.get("val_recall", ""),
+                "new_object_f1": row.get("object_f1", ""),
+                "threshold": row.get("best_threshold", ""),
+                "val_scene_count": training.get("val_scene_count", ""),
+                "val_positive_tiles": row.get("val_positive_tiles", ""),
+                "duration": row.get("epoch_duration_median_sec", ""),
+                "valid_status": decision.get("valid_status", ""),
+                "notes": row.get("notes", ""),
+                "checkpoint_path_or_uri": parent.get("checkpoint_path_or_uri", ""),
+                "model_name": parent.get("model_name", ""),
+                "mlflow_run_id": parent.get("mlflow_run_id", ""),
+            }
+        )
+    rows.sort(key=lambda row: float(row.get("new_val_pixel_f1") or 0.0), reverse=True)
+    write_json(work_dir / "checkpoint_reeval_leaderboard.json", rows)
+    with (work_dir / "checkpoint_reeval_leaderboard.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=CHECKPOINT_REEVAL_FIELDS)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({field: row.get(field, "") for field in CHECKPOINT_REEVAL_FIELDS})
+    return rows
 
 
 def collect_gpu_rows() -> list[dict[str, Any]]:
@@ -762,6 +1388,12 @@ def loop(args: argparse.Namespace) -> None:
     state.setdefault("pending", [])
     state.setdefault("completed", [])
     state.setdefault("created_at", datetime.now(timezone.utc).isoformat())
+    if args.start_from_checkpoints and not state.get("checkpoint_first_initialized"):
+        state["pending"] = [item for item in state.get("pending", []) if item.get("kind") in {"diagnostic", "checkpoint_reeval", "fine_tune"}]
+        state["candidate_cursor"] = 0
+        state["checkpoint_first_initialized"] = True
+    state["previous_checkpoint_limit"] = int(args.previous_checkpoint_limit)
+    previous_checkpoints = discover_previous_checkpoints(args, work_dir, state) if args.start_from_checkpoints else []
     while True:
         if (work_dir / "STOP_TUNING").exists():
             state["stopped_at"] = datetime.now(timezone.utc).isoformat()
@@ -770,6 +1402,8 @@ def loop(args: argparse.Namespace) -> None:
             print_progress(work_dir, state, *rebuild_leaderboard(work_dir))
             return
         snapshot = snapshot_mlmarkup(work_dir, Path(args.mlmarkup_repo), args.class_dir, args.scenes_file, args.annotation_file)
+        if args.start_from_checkpoints:
+            previous_checkpoints = discover_previous_checkpoints(args, work_dir, state)
         active_next: list[dict[str, Any]] = []
         for active in state.get("active", []):
             run_id = str(active.get("run_id"))
@@ -800,7 +1434,15 @@ def loop(args: argparse.Namespace) -> None:
             else:
                 active_next.append(active)
         state["active"] = active_next
-        fill_pending_queue(state, snapshot, args.experiment_name, int(args.pending_queue_size))
+        fill_pending_queue(
+            state,
+            snapshot,
+            args.experiment_name,
+            int(args.pending_queue_size),
+            previous_checkpoints,
+            start_from_checkpoints=bool(args.start_from_checkpoints),
+            work_dir=work_dir,
+        )
         while len(state["active"]) < int(args.max_active_train_runs) and state.get("pending") and not state.get("diagnostic_failed"):
             candidate = state["pending"].pop(0)
             if candidate.get("kind") == "diagnostic":
@@ -809,6 +1451,7 @@ def loop(args: argparse.Namespace) -> None:
             state["active"].append(active)
             print(json.dumps({"submitted": active}, ensure_ascii=False, sort_keys=True), flush=True)
         write_resource_log(work_dir, state.get("active", []), len(state.get("pending", [])))
+        rebuild_checkpoint_reeval_leaderboard(work_dir)
         leaderboard, rejected = rebuild_leaderboard(work_dir)
         print_progress(work_dir, state, leaderboard, rejected)
         save_state(work_dir, state)
@@ -824,10 +1467,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--class-dir", default="")
     parser.add_argument("--scenes-file", default="")
     parser.add_argument("--annotation-file", default="")
+    parser.add_argument("--run-root", default="/data/mlsystem/runs")
+    parser.add_argument("--mlflow-uri", default=os.getenv("MLFLOW_TRACKING_URI") or "http://127.0.0.1:5000/mlflow")
+    parser.add_argument("--mlflow-container-uri", default="")
+    parser.add_argument("--api-container", default="mlsystem-gpu-api")
     parser.add_argument("--experiment-name", default="mlsystem-cuttings-tuning")
     parser.add_argument("--work-dir", default="/data/mlsystem/tuning/cuttings")
     parser.add_argument("--max-active-train-runs", type=int, default=1)
     parser.add_argument("--pending-queue-size", type=int, default=3)
+    parser.add_argument("--previous-checkpoint-limit", type=int, default=5)
+    parser.add_argument("--start-from-checkpoints", action="store_true")
     parser.add_argument("--poll-sec", type=float, default=45.0)
     args = parser.parse_args(argv)
     if not args.token and args.token_file:

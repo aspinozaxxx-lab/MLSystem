@@ -442,8 +442,10 @@ def _configure_dropout(model: torch.nn.Module, dropout_p: Any) -> int:
 
 def _build_optimizer(model: torch.nn.Module, train_cfg: dict[str, Any]) -> torch.optim.Optimizer:
     name = str(train_cfg.get("optimizer") or train_cfg.get("optimizer_name") or "adamw").strip().lower()
-    lr = float(train_cfg.get("learning_rate") or 5e-4)
-    weight_decay = float(train_cfg.get("weight_decay") or 0.0)
+    lr_value = train_cfg.get("learning_rate")
+    weight_decay_value = train_cfg.get("weight_decay")
+    lr = float(5e-4 if lr_value in (None, "") else lr_value)
+    weight_decay = float(0.0 if weight_decay_value in (None, "") else weight_decay_value)
     if name in {"adamw", "adam_w"}:
         return torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     if name == "adam":
@@ -1640,6 +1642,12 @@ def run_real_train(
         batch_size = _auto_batch_size(model_name, patch_size, device)
     batch_size = max(1, int(batch_size))
     epochs = int(job.train.get("epochs") or job.train.get("max_epochs") or 20)
+    train_mode = str(job.train.get("mode") or job.train.get("train_mode") or "train").strip().lower()
+    eval_only = train_mode in {"eval_only", "evaluate_only", "checkpoint_reeval", "reeval"}
+    if eval_only:
+        if not initial_checkpoint_path:
+            raise RuntimeError("train.mode=eval_only requires train.initial_checkpoint_path")
+        epochs = 0
     scheduler = _build_scheduler(optimizer, job.train, epochs)
     loss_cfg = job.train.get("loss") if isinstance(job.train.get("loss"), dict) else {}
     if isinstance(job.train.get("loss"), str):
@@ -1648,16 +1656,20 @@ def run_real_train(
     grad_clip_norm = job.train.get("grad_clip_norm")
     objective_metric = str(job.train.get("objective_metric") or job.params.get("objective_metric") or "val/iou")
     maximize_objective = bool(job.train.get("maximize", job.params.get("maximize", True)))
+    learning_rate_value = job.train.get("learning_rate")
+    weight_decay_value = job.train.get("weight_decay")
     mlflow_run.log_params(
         {
             "freeze_batchnorm": freeze_batchnorm,
             "train.dropout_p": job.train.get("dropout_p", job.train.get("dropout")),
             "train.dropout_modules_updated": dropout_updated,
             "train.optimizer": str(job.train.get("optimizer") or job.train.get("optimizer_name") or "adamw"),
-            "train.learning_rate": float(job.train.get("learning_rate") or 5e-4),
-            "train.weight_decay": float(job.train.get("weight_decay") or 0.0),
+            "train.learning_rate": float(5e-4 if learning_rate_value in (None, "") else learning_rate_value),
+            "train.weight_decay": float(0.0 if weight_decay_value in (None, "") else weight_decay_value),
             "train.scheduler": str((job.train.get("scheduler") or {}).get("name") if isinstance(job.train.get("scheduler"), dict) else (job.train.get("scheduler") or job.train.get("scheduler_name") or "none")),
             "train.loss": loss_name,
+            "train.mode": train_mode,
+            "train.eval_only": eval_only,
             "train.loss_bce_weight": (loss_cfg or {}).get("bce_weight"),
             "train.loss_dice_weight": (loss_cfg or {}).get("dice_weight"),
             "train.loss_focal_weight": (loss_cfg or {}).get("focal_weight"),
@@ -1967,6 +1979,162 @@ def run_real_train(
     finally:
         train_trace.__exit__(None, None, None)
 
+    if eval_only:
+        eval_started = time.time()
+        model.eval()
+        val_loss_acc = WeightedLossAccumulator()
+        val_metric_acc = PixelMetricAccumulator(threshold=metric_threshold)
+        val_threshold_accs = {threshold: PixelMetricAccumulator(threshold=threshold) for threshold in metric_thresholds}
+        val_sample_rows: list[dict[str, Any]] = []
+        val_sample_payloads: list[dict[str, Any]] = []
+        val_batch_count = 0
+        with torch.no_grad():
+            val_dataset.set_epoch(0)
+            for batch_indices, x_cpu, y_cpu in iter_dataset_batches(
+                val_dataset,
+                batch_size,
+                shuffle=False,
+                seed=seed,
+            ):
+                val_batch_count += 1
+                x = x_cpu.to(device)
+                y = y_cpu.to(device)
+                logits = model(x)
+                components = _loss_components(logits, y, loss_cfg)
+                val_loss_acc.update({name: float(value.detach().item()) for name, value in components.items()}, weight=int(y.shape[0]))
+                val_metric_acc.update_from_logits(logits, y)
+                for accumulator in val_threshold_accs.values():
+                    accumulator.update_from_logits(logits, y)
+                if debug_enabled:
+                    _collect_val_debug_samples(
+                        batch_indices=batch_indices,
+                        x=x,
+                        y=y,
+                        logits=logits,
+                        val_sample_records=val_sample_records,
+                        threshold=metric_threshold,
+                        rows=val_sample_rows,
+                        payloads=val_sample_payloads,
+                        save_all=bool(metrics_debug_cfg.get("save_all_val_samples", True)),
+                    )
+        val_loss_values = val_loss_acc.averages("val")
+        val_metrics = val_metric_acc.metrics()
+        threshold_metrics = {threshold: accumulator.metrics() for threshold, accumulator in val_threshold_accs.items()}
+        best_threshold, best_threshold_metrics = max(
+            threshold_metrics.items(),
+            key=lambda item: (float(item[1]["pixel_f1"]), -abs(float(item[0]) - metric_threshold)),
+        )
+        val_object_metrics = _object_summary_from_sample_rows(val_sample_rows) if debug_enabled else {}
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        eval_duration_sec = round(time.time() - eval_started, 4)
+        row = {
+            "epoch": 0.0,
+            "train/loss": 0.0,
+            "train/loss_total": 0.0,
+            "train/loss_bce": 0.0,
+            "train/loss_dice": 0.0,
+            "train/loss_focal": 0.0,
+            "train/loss_tversky": 0.0,
+            "train/dice": 0.0,
+            "train/iou": 0.0,
+            "train/pixel_f1": 0.0,
+            "train/pixel_iou": 0.0,
+            "train/precision": 0.0,
+            "train/recall": 0.0,
+            "train/pixel_tp": 0.0,
+            "train/pixel_fp": 0.0,
+            "train/pixel_fn": 0.0,
+            "train/pixel_tn": 0.0,
+            "val/loss": val_loss_values.get("val/loss_total", 0.0),
+            "val/loss_total": val_loss_values.get("val/loss_total", 0.0),
+            "val/loss_bce": val_loss_values.get("val/loss_bce", 0.0),
+            "val/loss_dice": val_loss_values.get("val/loss_dice", 0.0),
+            "val/loss_focal": val_loss_values.get("val/loss_focal", 0.0),
+            "val/loss_tversky": val_loss_values.get("val/loss_tversky", 0.0),
+            "val/dice": float(val_metrics["pixel_f1"]),
+            "val/iou": float(val_metrics["pixel_iou"]),
+            "val/pixel_dice": float(val_metrics["pixel_f1"]),
+            "val/pixel_iou": float(val_metrics["pixel_iou"]),
+            "val/precision": float(val_metrics["pixel_precision"]),
+            "val/recall": float(val_metrics["pixel_recall"]),
+            "val/pixel_f1": float(val_metrics["pixel_f1"]),
+            "val/pixel_accuracy": float(val_metrics["pixel_accuracy"]),
+            "val/pixel_tp": float(val_metrics["pixel_tp"]),
+            "val/pixel_fp": float(val_metrics["pixel_fp"]),
+            "val/pixel_fn": float(val_metrics["pixel_fn"]),
+            "val/pixel_tn": float(val_metrics["pixel_tn"]),
+            "val/threshold": metric_threshold,
+            f"val/{metric_class_key}_pixel_f1": float(val_metrics["pixel_f1"]),
+            f"val/{metric_class_key}_pixel_precision": float(val_metrics["pixel_precision"]),
+            f"val/{metric_class_key}_pixel_recall": float(val_metrics["pixel_recall"]),
+            f"val/{metric_class_key}_pixel_iou": float(val_metrics["pixel_iou"]),
+            f"val/{metric_class_key}_gt_pixels": float(int(val_metrics["pixel_tp"]) + int(val_metrics["pixel_fn"])),
+            f"val/{metric_class_key}_pred_pixels": float(int(val_metrics["pixel_tp"]) + int(val_metrics["pixel_fp"])),
+            "learning_rate": 0.0,
+            "epoch_duration_sec": eval_duration_sec,
+            "train/epoch_duration_sec": 0.0,
+            "train/batches": 0.0,
+            "val/batches": float(val_batch_count),
+            "train/optimizer_steps": 0.0,
+        }
+        row.update(
+            {
+                "val/best_threshold": float(best_threshold),
+                "val/pixel_f1_best_threshold": float(best_threshold_metrics["pixel_f1"]),
+                "val/pixel_iou_best_threshold": float(best_threshold_metrics["pixel_iou"]),
+                "val/precision_best_threshold": float(best_threshold_metrics["pixel_precision"]),
+                "val/recall_best_threshold": float(best_threshold_metrics["pixel_recall"]),
+            }
+        )
+        for threshold, metrics_payload in threshold_metrics.items():
+            suffix = _threshold_metric_suffix(threshold)
+            row.update(
+                {
+                    f"val/pixel_f1_at_threshold_{suffix}": float(metrics_payload["pixel_f1"]),
+                    f"val/pixel_iou_at_threshold_{suffix}": float(metrics_payload["pixel_iou"]),
+                    f"val/precision_at_threshold_{suffix}": float(metrics_payload["pixel_precision"]),
+                    f"val/recall_at_threshold_{suffix}": float(metrics_payload["pixel_recall"]),
+                }
+            )
+        if val_object_metrics:
+            row.update(
+                {
+                    "val/object_tp": val_object_metrics["object_tp"],
+                    "val/object_fp": val_object_metrics["object_fp"],
+                    "val/object_fn": val_object_metrics["object_fn"],
+                    "val/object_precision": val_object_metrics["object_precision"],
+                    "val/object_recall": val_object_metrics["object_recall"],
+                    "val/object_f1": val_object_metrics["object_f1"],
+                    f"val/{metric_class_key}_object_precision": val_object_metrics["object_precision"],
+                    f"val/{metric_class_key}_object_recall": val_object_metrics["object_recall"],
+                    f"val/{metric_class_key}_object_f1": val_object_metrics["object_f1"],
+                    f"val/{metric_class_key}_gt_objects": val_object_metrics["gt_objects"],
+                    f"val/{metric_class_key}_pred_objects": val_object_metrics["pred_objects"],
+                }
+            )
+        row.update(
+            {
+                "epoch/pixel_f1": row["val/pixel_f1"],
+                "epoch/pixel_iou": row["val/pixel_iou"],
+                "epoch/sec": row["epoch_duration_sec"],
+            }
+        )
+        objective_value = float(row.get(objective_metric, row.get("val/iou", 0.0)))
+        row["objective/value"] = objective_value
+        if device.type == "cuda":
+            row["system/cuda_memory_allocated_mb"] = round(torch.cuda.memory_allocated(device) / (1024 * 1024), 3)
+            row["system/cuda_memory_reserved_mb"] = round(torch.cuda.memory_reserved(device) / (1024 * 1024), 3)
+            row["system/gpu_train_confirmed"] = 1.0
+        history.append(row)
+        logged_metrics = {key: value for key, value in row.items() if key != "epoch"}
+        mlflow_run.log_metrics(logged_metrics, step=0)
+        best_val_iou = row["val/iou"]
+        best_objective_value = objective_value
+        best_epoch = 0
+        best_state_dict = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
+        log_fn(job_log, f"real_train eval_only val_iou={row['val/iou']:.6f} duration={row['epoch_duration_sec']}")
+
     train_duration_sec = round(time.time() - train_started, 3)
     artifacts = _write_history(experiment_dir, history)
     checkpoint_path = experiment_dir / "tiny_unet_4ch.pt"
@@ -2161,7 +2329,7 @@ def run_real_train(
     }
     return {
         "status": "done",
-        "mode": "real_train",
+        "mode": "checkpoint_reeval" if eval_only else "real_train",
         "model_name": model_name,
         "device": str(device),
         "cuda_available": cuda_available,
@@ -2183,6 +2351,7 @@ def run_real_train(
         "best_objective_metric": objective_metric,
         "best_objective_value": best_objective_value,
         "best_val_pixel_f1": max((float(row.get("val/pixel_f1", 0.0)) for row in history), default=0.0),
+        "best_val_pixel_f1_best_threshold": max((float(row.get("val/pixel_f1_best_threshold", 0.0)) for row in history), default=0.0),
         "metrics_source_of_truth": "micro_global_pixel_counts",
         "metrics_threshold": metric_threshold,
         "metrics_debug_enabled": debug_enabled,

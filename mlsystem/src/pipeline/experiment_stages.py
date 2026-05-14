@@ -1039,6 +1039,7 @@ def _mlflow_tuning_metadata(params: dict[str, Any] | None) -> tuple[dict[str, st
         "tile_preparation.",
         "pipeline_runner.",
         "validity.",
+        "checkpoint.",
     )
     exact_keys = {"tuning"}
     tags: dict[str, str] = {}
