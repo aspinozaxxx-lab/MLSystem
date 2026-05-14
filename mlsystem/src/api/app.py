@@ -105,6 +105,89 @@ def run_summary_endpoint(run_id: str) -> dict[str, Any]:
     return run_summary(run_id, os.getenv("MLSYSTEM_AIRFLOW_STATE_DIR", "/data/mlsystem/airflow/status"))
 
 
+if str(os.getenv("MLSYSTEM_DEBUG_DATASET_ENDPOINTS") or "").lower() in {"1", "true", "yes", "on"}:
+
+    @app.post("/api/debug/virtual-dataset/preview")
+    def debug_virtual_dataset_preview_endpoint(request: dict[str, Any]) -> dict[str, Any]:
+        dataset_manifest = request.get("dataset_manifest")
+        annotation = request.get("annotation")
+        images_dir = request.get("images_dir")
+        if not dataset_manifest or not annotation or not images_dir:
+            raise HTTPException(status_code=400, detail="dataset_manifest, annotation, and images_dir are required")
+        try:
+            from ..data.virtual_tile_sampling import preview_from_manifest
+
+            return preview_from_manifest(
+                dataset_manifest=str(dataset_manifest),
+                annotation=str(annotation),
+                images_dir=str(images_dir),
+                config=request.get("config") or {},
+                max_scenes=request.get("max_scenes"),
+                max_records_preview=int(request.get("max_records_preview") or 20),
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail=f"{type(exc).__name__}: {exc}") from exc
+
+    @app.post("/api/debug/local-tile-report/preview")
+    def debug_local_tile_report_preview_endpoint(request: dict[str, Any]) -> dict[str, Any]:
+        images_dir = request.get("images_dir")
+        if not images_dir:
+            raise HTTPException(status_code=400, detail="images_dir is required")
+        try:
+            from ..data.local_tile_report import preview_local_tile_reports
+
+            return preview_local_tile_reports(
+                images_dir=str(images_dir),
+                tile_size=int(request.get("tile_size") or 768),
+                stride=int(request.get("stride") or 512),
+                stride_factors=[float(item) for item in (request.get("stride_factors") or [1.0, 0.5, 0.25])],
+                recursive=bool(request.get("recursive", False)),
+                max_scenes=request.get("max_scenes"),
+                max_records_preview=int(request.get("max_records_preview") or 20),
+                include_augmentation_catalog=bool(request.get("include_augmentation_catalog", False)),
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail=f"{type(exc).__name__}: {exc}") from exc
+
+    @app.post("/api/debug/annotated-tile-report/preview")
+    def debug_annotated_tile_report_preview_endpoint(request: dict[str, Any]) -> dict[str, Any]:
+        input_dir = request.get("input_dir")
+        if not input_dir:
+            raise HTTPException(status_code=400, detail="input_dir is required")
+        try:
+            from ..tile_preparation.report import preview_annotated_tile_report
+
+            return preview_annotated_tile_report(
+                input_dir=str(input_dir),
+                tile_size=int(request.get("tile_size") or 768),
+                stride=int(request.get("stride") or 512),
+                positive_stride_factor=float(request.get("positive_stride_factor") or 1.0),
+                hard_negative_stride_factor=float(request.get("hard_negative_stride_factor") or 1.0),
+                negative_stride_factor=float(request.get("negative_stride_factor") or 1.0),
+                min_positive_pixels=int(request.get("min_positive_pixels") or 1),
+                max_scenes=request.get("max_scenes"),
+                max_records_preview=int(request.get("max_records_preview") or 20),
+                include_annotation_summary=bool(request.get("include_annotation_summary", True)),
+                include_augmentation_catalog=bool(request.get("include_augmentation_catalog", False)),
+                annotation_crs=request.get("annotation_crs", "auto"),
+                allow_inferred_annotation_crs=bool(request.get("allow_inferred_annotation_crs", True)),
+                anchor_scene=request.get("anchor_scene"),
+                annotation_name=request.get("annotation"),
+                include_neighbors=bool(request.get("include_neighbors", False) or request.get("mosaic_enabled", False)),
+                mosaic_enabled=bool(request.get("mosaic_enabled", False)),
+                augmentation_level=request.get("augmentation_level"),
+                cutout_mask_mode=str(request.get("cutout_mask_mode") or "erase"),
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail=f"{type(exc).__name__}: {exc}") from exc
+
+
 @app.post("/api/v1/debug/run-stage-sync", response_model=JobStatusResponse, dependencies=[Depends(require_api_token)])
 def debug_run_stage_sync_endpoint(request: StageStartRequest, run_id: str, stage_name: str) -> JobStatusResponse:
     try:

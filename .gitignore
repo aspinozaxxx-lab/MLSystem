@@ -31,6 +31,9 @@ id_ed25519*
 /api/jobs/
 /status/
 /outputs/
+outputs/debug_virtual_tile_sampling/
+debug_outputs/
+local_s3_debug/
 /runs/
 /mlruns/
 mlsystem/storage/
