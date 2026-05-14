@@ -1,6 +1,6 @@
 # InferenceEngine
 
-InferenceEngine is a separate FastAPI service for pseudolabel inference. Airflow calls its API and receives ready artifacts instead of running pseudolabel domain logic inside `mlsystem`.
+InferenceEngine is a separate FastAPI service for pseudolabel inference. The MLSystem pipeline runner calls its API and receives ready artifacts instead of running pseudolabel domain logic inside `mlsystem`.
 
 ## Architecture
 
@@ -13,7 +13,7 @@ Pipeline:
 5. `block.ready`: dependency tracker releases a block when all expanded-window tiles are ready.
 6. `block.vectorize`: materialize expanded probability block, threshold/vectorize, clip to core.
 7. `scene.merge`: dissolve block GeoJSON, apply `merge_epsilon` and final area filter.
-8. `job.finalize`: write old-pipeline-compatible artifacts into Airflow run dir.
+8. `job.finalize`: write pipeline-compatible artifacts into the MLSystem run dir.
 
 The acceptance metric is:
 
@@ -88,7 +88,7 @@ Tile spool files are deleted after probability tile artifacts and checksums are 
 
 ## Compatibility Artifacts
 
-The finalizer writes the old Airflow artifact names into `run_dir`. Real probability data remains tile-backed under the InferenceEngine job tree; the legacy per-scene `npz_path` entries are compact placeholder files because downstream stages are validate-only for `pseudolabel.source=inference_engine`. This keeps validators compatible without writing multi-GB zero mosaics during 20-scene finalization.
+The finalizer writes the pipeline compatibility artifact names into `run_dir`. Real probability data remains tile-backed under the InferenceEngine job tree; the legacy per-scene `npz_path` entries are compact placeholder files because downstream stages are validate-only for `pseudolabel.source=inference_engine`. This keeps validators compatible without writing multi-GB zero mosaics during 20-scene finalization.
 
 ## API
 
@@ -110,13 +110,13 @@ The finalizer writes the old Airflow artifact names into `run_dir`. Real probabi
 
 Prometheus metrics include job status counters, active jobs, tiles/blocks done, Triton batch totals and latency, streaming overlap, spool bytes, preprocess pause/resume counters, per-queue ready/unacked/consumer counts, and dead-letter depth.
 
-## Airflow Integration
+## Pipeline Runner Integration
 
-Airflow does not model internal InferenceEngine stages. The only Airflow pseudolabel task is `inference_engine_pipeline`; it calls `POST /api/v1/jobs`, polls `GET /api/v1/jobs/{job_id}`, reads `GET /api/v1/jobs/{job_id}/artifacts`, and validates the final artifacts in the Airflow run directory.
+The MLSystem runner does not model internal InferenceEngine stages. The only pseudolabel stage is `inference_engine_pipeline`; it calls `POST /api/v1/jobs`, polls `GET /api/v1/jobs/{job_id}`, reads `GET /api/v1/jobs/{job_id}/artifacts`, and validates the final artifacts in the pipeline run directory.
 
-For production DAG runs, `mlsystem-api` passes the shared status directory `/data/mlsystem/airflow/status/<run_id>` as `run_dir`, so InferenceEngine writes compatibility artifacts directly where Airflow validators and summary stages expect them.
+For production runs, `mlsystem-api` passes `/data/mlsystem/runs/<run_id>` as `run_dir`, so InferenceEngine writes compatibility artifacts directly where validators and summary stages expect them.
 
-The InferenceEngine job itself fans out through RabbitMQ queues and worker containers. Stage transitions are visible through job events and queue metrics, not as Airflow tasks.
+The InferenceEngine job itself fans out through RabbitMQ queues and worker containers. Stage transitions are visible through job events and queue metrics.
 
 ## Testing
 

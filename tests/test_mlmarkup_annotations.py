@@ -5,13 +5,13 @@ import unittest
 from pathlib import Path
 
 from mlsystem.src.mlflow_adapter import _is_excluded_metric_key
-from mlsystem.src.pipeline.airflow_tasks import AirflowExperimentConfig, _build_airflow_job, _git_output
+from mlsystem.src.pipeline.experiment_stages import ExperimentStageConfig, _build_pipeline_job, _git_output
 from mlsystem.src.pipeline_config import PipelineConfig
 from mlsystem.src.storage.s3 import find_layout_files, read_s3_text
 
 
 class MLMarkupAnnotationTests(unittest.TestCase):
-    def test_airflow_conf_resolves_mlmarkup_annotation_source(self) -> None:
+    def test_pipeline_conf_resolves_mlmarkup_annotation_source(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp) / "MLMarkup"
             class_dir = repo / "Вырубки"
@@ -19,7 +19,7 @@ class MLMarkupAnnotationTests(unittest.TestCase):
             (class_dir / "deforestation.txt").write_text("scene_a.tif\n", encoding="utf-8")
             (class_dir / "deforestation.geojson").write_text('{"type":"FeatureCollection","features":[]}', encoding="utf-8")
 
-            conf = AirflowExperimentConfig.model_validate(
+            conf = ExperimentStageConfig.model_validate(
                 {
                     "experiment_id": "mlmarkup_unit",
                     "class_name": "вырубки",
@@ -33,7 +33,7 @@ class MLMarkupAnnotationTests(unittest.TestCase):
             self.assertEqual(conf.annotation_file, "deforestation.geojson")
             self.assertFalse(conf.pseudolabel["enabled"])
 
-            job = _build_airflow_job(conf)
+            job = _build_pipeline_job(conf)
             self.assertEqual(job.data["layout_uri"], str(class_dir))
             self.assertEqual(job.data["annotations"]["source"], "MLMarkup")
             self.assertEqual(job.train["model_name"], "segformer_b1")

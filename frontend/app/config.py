@@ -31,7 +31,6 @@ class FrontendConfig:
     api_token: str | None = os.getenv("MLSYSTEM_API_TOKEN")
     inference_engine_api_url: str = os.getenv("INFERENCE_ENGINE_API_URL", "http://inference-engine-api:8095").rstrip("/")
     inference_engine_api_token: str | None = os.getenv("INFERENCE_ENGINE_API_TOKEN")
-    airflow_ui_url: str = os.getenv("FRONTEND_AIRFLOW_UI_URL", "/airflow/")
     mlflow_ui_url: str = os.getenv("FRONTEND_MLFLOW_UI_URL", "/mlflow/")
     minio_ui_url: str = os.getenv("FRONTEND_MINIO_UI_URL", "/minio-browser/")
     rabbitmq_management_url: str = os.getenv(
@@ -45,7 +44,7 @@ class FrontendConfig:
         "/grafana/d/mlsystem-overview/mlsystem-overview?orgId=1&kiosk",
     )
     upload_root: Path = Path(os.getenv("MLSYSTEM_FRONTEND_UPLOAD_ROOT", "/data/mlsystem/frontend/uploads"))
-    status_root: Path = Path(os.getenv("MLSYSTEM_AIRFLOW_STATUS_ROOT", "/data/mlsystem/airflow/status"))
+    status_root: Path = Path(os.getenv("MLSYSTEM_RUN_ROOT", "/data/mlsystem/runs"))
     training_report_root: Path = Path(os.getenv("MLSYSTEM_FRONTEND_TRAINING_REPORT_ROOT", "/data/mlsystem/frontend/training_report"))
     training_report_refresh_seconds: int = int(os.getenv("MLSYSTEM_FRONTEND_TRAINING_REPORT_REFRESH_SECONDS", "120"))
     training_report_stale_minutes: int = int(os.getenv("MLSYSTEM_FRONTEND_TRAINING_REPORT_STALE_MINUTES", "15"))

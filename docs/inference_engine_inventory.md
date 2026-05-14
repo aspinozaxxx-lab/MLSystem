@@ -32,7 +32,7 @@ Training, MLflow run creation/finalization, pixel/object metrics, dataset prepar
 
 ## Compatibility Artifacts
 
-InferenceEngine finalizer writes artifacts expected by the old Airflow pipeline into `run_dir`:
+InferenceEngine finalizer writes artifacts expected by the MLSystem pipeline runner into `run_dir`:
 
 - `<experiment_id>.accepted.geojson`
 - `accepted.geojson.gz`
@@ -50,13 +50,13 @@ InferenceEngine finalizer writes artifacts expected by the old Airflow pipeline 
 Runtime arrays and intermediate queue artifacts stay under `/data/mlsystem/inference-engine/...` and are not committed.
 Probability tile artifacts remain tile-backed in the InferenceEngine job directory. The scene-level `npz_path` entries kept for legacy validators are compact placeholders in `source=inference_engine` mode; mlsystem downstream stages validate summaries and accepted vectors instead of rebuilding probability mosaics.
 
-## Production Airflow Boundary
+## Production Pipeline Boundary
 
-Production Airflow now has one pseudolabel stage:
+The production pipeline runner has one pseudolabel stage:
 
 - `inference_engine_pipeline` starts an InferenceEngine job over HTTP, polls it, and validates compatibility artifacts.
 
-The old stage modules are not registered in `MAIN_DAG_STAGES` or the production stage registry:
+The old stage modules are not registered in `DEFAULT_PIPELINE_STAGES` or the production stage registry:
 
 - `prepare_inference_scenes`
 - `run_pseudolabel_inference`

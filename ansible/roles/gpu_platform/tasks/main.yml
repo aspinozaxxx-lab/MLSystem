@@ -20,11 +20,6 @@
     mlsystem_gpu_minio_root_user_resolved: "{{ lookup('env', 'MINIO_ROOT_USER') | default('', true) or (gpu_existing_env | default({})).get('MINIO_ROOT_USER', 'mlsystem') }}"
     mlsystem_gpu_minio_root_password_resolved: "{{ lookup('env', 'MINIO_ROOT_PASSWORD') | default('', true) or (gpu_existing_env | default({})).get('MINIO_ROOT_PASSWORD', lookup('password', '/dev/null length=32 chars=ascii_letters,digits')) }}"
     mlsystem_gpu_mlflow_db_password_resolved: "{{ lookup('env', 'MLFLOW_DB_PASSWORD') | default('', true) or (gpu_existing_env | default({})).get('MLFLOW_DB_PASSWORD', lookup('password', '/dev/null length=32 chars=ascii_letters,digits')) }}"
-    mlsystem_gpu_airflow_db_password_resolved: "{{ lookup('env', 'AIRFLOW_POSTGRES_PASSWORD') | default('', true) or (gpu_existing_env | default({})).get('AIRFLOW_POSTGRES_PASSWORD', lookup('password', '/dev/null length=32 chars=ascii_letters,digits')) }}"
-    mlsystem_gpu_airflow_admin_user_resolved: "{{ lookup('env', 'AIRFLOW_ADMIN_USER') | default('', true) or (gpu_existing_env | default({})).get('AIRFLOW_ADMIN_USER', 'admin') }}"
-    mlsystem_gpu_airflow_admin_password_resolved: "{{ lookup('env', 'AIRFLOW_ADMIN_PASSWORD') | default('', true) or (gpu_existing_env | default({})).get('AIRFLOW_ADMIN_PASSWORD', lookup('password', '/dev/null length=24 chars=ascii_letters,digits')) }}"
-    mlsystem_gpu_airflow_fernet_key_resolved: "{{ lookup('env', 'AIRFLOW_FERNET_KEY') | default('', true) or (gpu_existing_env | default({})).get('AIRFLOW_FERNET_KEY', lookup('password', '/dev/null length=44 chars=ascii_letters,digits')) }}"
-    mlsystem_gpu_airflow_secret_key_resolved: "{{ lookup('env', 'AIRFLOW_SECRET_KEY') | default('', true) or (gpu_existing_env | default({})).get('AIRFLOW_SECRET_KEY', lookup('password', '/dev/null length=48 chars=ascii_letters,digits')) }}"
     mlsystem_gpu_api_token_resolved: "{{ lookup('env', 'MLSYSTEM_API_TOKEN') | default('', true) or (gpu_existing_env | default({})).get('MLSYSTEM_API_TOKEN', lookup('password', '/dev/null length=40 chars=ascii_letters,digits')) }}"
     mlsystem_gpu_rabbitmq_user_resolved: "{{ lookup('env', 'RABBITMQ_DEFAULT_USER') | default('', true) or (gpu_existing_env | default({})).get('RABBITMQ_DEFAULT_USER', mlsystem_gpu_rabbitmq_user) }}"
     mlsystem_gpu_rabbitmq_password_resolved: "{{ lookup('env', 'RABBITMQ_DEFAULT_PASS') | default('', true) or (gpu_existing_env | default({})).get('RABBITMQ_DEFAULT_PASS', lookup('password', '/dev/null length=32 chars=ascii_letters,digits')) }}"
@@ -45,8 +40,7 @@
     - "{{ mlsystem_gpu_platform_root }}"
     - "{{ mlsystem_gpu_data_root }}/minio"
     - "{{ mlsystem_gpu_data_root }}/mlflow"
-    - "{{ mlsystem_gpu_data_root }}/airflow/logs"
-    - "{{ mlsystem_gpu_data_root }}/airflow/status"
+    - "{{ mlsystem_gpu_data_root }}/runs"
     - "{{ mlsystem_gpu_data_root }}/api/jobs"
     - "{{ mlsystem_gpu_data_root }}/rabbitmq"
     - "{{ mlsystem_gpu_data_root }}/prometheus"
@@ -61,7 +55,6 @@
     - "{{ mlsystem_gpu_data_root }}/tuning"
     - "{{ mlsystem_gpu_data_root }}/tuning/lakes"
     - "{{ mlsystem_gpu_data_root }}/tuning/abrasion"
-    - "{{ mlsystem_gpu_data_root }}/airflow/postgres"
     - "{{ mlsystem_gpu_data_root }}/triton/model_repository/identity_python/1"
     - "{{ mlsystem_gpu_data_root }}/models"
     - "{{ mlsystem_gpu_data_root }}/cache"
@@ -111,7 +104,6 @@
   loop:
     - "{{ mlsystem_gpu_rabbitmq_management_port }}"
     - "{{ mlsystem_gpu_rabbitmq_prometheus_port }}"
-    - "{{ mlsystem_gpu_airflow_port }}"
     - "{{ mlsystem_gpu_mlflow_port }}"
     - "{{ mlsystem_gpu_minio_console_port }}"
     - "{{ mlsystem_gpu_prometheus_port }}"
@@ -227,19 +219,9 @@
   ansible.builtin.command:
     cmd: >-
       docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}"
-      pull minio minio-init rabbitmq mlflow-postgres mlflow airflow-postgres airflow-init
-      mlsystem-api airflow-webserver airflow-scheduler airflow-triggerer triton mlsystem-frontend-proxy
-      prometheus grafana node-exporter cadvisor dcgm-exporter statsd-exporter
-  changed_when: true
-
-- name: Remove previous Airflow init container
-  ansible.builtin.command:
-    cmd: docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}" rm -sf airflow-init
-  changed_when: false
-
-- name: Initialize Airflow metadata DB and admin user
-  ansible.builtin.command:
-    cmd: docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}" up --remove-orphans airflow-init
+      pull minio minio-init rabbitmq mlflow-postgres mlflow
+      mlsystem-api triton mlsystem-frontend-proxy
+      prometheus grafana node-exporter cadvisor dcgm-exporter
   changed_when: true
 
 - name: Start GPU ML platform core services
@@ -255,7 +237,7 @@
   ansible.builtin.command:
     cmd: >-
       docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}"
-      up -d --remove-orphans node-exporter cadvisor dcgm-exporter statsd-exporter
+      up -d --remove-orphans node-exporter cadvisor dcgm-exporter
   changed_when: true
   register: gpu_platform_exporters_up
   retries: 4
@@ -330,24 +312,6 @@
   register: inference_engine_ready
   until: inference_engine_ready.status == 200
 
-- name: Start Airflow services after MLSystem API is ready
-  ansible.builtin.command:
-    cmd: docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}" up -d --force-recreate --remove-orphans airflow-webserver airflow-scheduler airflow-triggerer
-  changed_when: true
-  register: airflow_up
-  retries: 6
-  delay: 10
-  until: airflow_up.rc == 0
-
-- name: Wait for Airflow health
-  ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ mlsystem_gpu_airflow_port }}/airflow/api/v1/health"
-    status_code: 200
-  retries: 40
-  delay: 5
-  register: airflow_health
-  until: airflow_health.status == 200
-
 - name: Build MLSystem monitoring exporter image
   ansible.builtin.command:
     cmd: docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}" build mlsystem-monitor-exporter
@@ -391,18 +355,6 @@
   register: monitor_exporter_health
   until: monitor_exporter_health.status == 200
 
-- name: Ensure Airflow resource pools
-  ansible.builtin.command:
-    cmd: >-
-      docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}"
-      exec -T airflow-scheduler bash -lc
-      'airflow pools set gpu_training "{{ mlsystem_gpu_airflow_gpu_slots }}" "GPU-bound MLSystem train/inference stages" &&
-       airflow pools set gpu_inference "{{ mlsystem_gpu_airflow_gpu_slots }}" "GPU-bound MLSystem inference stages" &&
-       airflow pools set cpu_heavy "{{ mlsystem_gpu_airflow_cpu_heavy_slots }}" "CPU-heavy MLSystem vectorization/postprocess stages" &&
-       airflow pools set cpu_light "{{ mlsystem_gpu_airflow_cpu_light_slots }}" "Lightweight MLSystem orchestration stages" &&
-       airflow pools set io_light "{{ mlsystem_gpu_airflow_io_light_slots }}" "Lightweight S3/MLflow IO stages"'
-  changed_when: true
-
 - name: Wait for Triton health
   ansible.builtin.uri:
     url: "http://127.0.0.1:{{ mlsystem_gpu_triton_http_port }}/v2/health/ready"
@@ -412,10 +364,10 @@
   register: triton_health
   until: triton_health.status == 200
 
-- name: Verify Airflow scheduler imports MLSystem orchestration modules
+- name: Verify MLSystem pipeline runner imports orchestration modules
   ansible.builtin.command:
-    cmd: docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}" exec -T airflow-scheduler python -c "from src.pipeline.airflow_tasks import MAIN_DAG_STAGES; print(','.join(MAIN_DAG_STAGES))"
-  register: airflow_orchestration_import_check
+    cmd: docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}" exec -T mlsystem-api python -c "from src.pipeline_runner.stages import DEFAULT_PIPELINE_STAGES; print(','.join(DEFAULT_PIPELINE_STAGES))"
+  register: pipeline_runner_import_check
   changed_when: false
 
 - name: Verify PyTorch sees CUDA inside MLSystem API
@@ -435,7 +387,6 @@
 - name: Report GPU platform deploy
   ansible.builtin.debug:
     msg:
-      airflow: "{{ mlsystem_gpu_frontend_public_url }}/airflow/"
       mlflow: "{{ mlsystem_gpu_frontend_public_url }}/mlflow/"
       minio_artifacts: "{{ mlsystem_gpu_frontend_public_url }}/minio-browser/"
       rabbitmq: "{{ mlsystem_gpu_frontend_public_url }}/rabbitmq/"
@@ -443,6 +394,6 @@
       prometheus: "{{ mlsystem_gpu_frontend_public_url }}/prometheus/"
       triton_ready: "http://{{ mlsystem_gpu_public_host }}:{{ mlsystem_gpu_triton_http_port }}/v2/health/ready"
       mlsystem_api: "ssh tunnel/local only: http://127.0.0.1:{{ mlsystem_gpu_api_port }}"
-      airflow_orchestration_import: "{{ airflow_orchestration_import_check.stdout_lines }}"
+      pipeline_runner_import: "{{ pipeline_runner_import_check.stdout_lines }}"
       api_torch_cuda: "{{ api_torch_cuda_check.stdout_lines }}"
       triton_models: "{{ triton_models.content }}"

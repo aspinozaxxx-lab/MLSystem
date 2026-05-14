@@ -33,7 +33,7 @@ class InventoryScenesArtifact(ArtifactBase):
 class DatasetManifestArtifact(ArtifactBase):
     experiment_id: str
     created_by: str = "prepare_dataset"
-    source: str = "airflow"
+    source: str = "pipeline_runner"
     split_strategy: str
     object_count_mode: str
     selected_scene_count: int

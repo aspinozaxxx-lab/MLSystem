@@ -12,14 +12,13 @@ Public entrypoint:
 
 Admin UI routes are exposed through the same frontend session:
 
-- `http://31.192.104.147/airflow/`
 - `http://31.192.104.147/mlflow/`
 - `http://31.192.104.147/rabbitmq/`
 - `http://31.192.104.147/minio-browser/`
 - `http://31.192.104.147/grafana/`
 - `http://31.192.104.147/prometheus/`
 
-The raw admin UI ports are not the primary public entrypoints. Airflow, MLflow, RabbitMQ Management, MinIO Console, Grafana, and Prometheus bind to localhost/internal addresses where possible and are reached through the frontend reverse proxy.
+The raw admin UI ports are not the primary public entrypoints. MLflow, RabbitMQ Management, MinIO Console, Grafana, and Prometheus bind to localhost/internal addresses where possible and are reached through the frontend reverse proxy.
 
 ## Gateway Auth
 
@@ -53,7 +52,7 @@ The proxy forwards user headers to upstream services:
 - `X-Remote-User`
 - `X-MLSystem-User`
 
-Airflow is configured for reverse-proxy operation under `/airflow/` and uses remote-user auth from the trusted frontend proxy. MLflow has its own security middleware disabled, so it must stay behind frontend auth and should not be exposed directly.
+MLflow has its own security middleware disabled, so it must stay behind frontend auth and should not be exposed directly.
 
 RabbitMQ Management is served under `/rabbitmq/`. Nginx injects the RabbitMQ Basic Authorization header server-side from `/etc/mlsystem/gpu-platform.env`; credentials are not rendered into HTML, JavaScript, docs, or URLs.
 
@@ -73,7 +72,6 @@ This route is frontend-authenticated and performs read-only S3 listing server-si
 
 The home page includes active cards:
 
-- `Airflow`
 - `MLflow`
 - `MinIO artifacts`
 - `Очереди RabbitMQ`
@@ -130,7 +128,6 @@ Uploaded runtime data is outside git:
 - `MLSYSTEM_API_TOKEN`
 - `INFERENCE_ENGINE_API_URL`
 - `INFERENCE_ENGINE_API_TOKEN`
-- `FRONTEND_AIRFLOW_UI_URL=/airflow/`
 - `FRONTEND_MLFLOW_UI_URL=/mlflow/`
 - `FRONTEND_MINIO_UI_URL=/minio-browser/`
 - `FRONTEND_RABBITMQ_MANAGEMENT_URL=/rabbitmq/`

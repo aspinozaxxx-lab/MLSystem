@@ -57,14 +57,6 @@ groups:
         annotations:
           summary: "InferenceEngine queue {{ $labels.queue }} backlog is high"
 
-      - alert: AirflowDagFailed
-        expr: airflow_dag_run_state{state="failed"} > 0
-        for: 1m
-        labels:
-          severity: critical
-        annotations:
-          summary: "Recent Airflow DAG run failed"
-
       - alert: InferenceEngineJobFailed
         expr: inference_engine_jobs_total{status="failed"} > 0
         for: 1m

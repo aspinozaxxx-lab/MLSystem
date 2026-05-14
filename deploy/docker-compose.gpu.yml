@@ -7,17 +7,19 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
     ports:
-      - "${MINIO_API_PORT:-9000}:9000"
-      - "${MINIO_CONSOLE_LISTEN_HOST:-127.0.0.1}:${MINIO_CONSOLE_PORT:-9001}:9001"
+    - ${MINIO_API_PORT:-9000}:9000
+    - ${MINIO_CONSOLE_LISTEN_HOST:-127.0.0.1}:${MINIO_CONSOLE_PORT:-9001}:9001
     volumes:
-      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/minio:/data
+    - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/minio:/data
     healthcheck:
-      test: ["CMD-SHELL", "mc ready local"]
+      test:
+      - CMD-SHELL
+      - mc ready local
       interval: 10s
       timeout: 5s
       retries: 12
-    networks: [mlsystem-gpu]
-
+    networks:
+    - mlsystem-gpu
   minio-init:
     image: minio/mc:RELEASE.2024-01-11T05-49-32Z
     container_name: mlsystem-gpu-minio-init
@@ -31,19 +33,15 @@ services:
       MLFLOW_BUCKET: ${MLFLOW_BUCKET:-mlflow-artifacts}
     entrypoint: /bin/sh
     command:
-      - -lc
-      - |
-        set -eu
-        mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"
-        mc mb -p "local/$${MLSYSTEM_BUCKET}" || true
-        mc mb -p "local/$${MLFLOW_BUCKET}" || true
-        for p in \
-          images images/incoming images/kanopus layouts layouts/deforest datasets cache \
-          models models/checkpoints models/triton predictions pseudolabels reports experiments system uploads; do
-          printf 'MLSystem S3 prefix %s\n' "$${p}" | mc pipe "local/$${MLSYSTEM_BUCKET}/$${p}/.keep"
-        done
-    networks: [mlsystem-gpu]
-
+    - -lc
+    - "set -eu\nmc alias set local http://minio:9000 \"$${MINIO_ROOT_USER}\" \"$${MINIO_ROOT_PASSWORD}\"\
+      \nmc mb -p \"local/$${MLSYSTEM_BUCKET}\" || true\nmc mb -p \"local/$${MLFLOW_BUCKET}\"\
+      \ || true\nfor p in \\\n  images images/incoming images/kanopus layouts layouts/deforest\
+      \ datasets cache \\\n  models models/checkpoints models/triton predictions pseudolabels\
+      \ reports experiments system uploads; do\n  printf 'MLSystem S3 prefix %s\\\
+      n' \"$${p}\" | mc pipe \"local/$${MLSYSTEM_BUCKET}/$${p}/.keep\"\ndone\n"
+    networks:
+    - mlsystem-gpu
   rabbitmq:
     image: ${RABBITMQ_IMAGE:-rabbitmq:3.13-management}
     container_name: mlsystem-gpu-rabbitmq
@@ -51,45 +49,50 @@ services:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
     ports:
-      - "${RABBITMQ_PORT:-5672}:5672"
-      - "${RABBITMQ_MANAGEMENT_LISTEN_HOST:-127.0.0.1}:${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
-      - "${RABBITMQ_PROMETHEUS_LISTEN_HOST:-127.0.0.1}:${RABBITMQ_PROMETHEUS_PORT:-15692}:15692"
+    - ${RABBITMQ_PORT:-5672}:5672
+    - ${RABBITMQ_MANAGEMENT_LISTEN_HOST:-127.0.0.1}:${RABBITMQ_MANAGEMENT_PORT:-15672}:15672
+    - ${RABBITMQ_PROMETHEUS_LISTEN_HOST:-127.0.0.1}:${RABBITMQ_PROMETHEUS_PORT:-15692}:15692
     volumes:
-      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/rabbitmq:/var/lib/rabbitmq
-      - ${MLSYSTEM_PLATFORM_ROOT:-/data/mlsystem/platform}/rabbitmq.conf:/etc/rabbitmq/conf.d/20-mlsystem-management.conf:ro
-      - ${MLSYSTEM_PLATFORM_ROOT:-/data/mlsystem/platform}/rabbitmq-enabled-plugins:/etc/rabbitmq/enabled_plugins:ro
+    - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/rabbitmq:/var/lib/rabbitmq
+    - ${MLSYSTEM_PLATFORM_ROOT:-/data/mlsystem/platform}/rabbitmq.conf:/etc/rabbitmq/conf.d/20-mlsystem-management.conf:ro
+    - ${MLSYSTEM_PLATFORM_ROOT:-/data/mlsystem/platform}/rabbitmq-enabled-plugins:/etc/rabbitmq/enabled_plugins:ro
     healthcheck:
-      test: ["CMD-SHELL", "rabbitmq-diagnostics -q ping"]
+      test:
+      - CMD-SHELL
+      - rabbitmq-diagnostics -q ping
       interval: 10s
       timeout: 5s
       retries: 12
     restart: unless-stopped
-    networks: [mlsystem-gpu]
-
+    networks:
+    - mlsystem-gpu
   prometheus:
     image: ${PROMETHEUS_IMAGE:-prom/prometheus:v2.55.1}
     container_name: mlsystem-gpu-prometheus
     command:
-      - --config.file=/etc/prometheus/prometheus.yml
-      - --storage.tsdb.path=/prometheus
-      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-30d}
-      - --web.external-url=${MLSYSTEM_FRONTEND_PUBLIC_BASE_URL:-http://31.192.104.147}/prometheus/
-      - --web.route-prefix=/prometheus
+    - --config.file=/etc/prometheus/prometheus.yml
+    - --storage.tsdb.path=/prometheus
+    - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-30d}
+    - --web.external-url=${MLSYSTEM_FRONTEND_PUBLIC_BASE_URL:-http://31.192.104.147}/prometheus/
+    - --web.route-prefix=/prometheus
     ports:
-      - "${PROMETHEUS_LISTEN_HOST:-127.0.0.1}:${PROMETHEUS_PORT:-9090}:9090"
+    - ${PROMETHEUS_LISTEN_HOST:-127.0.0.1}:${PROMETHEUS_PORT:-9090}:9090
     volumes:
-      - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/monitoring/prometheus/rules:/etc/prometheus/rules:ro
-      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/prometheus:/prometheus
+    - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/monitoring/prometheus/rules:/etc/prometheus/rules:ro
+    - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/prometheus:/prometheus
     healthcheck:
-      test: ["CMD-SHELL", "/bin/promtool query instant http://localhost:9090/prometheus 'up' >/dev/null 2>&1 || exit 1"]
+      test:
+      - CMD-SHELL
+      - /bin/promtool query instant http://localhost:9090/prometheus 'up' >/dev/null
+        2>&1 || exit 1
       interval: 20s
       timeout: 10s
       retries: 10
       start_period: 30s
     restart: unless-stopped
-    networks: [mlsystem-gpu]
-
+    networks:
+    - mlsystem-gpu
   grafana:
     image: ${GRAFANA_IMAGE:-grafana/grafana:11.4.0}
     container_name: mlsystem-gpu-grafana
@@ -99,101 +102,88 @@ services:
     env_file: /etc/mlsystem/gpu-platform.env
     environment:
       GF_SERVER_ROOT_URL: ${MLSYSTEM_FRONTEND_PUBLIC_BASE_URL:-http://31.192.104.147}/grafana/
-      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_SERVER_SERVE_FROM_SUB_PATH: 'true'
       GF_SECURITY_SECRET_KEY: ${GF_SECURITY_SECRET_KEY}
-      GF_SECURITY_ALLOW_EMBEDDING: "true"
-      GF_AUTH_PROXY_ENABLED: "true"
+      GF_SECURITY_ALLOW_EMBEDDING: 'true'
+      GF_AUTH_PROXY_ENABLED: 'true'
       GF_AUTH_PROXY_HEADER_NAME: X-MLSystem-User
       GF_AUTH_PROXY_HEADER_PROPERTY: username
-      GF_AUTH_PROXY_AUTO_SIGN_UP: "true"
-      GF_AUTH_PROXY_ENABLE_LOGIN_TOKEN: "false"
+      GF_AUTH_PROXY_AUTO_SIGN_UP: 'true'
+      GF_AUTH_PROXY_ENABLE_LOGIN_TOKEN: 'false'
       GF_USERS_AUTO_ASSIGN_ORG_ROLE: Admin
-      GF_AUTH_ANONYMOUS_ENABLED: "false"
-      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_AUTH_ANONYMOUS_ENABLED: 'false'
+      GF_AUTH_DISABLE_LOGIN_FORM: 'true'
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/mlsystem-overview.json
     ports:
-      - "${GRAFANA_LISTEN_HOST:-127.0.0.1}:${GRAFANA_PORT:-3000}:3000"
+    - ${GRAFANA_LISTEN_HOST:-127.0.0.1}:${GRAFANA_PORT:-3000}:3000
     volumes:
-      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/grafana:/var/lib/grafana
-      - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/grafana:/var/lib/grafana
+    - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health >/dev/null || exit 1"]
+      test:
+      - CMD-SHELL
+      - wget -qO- http://localhost:3000/api/health >/dev/null || exit 1
       interval: 20s
       timeout: 10s
       retries: 10
       start_period: 45s
     restart: unless-stopped
-    networks: [mlsystem-gpu]
-
+    networks:
+    - mlsystem-gpu
   node-exporter:
     image: ${NODE_EXPORTER_IMAGE:-prom/node-exporter:v1.8.2}
     container_name: mlsystem-gpu-node-exporter
     command:
-      - --path.rootfs=/host
-      - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|var/lib/docker/.+|run/docker/netns/.+)($$|/)
+    - --path.rootfs=/host
+    - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|var/lib/docker/.+|run/docker/netns/.+)($$|/)
     pid: host
     ports:
-      - "${NODE_EXPORTER_LISTEN_HOST:-127.0.0.1}:${NODE_EXPORTER_PORT:-9100}:9100"
+    - ${NODE_EXPORTER_LISTEN_HOST:-127.0.0.1}:${NODE_EXPORTER_PORT:-9100}:9100
     volumes:
-      - /:/host:ro,rslave
+    - /:/host:ro,rslave
     restart: unless-stopped
-    networks: [mlsystem-gpu]
-
+    networks:
+    - mlsystem-gpu
   cadvisor:
     image: ${CADVISOR_IMAGE:-gcr.io/cadvisor/cadvisor:v0.49.1}
     container_name: mlsystem-gpu-cadvisor
     privileged: true
     ports:
-      - "${CADVISOR_LISTEN_HOST:-127.0.0.1}:${CADVISOR_PORT:-8080}:8080"
+    - ${CADVISOR_LISTEN_HOST:-127.0.0.1}:${CADVISOR_PORT:-8080}:8080
     volumes:
-      - /:/rootfs:ro
-      - /var/run:/var/run:ro
-      - /sys:/sys:ro
-      - /var/lib/docker:/var/lib/docker:ro
-      - /dev/disk:/dev/disk:ro
+    - /:/rootfs:ro
+    - /var/run:/var/run:ro
+    - /sys:/sys:ro
+    - /var/lib/docker:/var/lib/docker:ro
+    - /dev/disk:/dev/disk:ro
     restart: unless-stopped
-    networks: [mlsystem-gpu]
-
+    networks:
+    - mlsystem-gpu
   dcgm-exporter:
     image: ${DCGM_EXPORTER_IMAGE:-nvcr.io/nvidia/k8s/dcgm-exporter:3.3.8-3.6.0-ubuntu22.04}
     container_name: mlsystem-gpu-dcgm-exporter
     gpus: all
     cap_add:
-      - SYS_ADMIN
+    - SYS_ADMIN
     ports:
-      - "${DCGM_EXPORTER_LISTEN_HOST:-127.0.0.1}:${DCGM_EXPORTER_PORT:-9400}:9400"
+    - ${DCGM_EXPORTER_LISTEN_HOST:-127.0.0.1}:${DCGM_EXPORTER_PORT:-9400}:9400
     restart: unless-stopped
-    networks: [mlsystem-gpu]
-
-  statsd-exporter:
-    image: ${STATSD_EXPORTER_IMAGE:-prom/statsd-exporter:v0.28.0}
-    container_name: mlsystem-gpu-statsd-exporter
-    command:
-      - --statsd.listen-udp=:9125
-      - --statsd.listen-tcp=:9125
-      - --web.listen-address=:9102
-    ports:
-      - "${STATSD_EXPORTER_LISTEN_HOST:-127.0.0.1}:${STATSD_EXPORTER_PORT:-9102}:9102"
-    restart: unless-stopped
-    networks: [mlsystem-gpu]
-
+    networks:
+    - mlsystem-gpu
   mlsystem-monitor-exporter:
     build:
       context: ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}
       dockerfile: monitoring/exporter/Dockerfile
+      args:
+        MLSYSTEM_BASE_IMAGE: ${MLSYSTEM_BASE_IMAGE:-python:3.11-slim}
     image: ${MLSYSTEM_MONITOR_EXPORTER_IMAGE:-mlsystem/monitor-exporter:local}
     container_name: mlsystem-gpu-monitor-exporter
     depends_on:
-      airflow-webserver:
-        condition: service_healthy
       inference-engine-api:
         condition: service_healthy
     env_file: /etc/mlsystem/gpu-platform.env
     environment:
-      AIRFLOW_BASE_URL: http://airflow-webserver:8080/airflow
-      AIRFLOW_ADMIN_USER: ${AIRFLOW_ADMIN_USER}
-      AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD}
       INFERENCE_ENGINE_API_URL: http://inference-engine-api:8095
       INFERENCE_ENGINE_API_TOKEN: ${INFERENCE_ENGINE_API_TOKEN}
       MLSYSTEM_API_URL: http://mlsystem-api:8088
@@ -204,16 +194,19 @@ services:
       INFERENCE_ENGINE_RABBITMQ_MANAGEMENT_URL: http://rabbitmq:15672/rabbitmq
       MLSYSTEM_MONITOR_EXPORTER_PORT: ${MLSYSTEM_MONITOR_EXPORTER_PORT:-9200}
     ports:
-      - "${MLSYSTEM_MONITOR_EXPORTER_LISTEN_HOST:-127.0.0.1}:${MLSYSTEM_MONITOR_EXPORTER_PORT:-9200}:9200"
+    - ${MLSYSTEM_MONITOR_EXPORTER_LISTEN_HOST:-127.0.0.1}:${MLSYSTEM_MONITOR_EXPORTER_PORT:-9200}:9200
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:9200/health', timeout=5)\" || exit 1"]
+      test:
+      - CMD-SHELL
+      - python -c "import urllib.request; urllib.request.urlopen('http://localhost:9200/health',
+        timeout=5)" || exit 1
       interval: 20s
       timeout: 10s
       retries: 10
       start_period: 30s
     restart: unless-stopped
-    networks: [mlsystem-gpu]
-
+    networks:
+    - mlsystem-gpu
   mlflow-postgres:
     image: ${POSTGRES_IMAGE:-postgres:15}
     container_name: mlsystem-gpu-mlflow-postgres
@@ -222,14 +215,16 @@ services:
       POSTGRES_PASSWORD: ${MLFLOW_DB_PASSWORD}
       POSTGRES_DB: mlflow
     volumes:
-      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/mlflow/postgres:/var/lib/postgresql/data
+    - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/mlflow/postgres:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U mlflow"]
+      test:
+      - CMD-SHELL
+      - pg_isready -U mlflow
       interval: 10s
       timeout: 5s
       retries: 12
-    networks: [mlsystem-gpu]
-
+    networks:
+    - mlsystem-gpu
   mlflow:
     image: ${MLFLOW_IMAGE:-ghcr.io/mlflow/mlflow:v3.11.1}
     container_name: mlsystem-gpu-mlflow
@@ -247,103 +242,37 @@ services:
       AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
       AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
       AWS_S3_ADDRESSING_STYLE: path
-      AWS_S3_FORCE_PATH_STYLE: "true"
-      MLFLOW_SERVER_DISABLE_SECURITY_MIDDLEWARE: "true"
+      AWS_S3_FORCE_PATH_STYLE: 'true'
+      MLFLOW_SERVER_DISABLE_SECURITY_MIDDLEWARE: 'true'
       MLFLOW_STATIC_PREFIX: /mlflow
     entrypoint: /bin/bash
     command:
-      - -lc
-      - |
-        pip install --no-cache-dir psycopg2-binary boto3 >/tmp/mlflow-pip.log 2>&1
-        mlflow server \
-          --backend-store-uri postgresql+psycopg2://mlflow:$${MLFLOW_DB_PASSWORD}@mlflow-postgres:5432/mlflow \
-          --default-artifact-root s3://$${MLFLOW_BUCKET:-mlflow-artifacts}/ \
-          --serve-artifacts \
-          --artifacts-destination s3://$${MLFLOW_BUCKET:-mlflow-artifacts}/ \
-          --host 0.0.0.0 \
-          --port 5000 \
-          --static-prefix /mlflow \
-          --disable-security-middleware
+    - -lc
+    - "pip install --no-cache-dir psycopg2-binary boto3 >/tmp/mlflow-pip.log 2>&1\n\
+      mlflow server \\\n  --backend-store-uri postgresql+psycopg2://mlflow:$${MLFLOW_DB_PASSWORD}@mlflow-postgres:5432/mlflow\
+      \ \\\n  --default-artifact-root s3://$${MLFLOW_BUCKET:-mlflow-artifacts}/ \\\
+      \n  --serve-artifacts \\\n  --artifacts-destination s3://$${MLFLOW_BUCKET:-mlflow-artifacts}/\
+      \ \\\n  --host 0.0.0.0 \\\n  --port 5000 \\\n  --static-prefix /mlflow \\\n\
+      \  --disable-security-middleware\n"
     ports:
-      - "${MLFLOW_LISTEN_HOST:-127.0.0.1}:${MLFLOW_PORT:-5000}:5000"
+    - ${MLFLOW_LISTEN_HOST:-127.0.0.1}:${MLFLOW_PORT:-5000}:5000
     healthcheck:
-      test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:5000/mlflow/health\")'"]
+      test:
+      - CMD-SHELL
+      - python3 -c 'import urllib.request; urllib.request.urlopen("http://localhost:5000/mlflow/health")'
       interval: 10s
       timeout: 5s
       retries: 18
       start_period: 60s
-    networks: [mlsystem-gpu]
-
-  airflow-postgres:
-    image: ${POSTGRES_IMAGE:-postgres:15}
-    container_name: mlsystem-gpu-airflow-postgres
-    environment:
-      POSTGRES_USER: airflow
-      POSTGRES_PASSWORD: ${AIRFLOW_POSTGRES_PASSWORD}
-      POSTGRES_DB: airflow
-    volumes:
-      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/airflow/postgres:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U airflow"]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-    networks: [mlsystem-gpu]
-
-  airflow-init:
-    image: ${MLSYSTEM_RUNTIME_IMAGE:-mlsystem/runtime:local}
-    build:
-      context: ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}
-      dockerfile: mlsystem/Dockerfile
-      args:
-        AIRFLOW_BASE_IMAGE: ${AIRFLOW_IMAGE:-apache/airflow:2.9.3-python3.11}
-    container_name: mlsystem-gpu-airflow-init
-    depends_on:
-      airflow-postgres:
-        condition: service_healthy
-    env_file: /etc/mlsystem/gpu-platform.env
-    user: "0:0"
-    environment:
-      PYTHONPATH: /opt/mlsystem:/opt
-      MLSYSTEM_PIPELINE_CONFIG: ${MLSYSTEM_PIPELINE_CONFIG:-/opt/mlsystem/configs/pipeline.server.yaml}
-      _PIP_ADDITIONAL_REQUIREMENTS: ""
-      AIRFLOW__METRICS__STATSD_ON: "True"
-      AIRFLOW__METRICS__STATSD_HOST: statsd-exporter
-      AIRFLOW__METRICS__STATSD_PORT: "9125"
-      AIRFLOW__METRICS__STATSD_PREFIX: airflow
-    entrypoint: /bin/bash
-    command:
-      - -lc
-      - |
-        export PATH="/home/airflow/.local/bin:/usr/local/bin:$${PATH}"
-        mkdir -p /opt/airflow/logs /opt/airflow/dags /opt/airflow/plugins /opt/airflow/mlsystem_runs
-        chown -R "$${AIRFLOW_UID}:0" /opt/airflow/logs /opt/airflow/dags /opt/airflow/plugins /opt/airflow/mlsystem_runs
-        airflow db migrate
-        airflow users create --username "$${_AIRFLOW_WWW_USER_USERNAME}" --password "$${_AIRFLOW_WWW_USER_PASSWORD}" --firstname "$${_AIRFLOW_WWW_USER_FIRSTNAME}" --lastname "$${_AIRFLOW_WWW_USER_LASTNAME}" --role Admin --email "$${_AIRFLOW_WWW_USER_EMAIL}" || true
-        airflow pools set gpu_training "$${MLSYSTEM_AIRFLOW_GPU_SLOTS:-1}" "GPU-bound MLSystem train/inference stages"
-        airflow pools set gpu_inference "$${MLSYSTEM_AIRFLOW_GPU_SLOTS:-1}" "GPU-bound MLSystem inference stages"
-        airflow pools set cpu_heavy "$${MLSYSTEM_AIRFLOW_CPU_HEAVY_SLOTS:-6}" "CPU-heavy MLSystem vectorization/postprocess stages"
-        airflow pools set cpu_light "$${MLSYSTEM_AIRFLOW_CPU_LIGHT_SLOTS:-12}" "Lightweight MLSystem orchestration stages"
-        airflow pools set io_light "$${MLSYSTEM_AIRFLOW_IO_LIGHT_SLOTS:-8}" "Lightweight S3/MLflow IO stages"
-    volumes:
-      - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/airflow/dags:/opt/airflow/dags
-      - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/airflow/plugins:/opt/airflow/plugins
-      - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/airflow/include:/opt/airflow/include
-      - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/airflow/webserver_config.py:/opt/airflow/webserver_config.py:ro
-      - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/mlsystem:/opt/mlsystem
-      - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/InferenceEngine:/opt/InferenceEngine
-      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/airflow/logs:/opt/airflow/logs
-      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/airflow/status:/opt/airflow/mlsystem_runs
-      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}:/data/mlsystem
-    networks: [mlsystem-gpu]
-
+    networks:
+    - mlsystem-gpu
   mlsystem-api:
     image: ${MLSYSTEM_RUNTIME_IMAGE:-mlsystem/runtime:local}
     build:
       context: ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}
       dockerfile: mlsystem/Dockerfile
       args:
-        AIRFLOW_BASE_IMAGE: ${AIRFLOW_IMAGE:-apache/airflow:2.9.3-python3.11}
+        MLSYSTEM_BASE_IMAGE: ${MLSYSTEM_BASE_IMAGE:-python:3.11-slim}
     container_name: mlsystem-gpu-api
     depends_on:
       minio:
@@ -358,39 +287,36 @@ services:
     environment:
       PYTHONPATH: /opt/mlsystem:/opt
       MLSYSTEM_API_JOB_ROOT: ${MLSYSTEM_API_JOB_ROOT:-/data/mlsystem/api/jobs}
-      MLSYSTEM_AIRFLOW_STATE_DIR: ${MLSYSTEM_AIRFLOW_STATE_DIR:-/data/mlsystem/airflow/status}
       MLSYSTEM_PIPELINE_CONFIG: ${MLSYSTEM_PIPELINE_CONFIG:-/opt/mlsystem/configs/pipeline.server.yaml}
-      _PIP_ADDITIONAL_REQUIREMENTS: ""
+      _PIP_ADDITIONAL_REQUIREMENTS: ''
+      MLSYSTEM_RUN_ROOT: ${MLSYSTEM_RUN_ROOT:-/data/mlsystem/runs}
     command:
-      - bash
-      - -lc
-      - |
-        export PATH="/home/airflow/.local/bin:/usr/local/bin:$${PATH}"
-        python - <<'PY'
-        import importlib.util
-        missing = [name for name in ("mlflow", "boto3", "torch", "rasterio", "shapely", "tritonclient") if importlib.util.find_spec(name) is None]
-        if missing:
-            raise SystemExit("Missing runtime dependencies in mlsystem runtime image: " + ", ".join(missing))
-        PY
-        python -m uvicorn src.api.app:app --host 0.0.0.0 --port 8088
+    - bash
+    - -lc
+    - "python - <<'PY'\nimport importlib.util\nmissing = [name for name in (\"mlflow\"\
+      , \"boto3\", \"torch\", \"rasterio\", \"shapely\", \"tritonclient\") if importlib.util.find_spec(name)\
+      \ is None]\nif missing:\n    raise SystemExit(\"Missing runtime dependencies\
+      \ in mlsystem runtime image: \" + \", \".join(missing))\nPY\npython -m uvicorn\
+      \ src.api.app:app --host 0.0.0.0 --port 8088\n"
     gpus: all
     ports:
-      - "127.0.0.1:${MLSYSTEM_API_PORT:-8088}:8088"
+    - 127.0.0.1:${MLSYSTEM_API_PORT:-8088}:8088
     volumes:
-      - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/mlsystem:/opt/mlsystem
-      - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/InferenceEngine:/opt/InferenceEngine
-      - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/scripts:/opt/mlsystem-scripts:ro
-      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}:/data/mlsystem
-      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/airflow/status:/opt/airflow/mlsystem_runs
+    - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/mlsystem:/opt/mlsystem
+    - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/InferenceEngine:/opt/InferenceEngine
+    - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/scripts:/opt/mlsystem-scripts:ro
+    - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}:/data/mlsystem
     healthcheck:
-      test: ["CMD-SHELL", "curl --fail http://localhost:8088/health || exit 1"]
+      test:
+      - CMD-SHELL
+      - curl --fail http://localhost:8088/health || exit 1
       interval: 20s
       timeout: 10s
       retries: 10
       start_period: 60s
     restart: unless-stopped
-    networks: [mlsystem-gpu]
-
+    networks:
+    - mlsystem-gpu
   inference-engine-api:
     build:
       context: ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}
@@ -426,22 +352,30 @@ services:
       AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
       AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
       AWS_S3_ENDPOINT: minio:9000
-      AWS_HTTPS: "NO"
-      AWS_VIRTUAL_HOSTING: "FALSE"
-    command: ["uvicorn", "inference_engine.api.app:app", "--host", "0.0.0.0", "--port", "8095"]
+      AWS_HTTPS: 'NO'
+      AWS_VIRTUAL_HOSTING: 'FALSE'
+    command:
+    - uvicorn
+    - inference_engine.api.app:app
+    - --host
+    - 0.0.0.0
+    - --port
+    - '8095'
     ports:
-      - "127.0.0.1:${INFERENCE_ENGINE_API_PORT:-8095}:8095"
+    - 127.0.0.1:${INFERENCE_ENGINE_API_PORT:-8095}:8095
     volumes:
-      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}:/data/mlsystem
+    - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}:/data/mlsystem
     healthcheck:
-      test: ["CMD-SHELL", "curl --fail http://localhost:8095/health || exit 1"]
+      test:
+      - CMD-SHELL
+      - curl --fail http://localhost:8095/health || exit 1
       interval: 20s
       timeout: 10s
       retries: 10
       start_period: 60s
     restart: unless-stopped
-    networks: [mlsystem-gpu]
-
+    networks:
+    - mlsystem-gpu
   inference-engine-planner:
     image: ${INFERENCE_ENGINE_IMAGE:-mlsystem/inference-engine:local}
     container_name: mlsystem-gpu-inference-engine-planner
@@ -449,8 +383,8 @@ services:
       inference-engine-api:
         condition: service_healthy
     env_file: /etc/mlsystem/gpu-platform.env
-    environment: &inference-engine-worker-env
-      INFERENCE_ENGINE_USE_RABBITMQ: "true"
+    environment: &id001
+      INFERENCE_ENGINE_USE_RABBITMQ: 'true'
       INFERENCE_ENGINE_RABBITMQ_URL: ${INFERENCE_ENGINE_RABBITMQ_URL}
       INFERENCE_ENGINE_JOB_ROOT: ${INFERENCE_ENGINE_JOB_ROOT:-/data/mlsystem/inference-engine/jobs}
       INFERENCE_ENGINE_SPOOL_ROOT: ${INFERENCE_ENGINE_SPOOL_ROOT:-/data/mlsystem/inference-engine/spool}
@@ -478,101 +412,141 @@ services:
       AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
       AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
       AWS_S3_ENDPOINT: minio:9000
-      AWS_HTTPS: "NO"
-      AWS_VIRTUAL_HOSTING: "FALSE"
-    command: ["inference-engine-worker", "worker", "--role", "planner"]
+      AWS_HTTPS: 'NO'
+      AWS_VIRTUAL_HOSTING: 'FALSE'
+    command:
+    - inference-engine-worker
+    - worker
+    - --role
+    - planner
     volumes:
-      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}:/data/mlsystem
+    - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}:/data/mlsystem
     restart: unless-stopped
-    networks: [mlsystem-gpu]
-
+    networks:
+    - mlsystem-gpu
   inference-engine-preprocess-worker:
     image: ${INFERENCE_ENGINE_IMAGE:-mlsystem/inference-engine:local}
     container_name: mlsystem-gpu-inference-engine-preprocess-worker
-    depends_on: [inference-engine-api]
+    depends_on:
+    - inference-engine-api
     env_file: /etc/mlsystem/gpu-platform.env
-    environment: *inference-engine-worker-env
-    command: ["inference-engine-worker", "worker", "--role", "preprocess"]
+    environment: *id001
+    command:
+    - inference-engine-worker
+    - worker
+    - --role
+    - preprocess
     volumes:
-      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}:/data/mlsystem
+    - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}:/data/mlsystem
     restart: unless-stopped
-    networks: [mlsystem-gpu]
-
+    networks:
+    - mlsystem-gpu
   inference-engine-triton-worker:
     image: ${INFERENCE_ENGINE_IMAGE:-mlsystem/inference-engine:local}
     container_name: mlsystem-gpu-inference-engine-triton-worker
-    depends_on: [inference-engine-api]
+    depends_on:
+    - inference-engine-api
     env_file: /etc/mlsystem/gpu-platform.env
-    environment: *inference-engine-worker-env
-    command: ["inference-engine-worker", "worker", "--role", "triton"]
+    environment: *id001
+    command:
+    - inference-engine-worker
+    - worker
+    - --role
+    - triton
     gpus: all
     volumes:
-      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}:/data/mlsystem
+    - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}:/data/mlsystem
     restart: unless-stopped
-    networks: [mlsystem-gpu]
-
+    networks:
+    - mlsystem-gpu
   inference-engine-fused-worker:
     image: ${INFERENCE_ENGINE_IMAGE:-mlsystem/inference-engine:local}
     container_name: mlsystem-gpu-inference-engine-fused-worker
-    profiles: ["fused"]
-    depends_on: [inference-engine-api]
+    profiles:
+    - fused
+    depends_on:
+    - inference-engine-api
     env_file: /etc/mlsystem/gpu-platform.env
-    environment: *inference-engine-worker-env
-    command: ["inference-engine-worker", "worker", "--role", "fused"]
+    environment: *id001
+    command:
+    - inference-engine-worker
+    - worker
+    - --role
+    - fused
     gpus: all
     volumes:
-      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}:/data/mlsystem
+    - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}:/data/mlsystem
     restart: unless-stopped
-    networks: [mlsystem-gpu]
-
+    networks:
+    - mlsystem-gpu
   inference-engine-aggregator:
     image: ${INFERENCE_ENGINE_IMAGE:-mlsystem/inference-engine:local}
     container_name: mlsystem-gpu-inference-engine-aggregator
-    depends_on: [inference-engine-api]
+    depends_on:
+    - inference-engine-api
     env_file: /etc/mlsystem/gpu-platform.env
-    environment: *inference-engine-worker-env
-    command: ["inference-engine-worker", "worker", "--role", "aggregator"]
+    environment: *id001
+    command:
+    - inference-engine-worker
+    - worker
+    - --role
+    - aggregator
     volumes:
-      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}:/data/mlsystem
+    - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}:/data/mlsystem
     restart: unless-stopped
-    networks: [mlsystem-gpu]
-
+    networks:
+    - mlsystem-gpu
   inference-engine-block-worker:
     image: ${INFERENCE_ENGINE_IMAGE:-mlsystem/inference-engine:local}
     container_name: mlsystem-gpu-inference-engine-block-worker
-    depends_on: [inference-engine-api]
+    depends_on:
+    - inference-engine-api
     env_file: /etc/mlsystem/gpu-platform.env
-    environment: *inference-engine-worker-env
-    command: ["inference-engine-worker", "worker", "--role", "block"]
+    environment: *id001
+    command:
+    - inference-engine-worker
+    - worker
+    - --role
+    - block
     volumes:
-      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}:/data/mlsystem
+    - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}:/data/mlsystem
     restart: unless-stopped
-    networks: [mlsystem-gpu]
-
+    networks:
+    - mlsystem-gpu
   inference-engine-merger:
     image: ${INFERENCE_ENGINE_IMAGE:-mlsystem/inference-engine:local}
     container_name: mlsystem-gpu-inference-engine-merger
-    depends_on: [inference-engine-api]
+    depends_on:
+    - inference-engine-api
     env_file: /etc/mlsystem/gpu-platform.env
-    environment: *inference-engine-worker-env
-    command: ["inference-engine-worker", "worker", "--role", "merger"]
+    environment: *id001
+    command:
+    - inference-engine-worker
+    - worker
+    - --role
+    - merger
     volumes:
-      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}:/data/mlsystem
+    - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}:/data/mlsystem
     restart: unless-stopped
-    networks: [mlsystem-gpu]
-
+    networks:
+    - mlsystem-gpu
   inference-engine-finalizer:
     image: ${INFERENCE_ENGINE_IMAGE:-mlsystem/inference-engine:local}
     container_name: mlsystem-gpu-inference-engine-finalizer
-    depends_on: [inference-engine-api]
+    depends_on:
+    - inference-engine-api
     env_file: /etc/mlsystem/gpu-platform.env
-    environment: *inference-engine-worker-env
-    command: ["inference-engine-worker", "worker", "--role", "finalizer"]
+    environment: *id001
+    command:
+    - inference-engine-worker
+    - worker
+    - --role
+    - finalizer
     volumes:
-      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}:/data/mlsystem
+    - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}:/data/mlsystem
     restart: unless-stopped
-    networks: [mlsystem-gpu]
-
+    networks:
+    - mlsystem-gpu
   mlsystem-frontend:
     build:
       context: ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}
@@ -586,7 +560,6 @@ services:
     env_file: /etc/mlsystem/gpu-platform.env
     environment:
       MLSYSTEM_API_BASE_URL: http://mlsystem-api:8088
-      MLSYSTEM_AIRFLOW_STATUS_ROOT: /data/mlsystem/airflow/status
       MLSYSTEM_FRONTEND_UPLOAD_ROOT: /data/mlsystem/frontend/uploads
       MLSYSTEM_FRONTEND_TRAINING_REPORT_ROOT: /data/mlsystem/frontend/training_report
       MLSYSTEM_TUNING_ROOT: /data/mlsystem/tuning
@@ -594,32 +567,35 @@ services:
       FRONTEND_GRAFANA_URL: ${FRONTEND_GRAFANA_URL:-/grafana/}
       FRONTEND_PROMETHEUS_URL: ${FRONTEND_PROMETHEUS_URL:-/prometheus/}
       FRONTEND_GRAFANA_MAIN_DASHBOARD_URL: ${FRONTEND_GRAFANA_MAIN_DASHBOARD_URL:-/grafana/d/mlsystem-overview/mlsystem-overview?orgId=1&kiosk}
+      MLSYSTEM_RUN_ROOT: /data/mlsystem/runs
     command:
-      - python
-      - -m
-      - uvicorn
-      - frontend.app.main:app
-      - --host
-      - 0.0.0.0
-      - --port
-      - "8090"
+    - python
+    - -m
+    - uvicorn
+    - frontend.app.main:app
+    - --host
+    - 0.0.0.0
+    - --port
+    - '8090'
     ports:
-      - "127.0.0.1:${MLSYSTEM_FRONTEND_PORT:-8090}:8090"
+    - 127.0.0.1:${MLSYSTEM_FRONTEND_PORT:-8090}:8090
     volumes:
-      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/frontend/uploads:/data/mlsystem/frontend/uploads
-      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/frontend/training_report:/data/mlsystem/frontend/training_report
-      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/tuning:/data/mlsystem/tuning:ro
-      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/airflow/status:/data/mlsystem/airflow/status:ro
-      - ${MLSYSTEM_MLMARKUP_REPO_PATH:-/data/MLMarkup}:/data/MLMarkup:ro
+    - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/frontend/uploads:/data/mlsystem/frontend/uploads
+    - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/frontend/training_report:/data/mlsystem/frontend/training_report
+    - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/tuning:/data/mlsystem/tuning:ro
+    - ${MLSYSTEM_MLMARKUP_REPO_PATH:-/data/MLMarkup}:/data/MLMarkup:ro
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8090/health', timeout=5)\" || exit 1"]
+      test:
+      - CMD-SHELL
+      - python -c "import urllib.request; urllib.request.urlopen('http://localhost:8090/health',
+        timeout=5)" || exit 1
       interval: 20s
       timeout: 10s
       retries: 10
       start_period: 30s
     restart: unless-stopped
-    networks: [mlsystem-gpu]
-
+    networks:
+    - mlsystem-gpu
   mlsystem-frontend-proxy:
     image: nginx:1.27-alpine
     container_name: mlsystem-gpu-frontend-proxy
@@ -627,144 +603,46 @@ services:
       mlsystem-frontend:
         condition: service_healthy
     ports:
-      - "${MLSYSTEM_FRONTEND_PROXY_LISTEN_HOST:-0.0.0.0}:${MLSYSTEM_FRONTEND_PROXY_PORT:-80}:80"
+    - ${MLSYSTEM_FRONTEND_PROXY_LISTEN_HOST:-0.0.0.0}:${MLSYSTEM_FRONTEND_PROXY_PORT:-80}:80
     volumes:
-      - ${MLSYSTEM_PLATFORM_ROOT:-/data/mlsystem/platform}/frontend-nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    - ${MLSYSTEM_PLATFORM_ROOT:-/data/mlsystem/platform}/frontend-nginx.conf:/etc/nginx/conf.d/default.conf:ro
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/health >/dev/null || exit 1"]
+      test:
+      - CMD-SHELL
+      - wget -qO- http://127.0.0.1/health >/dev/null || exit 1
       interval: 20s
       timeout: 10s
       retries: 10
       start_period: 15s
     restart: unless-stopped
-    networks: [mlsystem-gpu]
-
-  airflow-webserver:
-    image: ${MLSYSTEM_RUNTIME_IMAGE:-mlsystem/runtime:local}
-    build:
-      context: ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}
-      dockerfile: mlsystem/Dockerfile
-      args:
-        AIRFLOW_BASE_IMAGE: ${AIRFLOW_IMAGE:-apache/airflow:2.9.3-python3.11}
-    container_name: mlsystem-gpu-airflow-webserver
-    depends_on:
-      airflow-postgres:
-        condition: service_healthy
-      mlsystem-api:
-        condition: service_healthy
-      inference-engine-api:
-        condition: service_healthy
-    env_file: /etc/mlsystem/gpu-platform.env
-    environment:
-      PYTHONPATH: /opt/mlsystem:/opt
-      MLSYSTEM_PIPELINE_CONFIG: ${MLSYSTEM_PIPELINE_CONFIG:-/opt/mlsystem/configs/pipeline.server.yaml}
-      _PIP_ADDITIONAL_REQUIREMENTS: ""
-      AIRFLOW__METRICS__STATSD_ON: "True"
-      AIRFLOW__METRICS__STATSD_HOST: statsd-exporter
-      AIRFLOW__METRICS__STATSD_PORT: "9125"
-      AIRFLOW__METRICS__STATSD_PREFIX: airflow
-    command: webserver
-    ports:
-      - "${AIRFLOW_LISTEN_HOST:-127.0.0.1}:${AIRFLOW_PORT:-8081}:8080"
-    volumes: &airflow-volumes
-      - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/airflow/dags:/opt/airflow/dags
-      - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/airflow/plugins:/opt/airflow/plugins
-      - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/airflow/include:/opt/airflow/include
-      - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/airflow/webserver_config.py:/opt/airflow/webserver_config.py:ro
-      - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/mlsystem:/opt/mlsystem
-      - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/InferenceEngine:/opt/InferenceEngine
-      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/airflow/logs:/opt/airflow/logs
-      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/airflow/status:/opt/airflow/mlsystem_runs
-      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}:/data/mlsystem
-    healthcheck:
-      test: ["CMD-SHELL", "curl --fail http://localhost:8080/airflow/health || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 8
-      start_period: 90s
-    networks: [mlsystem-gpu]
-
-  airflow-scheduler:
-    image: ${MLSYSTEM_RUNTIME_IMAGE:-mlsystem/runtime:local}
-    build:
-      context: ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}
-      dockerfile: mlsystem/Dockerfile
-      args:
-        AIRFLOW_BASE_IMAGE: ${AIRFLOW_IMAGE:-apache/airflow:2.9.3-python3.11}
-    container_name: mlsystem-gpu-airflow-scheduler
-    depends_on:
-      airflow-postgres:
-        condition: service_healthy
-      mlsystem-api:
-        condition: service_healthy
-    env_file: /etc/mlsystem/gpu-platform.env
-    environment:
-      PYTHONPATH: /opt/mlsystem:/opt
-      MLSYSTEM_PIPELINE_CONFIG: ${MLSYSTEM_PIPELINE_CONFIG:-/opt/mlsystem/configs/pipeline.server.yaml}
-      _PIP_ADDITIONAL_REQUIREMENTS: ""
-      AIRFLOW__METRICS__STATSD_ON: "True"
-      AIRFLOW__METRICS__STATSD_HOST: statsd-exporter
-      AIRFLOW__METRICS__STATSD_PORT: "9125"
-      AIRFLOW__METRICS__STATSD_PREFIX: airflow
-    command: scheduler
-    volumes: *airflow-volumes
-    healthcheck:
-      test: ["CMD-SHELL", "airflow jobs check --job-type SchedulerJob --hostname \"$${HOSTNAME}\""]
-      interval: 30s
-      timeout: 10s
-      retries: 8
-      start_period: 90s
-    networks: [mlsystem-gpu]
-
-  airflow-triggerer:
-    image: ${MLSYSTEM_RUNTIME_IMAGE:-mlsystem/runtime:local}
-    build:
-      context: ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}
-      dockerfile: mlsystem/Dockerfile
-      args:
-        AIRFLOW_BASE_IMAGE: ${AIRFLOW_IMAGE:-apache/airflow:2.9.3-python3.11}
-    container_name: mlsystem-gpu-airflow-triggerer
-    depends_on:
-      airflow-postgres:
-        condition: service_healthy
-      mlsystem-api:
-        condition: service_healthy
-    env_file: /etc/mlsystem/gpu-platform.env
-    environment:
-      PYTHONPATH: /opt/mlsystem:/opt
-      MLSYSTEM_PIPELINE_CONFIG: ${MLSYSTEM_PIPELINE_CONFIG:-/opt/mlsystem/configs/pipeline.server.yaml}
-      _PIP_ADDITIONAL_REQUIREMENTS: ""
-      AIRFLOW__METRICS__STATSD_ON: "True"
-      AIRFLOW__METRICS__STATSD_HOST: statsd-exporter
-      AIRFLOW__METRICS__STATSD_PORT: "9125"
-      AIRFLOW__METRICS__STATSD_PREFIX: airflow
-    command: triggerer
-    volumes: *airflow-volumes
-    networks: [mlsystem-gpu]
-
+    networks:
+    - mlsystem-gpu
   triton:
     image: ${TRITON_IMAGE:-nvcr.io/nvidia/tritonserver:25.03-py3}
     container_name: mlsystem-gpu-triton
-    command: tritonserver --model-repository=/models --strict-model-config=false --model-control-mode=explicit --load-model=identity_python
+    command: tritonserver --model-repository=/models --strict-model-config=false --model-control-mode=explicit
+      --load-model=identity_python
     environment:
       PYTHONPATH: /opt/mlsystem:/opt
     gpus: all
     ports:
-      - "${TRITON_HTTP_PORT:-8000}:8000"
-      - "${TRITON_GRPC_PORT:-8001}:8001"
-      - "${TRITON_METRICS_PORT:-8002}:8002"
+    - ${TRITON_HTTP_PORT:-8000}:8000
+    - ${TRITON_GRPC_PORT:-8001}:8001
+    - ${TRITON_METRICS_PORT:-8002}:8002
     volumes:
-      - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/triton/model_repository:/models
-      - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/mlsystem:/opt/mlsystem
-      - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/InferenceEngine:/opt/InferenceEngine:ro
+    - ${MLSYSTEM_DATA_ROOT:-/data/mlsystem}/triton/model_repository:/models
+    - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/mlsystem:/opt/mlsystem
+    - ${MLSYSTEM_REPO_ROOT:-/opt/mlsystem/repo}/InferenceEngine:/opt/InferenceEngine:ro
     healthcheck:
-      test: ["CMD-SHELL", "curl --fail http://localhost:8000/v2/health/ready || exit 1"]
+      test:
+      - CMD-SHELL
+      - curl --fail http://localhost:8000/v2/health/ready || exit 1
       interval: 20s
       timeout: 10s
       retries: 12
       start_period: 90s
-    networks: [mlsystem-gpu]
-
+    networks:
+    - mlsystem-gpu
 networks:
   mlsystem-gpu:
     driver: bridge

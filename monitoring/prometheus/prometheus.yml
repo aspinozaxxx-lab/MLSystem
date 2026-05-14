@@ -31,10 +31,6 @@ scrape_configs:
     static_configs:
       - targets: ["triton:8002"]
 
-  - job_name: airflow-statsd
-    static_configs:
-      - targets: ["statsd-exporter:9102"]
-
   - job_name: inference-engine
     metrics_path: /metrics/prometheus
     static_configs:

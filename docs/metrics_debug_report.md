@@ -1,38 +1,38 @@
 # Metrics Debug Report
 
-Дата: 2026-05-08.
+Р”Р°С‚Р°: 2026-05-08.
 
-Базовый класс: `deforest` / `cuttings` / `вырубки`.
+Р‘Р°Р·РѕРІС‹Р№ РєР»Р°СЃСЃ: `deforest` / `cuttings` / `РІС‹СЂСѓР±РєРё`.
 
 ## Source of truth
 
-Production validation loop формирует один `production_metrics_snapshot` на каждую эпоху. Этот snapshot используется для:
+Production validation loop С„РѕСЂРјРёСЂСѓРµС‚ РѕРґРёРЅ `production_metrics_snapshot` РЅР° РєР°Р¶РґСѓСЋ СЌРїРѕС…Сѓ. Р­С‚РѕС‚ snapshot РёСЃРїРѕР»СЊР·СѓРµС‚СЃСЏ РґР»СЏ:
 
 - MLflow logging;
 - `epoch_summary.json`;
 - `production_metrics_snapshot.json`;
 - compact debug report folder;
-- последующих stage artifacts/XCom через `training_result.json`.
+- РїРѕСЃР»РµРґСѓСЋС‰РёС… stage artifacts/stage reports С‡РµСЂРµР· `training_result.json`.
 
-`metrics_recompute_check.json` не является альтернативным источником истины. Он только проверяет, что значения из production snapshot пересчитываются из per-sample TP/FP/FN/TN с допуском `1e-6`.
+`metrics_recompute_check.json` РЅРµ СЏРІР»СЏРµС‚СЃСЏ Р°Р»СЊС‚РµСЂРЅР°С‚РёРІРЅС‹Рј РёСЃС‚РѕС‡РЅРёРєРѕРј РёСЃС‚РёРЅС‹. РћРЅ С‚РѕР»СЊРєРѕ РїСЂРѕРІРµСЂСЏРµС‚, С‡С‚Рѕ Р·РЅР°С‡РµРЅРёСЏ РёР· production snapshot РїРµСЂРµСЃС‡РёС‚С‹РІР°СЋС‚СЃСЏ РёР· per-sample TP/FP/FN/TN СЃ РґРѕРїСѓСЃРєРѕРј `1e-6`.
 
-## Что исправлено
+## Р§С‚Рѕ РёСЃРїСЂР°РІР»РµРЅРѕ
 
-- `val/pixel_f1`, `val/pixel_iou`, `val/precision`, `val/recall`, `val/pixel_accuracy` считаются из глобальных TP/FP/FN/TN по всей validation выборке.
-- `val/pixel_tp`, `val/pixel_fp`, `val/pixel_fn`, `val/pixel_tn` и `val/threshold` пишутся в MLflow/history/training_result.
-- `train/loss_total`, `train/loss_bce`, `train/loss_dice`, `val/loss_total`, `val/loss_bce`, `val/loss_dice` логируются отдельно и усредняются по количеству samples, а не как last batch.
-- Object matching имеет deterministic tie-break: `(-iou, pred_index, gt_index)`.
-- Metrics debug dump пишет artifacts по каждой завершенной эпохе.
-- Compact report folder не копирует исходные raster/image датасета; в нем остаются lightweight masks, overlays and GeoJSON.
-- Добавлен production-safe wall-clock limit: `train.max_wallclock_seconds`. Если параметр не задан, новый limiter отключен. Если задан, training останавливается только после безопасной точки между завершенными эпохами.
+- `val/pixel_f1`, `val/pixel_iou`, `val/precision`, `val/recall`, `val/pixel_accuracy` СЃС‡РёС‚Р°СЋС‚СЃСЏ РёР· РіР»РѕР±Р°Р»СЊРЅС‹С… TP/FP/FN/TN РїРѕ РІСЃРµР№ validation РІС‹Р±РѕСЂРєРµ.
+- `val/pixel_tp`, `val/pixel_fp`, `val/pixel_fn`, `val/pixel_tn` Рё `val/threshold` РїРёС€СѓС‚СЃСЏ РІ MLflow/history/training_result.
+- `train/loss_total`, `train/loss_bce`, `train/loss_dice`, `val/loss_total`, `val/loss_bce`, `val/loss_dice` Р»РѕРіРёСЂСѓСЋС‚СЃСЏ РѕС‚РґРµР»СЊРЅРѕ Рё СѓСЃСЂРµРґРЅСЏСЋС‚СЃСЏ РїРѕ РєРѕР»РёС‡РµСЃС‚РІСѓ samples, Р° РЅРµ РєР°Рє last batch.
+- Object matching РёРјРµРµС‚ deterministic tie-break: `(-iou, pred_index, gt_index)`.
+- Metrics debug dump РїРёС€РµС‚ artifacts РїРѕ РєР°Р¶РґРѕР№ Р·Р°РІРµСЂС€РµРЅРЅРѕР№ СЌРїРѕС…Рµ.
+- Compact report folder РЅРµ РєРѕРїРёСЂСѓРµС‚ РёСЃС…РѕРґРЅС‹Рµ raster/image РґР°С‚Р°СЃРµС‚Р°; РІ РЅРµРј РѕСЃС‚Р°СЋС‚СЃСЏ lightweight masks, overlays and GeoJSON.
+- Р”РѕР±Р°РІР»РµРЅ production-safe wall-clock limit: `train.max_wallclock_seconds`. Р•СЃР»Рё РїР°СЂР°РјРµС‚СЂ РЅРµ Р·Р°РґР°РЅ, РЅРѕРІС‹Р№ limiter РѕС‚РєР»СЋС‡РµРЅ. Р•СЃР»Рё Р·Р°РґР°РЅ, training РѕСЃС‚Р°РЅР°РІР»РёРІР°РµС‚СЃСЏ С‚РѕР»СЊРєРѕ РїРѕСЃР»Рµ Р±РµР·РѕРїР°СЃРЅРѕР№ С‚РѕС‡РєРё РјРµР¶РґСѓ Р·Р°РІРµСЂС€РµРЅРЅС‹РјРё СЌРїРѕС…Р°РјРё.
 
-## Как включить Airflow debug report
+## РљР°Рє РІРєР»СЋС‡РёС‚СЊ pipeline debug report
 
-Пример `dag_run.conf` для `mlsystem_experiment_pipeline`:
+РџСЂРёРјРµСЂ `dag_run.conf` РґР»СЏ `mlsystem_experiment_pipeline`:
 
 ```json
 {
-  "experiment_id": "metrics_debug_cuttings_airflow_YYYYMMDD_HHMMSS",
+  "experiment_id": "metrics_debug_cuttings_pipeline_YYYYMMDD_HHMMSS",
   "class_name": "deforest",
   "task": "train_predict_pseudolabel",
   "images_uri": "s3://mlsystems/images/",
@@ -59,7 +59,7 @@ Production validation loop формирует один `production_metrics_snaps
     "class_name": "cuttings",
     "metrics_debug": {
       "enabled": true,
-      "class_name": "вырубки",
+      "class_name": "РІС‹СЂСѓР±РєРё",
       "class_id": 1,
       "save_every_epoch": true,
       "save_all_val_samples": true,
@@ -73,18 +73,18 @@ Production validation loop формирует один `production_metrics_snaps
 }
 ```
 
-Не задавать `max_train_batches`, `max_val_batches`, `max_train_tiles`, `max_val_tiles`, `max_scenes`, `dataset_limit`, `sample_size` для финального full-dataset debug run.
+РќРµ Р·Р°РґР°РІР°С‚СЊ `max_train_batches`, `max_val_batches`, `max_train_tiles`, `max_val_tiles`, `max_scenes`, `dataset_limit`, `sample_size` РґР»СЏ С„РёРЅР°Р»СЊРЅРѕРіРѕ full-dataset debug run.
 
 ## Raw debug artifacts
 
-Raw artifacts пишутся в:
+Raw artifacts РїРёС€СѓС‚СЃСЏ РІ:
 
 ```text
 <experiment_dir>/metrics_debug/<run_id>/epoch_0001/
 <experiment_dir>/metrics_debug/<run_id>/epoch_0002/
 ```
 
-На каждую эпоху:
+РќР° РєР°Р¶РґСѓСЋ СЌРїРѕС…Сѓ:
 
 - `epoch_summary.json`
 - `production_metrics_snapshot.json`
@@ -107,27 +107,27 @@ Raw artifacts пишутся в:
 - `samples/<sample_id>/object_matches.json`
 - `samples/<sample_id>/object_iou_matrix.csv`
 
-Raw debug dir может содержать `image.png` и `pred_prob.npz` для глубокой диагностики, но compact report folder их не копирует.
+Raw debug dir РјРѕР¶РµС‚ СЃРѕРґРµСЂР¶Р°С‚СЊ `image.png` Рё `pred_prob.npz` РґР»СЏ РіР»СѓР±РѕРєРѕР№ РґРёР°РіРЅРѕСЃС‚РёРєРё, РЅРѕ compact report folder РёС… РЅРµ РєРѕРїРёСЂСѓРµС‚.
 
 ## Compact report folder
 
-Training создает compact report under:
+Training СЃРѕР·РґР°РµС‚ compact report under:
 
 ```text
 <experiment_dir>/metrics_debug_reports/<report_name>/
 ```
 
-Структура:
+РЎС‚СЂСѓРєС‚СѓСЂР°:
 
 ```text
 summary.md
 run_metadata.json
 metrics_timeseries.csv
 metrics_timeseries.json
-airflow/dag_run.json
-airflow/task_statuses.json
-airflow/airflow_url.txt
-airflow/dag_conf.json
+pipeline/run.json
+pipeline/stage_statuses.json
+pipeline/run_url.txt
+pipeline/trace.json
 checks/source_of_truth_check.json
 checks/mlflow_consistency_check.json
 checks/report_structure_check.json
@@ -135,7 +135,7 @@ checks/dataset_full_run_check.json
 epochs/epoch_0001/...
 ```
 
-Эту папку можно копировать в `E:\Projects\reports\metrics_debug_cuttings_airflow_<airflow_run_id>_<timestamp>` после Airflow run.
+Р­С‚Сѓ РїР°РїРєСѓ РјРѕР¶РЅРѕ РєРѕРїРёСЂРѕРІР°С‚СЊ РІ `E:\Projects\reports\metrics_debug_cuttings_pipeline_<pipeline_run_id>_<timestamp>` РїРѕСЃР»Рµ pipeline run.
 
 ## Required consistency checks
 
@@ -150,6 +150,6 @@ epochs/epoch_0001/...
 ```text
 python -m unittest discover -s tests
 python -m unittest discover -s frontend/tests
-python -m compileall -q mlsystem airflow frontend tests
+python -m compileall -q mlsystem frontend tests
 git diff --check
 ```

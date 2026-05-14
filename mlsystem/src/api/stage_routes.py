@@ -3,8 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ..pipeline.airflow_tasks import DISPATCHER_STAGE_NAMES, MAIN_DAG_STAGES, STAGE_POOLS
 from ..pipeline.stages.registry import known_stages
+from ..pipeline_runner.config import STAGE_ALIASES
+from ..pipeline_runner.stages import DEFAULT_PIPELINE_STAGES, DISPATCHER_STAGE_NAMES, STAGE_POOLS
 from ..storage.local_io import read_json
 from .job_runner import JobRunner
 from .job_store import JobStore
@@ -14,17 +15,17 @@ from .models import JobStatusResponse, StageStartRequest, StageStartResponse
 def stages_payload() -> dict[str, Any]:
     registry_stages = known_stages()
     return {
-        "main_dag_stages": MAIN_DAG_STAGES,
+        "pipeline_stages": DEFAULT_PIPELINE_STAGES,
         "registry_stages": registry_stages,
         "dispatcher_stages": sorted(DISPATCHER_STAGE_NAMES),
         "stage_pools": STAGE_POOLS,
-        "aliases": {},
+        "aliases": STAGE_ALIASES,
     }
 
 
 def validate_stage_name(stage_name: str) -> None:
     payload = stages_payload()
-    known = set(payload["main_dag_stages"]) | set(payload["registry_stages"]) | set(payload["dispatcher_stages"])
+    known = set(payload["pipeline_stages"]) | set(payload["registry_stages"]) | set(payload["dispatcher_stages"])
     if stage_name not in known:
         raise ValueError(f"Unknown stage: {stage_name}")
 
@@ -48,7 +49,7 @@ def job_status(job_id: str, runner: JobRunner | None = None) -> JobStatusRespons
     return runner.refresh_job(job_id).to_status_response()
 
 
-def run_summary(run_id: str, status_root: str = "/data/mlsystem/airflow/status") -> dict[str, Any]:
+def run_summary(run_id: str, status_root: str = "/data/mlsystem/runs") -> dict[str, Any]:
     path = Path(status_root) / run_id / "summary.json"
     return read_json(path, default={}) or {}
 

@@ -8,7 +8,6 @@ mlsystem_gpu_compose_src: deploy/docker-compose.gpu.yml
 mlsystem_gpu_compose_path: /data/mlsystem/platform/docker-compose.yml
 mlsystem_gpu_bucket: mlsystems
 mlsystem_gpu_mlflow_bucket: mlflow-artifacts
-mlsystem_gpu_airflow_port: 8081
 mlsystem_gpu_mlflow_port: 5000
 mlsystem_gpu_minio_api_port: 9000
 mlsystem_gpu_minio_console_port: 9001
@@ -16,7 +15,6 @@ mlsystem_gpu_minio_console_listen_host: "127.0.0.1"
 mlsystem_gpu_triton_http_port: 8000
 mlsystem_gpu_triton_grpc_port: 8001
 mlsystem_gpu_triton_metrics_port: 8002
-mlsystem_gpu_airflow_image: apache/airflow:2.9.3-python3.11
 mlsystem_gpu_mlflow_image: ghcr.io/mlflow/mlflow:v3.11.1
 mlsystem_gpu_minio_image: minio/minio:RELEASE.2024-01-11T07-46-16Z
 mlsystem_gpu_postgres_image: postgres:15
@@ -38,12 +36,9 @@ mlsystem_gpu_cadvisor_port: 8080
 mlsystem_gpu_cadvisor_listen_host: "127.0.0.1"
 mlsystem_gpu_dcgm_exporter_port: 9400
 mlsystem_gpu_dcgm_exporter_listen_host: "127.0.0.1"
-mlsystem_gpu_statsd_exporter_port: 9102
-mlsystem_gpu_statsd_exporter_listen_host: "127.0.0.1"
 mlsystem_gpu_monitor_exporter_port: 9200
 mlsystem_gpu_monitor_exporter_listen_host: "127.0.0.1"
 mlsystem_gpu_mlflow_listen_host: "127.0.0.1"
-mlsystem_gpu_airflow_listen_host: "127.0.0.1"
 mlsystem_gpu_inference_engine_api_port: 8095
 mlsystem_gpu_inference_engine_image: mlsystem/inference-engine:local
 mlsystem_gpu_inference_engine_use_rabbitmq: "true"
@@ -59,12 +54,6 @@ mlsystem_gpu_inference_engine_merger_concurrency: 4
 mlsystem_gpu_api_http_retries: 120
 mlsystem_gpu_api_http_retry_delay_sec: 5
 mlsystem_gpu_api_http_timeout_sec: 30
-mlsystem_gpu_airflow_uid: "50000"
-mlsystem_gpu_airflow_pip_requirements: "pydantic==2.8.2 pydantic-core==2.20.1 PyYAML fastapi uvicorn requests mlflow boto3 numpy shapely rasterio pillow onnx onnxscript tritonclient[http] segmentation-models-pytorch torch torchvision --index-url https://download.pytorch.org/whl/cu128 --extra-index-url https://pypi.org/simple"
-mlsystem_gpu_airflow_gpu_slots: 1
-mlsystem_gpu_airflow_cpu_heavy_slots: 6
-mlsystem_gpu_airflow_cpu_light_slots: 12
-mlsystem_gpu_airflow_io_light_slots: 8
 mlsystem_gpu_api_port: 8088
 mlsystem_gpu_frontend_port: 8090
 mlsystem_gpu_frontend_user: mluser

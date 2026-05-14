@@ -152,7 +152,7 @@ def run(ctx: StageContext) -> StageReport:
     manifest = {
         "experiment_id": ctx.config.experiment_id,
         "created_by": "prepare_dataset",
-        "source": "airflow",
+        "source": "pipeline_runner",
         "annotation_source": inventory.get("annotation_source") or "layout_uri",
         "annotations": inventory.get("annotations") or getattr(ctx.config, "annotations", None) or {},
         "split_strategy": split_strategy,
@@ -256,11 +256,11 @@ def _resolve_dataset_input_limit(ctx: StageContext) -> dict[str, Any]:
     preprocess = dict(getattr(ctx.config, "preprocess", None) or {})
     raw_preprocess = dict((ctx.raw_conf or {}).get("preprocess") or {})
     candidates = [
-        ("dag_run.conf.preprocess.max_dataset_scenes", raw_preprocess.get("max_dataset_scenes"), preprocess.get("max_dataset_scenes")),
-        ("dag_run.conf.preprocess.dataset_limit", raw_preprocess.get("dataset_limit"), preprocess.get("dataset_limit")),
-        ("dag_run.conf.preprocess.scene_limit", raw_preprocess.get("scene_limit"), preprocess.get("scene_limit")),
-        ("dag_run.conf.preprocess.sample_size", raw_preprocess.get("sample_size"), preprocess.get("sample_size")),
-        ("dag_run.conf.preprocess.max_scenes", raw_preprocess.get("max_scenes"), preprocess.get("max_scenes")),
+        ("pipeline_trace.preprocess.max_dataset_scenes", raw_preprocess.get("max_dataset_scenes"), preprocess.get("max_dataset_scenes")),
+        ("pipeline_trace.preprocess.dataset_limit", raw_preprocess.get("dataset_limit"), preprocess.get("dataset_limit")),
+        ("pipeline_trace.preprocess.scene_limit", raw_preprocess.get("scene_limit"), preprocess.get("scene_limit")),
+        ("pipeline_trace.preprocess.sample_size", raw_preprocess.get("sample_size"), preprocess.get("sample_size")),
+        ("pipeline_trace.preprocess.max_scenes", raw_preprocess.get("max_scenes"), preprocess.get("max_scenes")),
     ]
     for source, raw_value, config_value in candidates:
         value = raw_value if raw_value is not None else config_value

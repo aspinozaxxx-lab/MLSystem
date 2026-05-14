@@ -1,5 +1,5 @@
-ARG AIRFLOW_BASE_IMAGE=apache/airflow:2.9.3-python3.11
-FROM ${AIRFLOW_BASE_IMAGE}
+ARG MLSYSTEM_BASE_IMAGE=python:3.11-slim
+FROM ${MLSYSTEM_BASE_IMAGE}
 
 COPY mlsystem/requirements-runtime.txt /tmp/mlsystem-requirements-runtime.txt
 

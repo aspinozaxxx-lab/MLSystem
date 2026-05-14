@@ -110,7 +110,6 @@ def create_app(config: FrontendConfig | None = None) -> FastAPI:
             "index.html",
             {
                 "user": request.session.get("mlsystem_user"),
-                "airflow_ui_url": config.airflow_ui_url,
                 "mlflow_ui_url": config.mlflow_ui_url,
                 "minio_ui_url": config.minio_ui_url,
                 "rabbitmq_management_url": config.rabbitmq_management_url,
@@ -307,7 +306,6 @@ def create_app(config: FrontendConfig | None = None) -> FastAPI:
         return {
             "status": "ok",
             "services": {
-                "airflow": _url_status("http://airflow-webserver:8080/airflow/api/v1/health"),
                 "mlflow": _url_status("http://mlflow:5000/mlflow/health"),
                 "minio": _url_status(config.s3_endpoint_url.rstrip("/") + "/minio/health/live"),
                 "inference_engine": _service_status_from_payload(_get_inference_engine_json(config, "/health", timeout=5)),
@@ -401,7 +399,7 @@ def _run_annotation_check(config: FrontendConfig, run_id: str, experiment_config
         )
         stage_payload = {
             "experiment_config": experiment_config,
-            "airflow_run_id": run_id,
+            "pipeline_run_id": run_id,
             "status_root": str(config.status_root),
             "source": "frontend",
         }
@@ -448,7 +446,7 @@ def _run_annotation_check(config: FrontendConfig, run_id: str, experiment_config
         )
         stage_payload = {
             "experiment_config": experiment_config,
-            "airflow_run_id": run_id,
+            "pipeline_run_id": run_id,
             "status_root": str(config.status_root),
             "source": "frontend",
         }

@@ -10,8 +10,7 @@ import shutil
 import subprocess
 import threading
 import time
-from datetime import date, datetime, timezone
-from decimal import Decimal
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +23,7 @@ from ..storage.local_io import read_json, write_json
 from .training_pipeline import TrainingPipeline
 
 
-MAIN_DAG_STAGES = [
+DEFAULT_PIPELINE_STAGES = [
     "inventory_scenes",
     "prepare_dataset",
     "create_mlflow_run",
@@ -56,87 +55,9 @@ STAGE_POOLS = {
     "finalize_mlflow_run": ("io_light", 1),
 }
 
-GPU_XCOM_STAGES = {"train_model", "predict_validation_scenes"}
+GPU_RESOURCE_STAGES = {"train_model", "predict_validation_scenes"}
 
-STAGE_XCOM_COUNTERS = {
-    "inventory_scenes": {"scene_rows", "available_images", "matched_scenes", "missing_scenes", "ambiguous_scenes"},
-    "prepare_dataset": {
-        "upstream_inventory_matched_scenes",
-        "selected_dataset_scenes",
-        "excluded_dataset_scenes",
-        "total_scenes",
-        "total_objects",
-        "scenes_without_objects",
-        "train_scenes",
-        "train_objects",
-        "val_scenes",
-        "val_objects",
-    },
-    "predict_validation_scenes": {
-        "validation_input_scenes",
-        "validation_scenes_processed",
-        "validation_scenes_skipped",
-        "validation_scenes_failed",
-        "validation_prediction_windows",
-        "validation_prediction_tiles",
-    },
-    "evaluate_pixel_metrics": {
-        "pixel_tp",
-        "pixel_fp",
-        "pixel_fn",
-        "pixel_tn",
-        "scenes_evaluated",
-    },
-    "vectorize_validation_predictions": {
-        "validation_vectorized_scenes",
-        "validation_prediction_files",
-        "validation_vectorized_objects",
-        "validation_empty_scenes",
-        "validation_failed_scenes",
-    },
-    "compute_f1": {
-        "reference_objects",
-        "predicted_objects",
-        "tp_objects",
-        "fp_objects",
-        "fn_objects",
-        "reference_scenes",
-        "prediction_scenes",
-    },
-    "inference_engine_pipeline": {
-        "pseudolabel_scenes_processed",
-        "pseudolabel_scenes_skipped",
-        "pseudolabel_scenes_failed",
-        "pseudolabel_prediction_windows",
-        "probability_maps",
-        "tiles_total",
-        "tiles_done",
-        "blocks_total",
-        "blocks_done",
-        "triton_batches",
-        "inference_engine_http_submitted",
-    },
-    "finalize_mlflow_run": {"failed_stages", "warning_stages"},
-    "log_mlflow_artifacts": {"artifacts_logged", "artifacts_failed"},
-    "generate_prediction_examples": {"examples_requested", "examples_generated", "examples_failed"},
-    "write_codex_api_summary": {"summary_sections"},
-}
-
-STAGE_XCOM_METRICS = {
-    "evaluate_pixel_metrics": {"pixel_precision", "pixel_recall", "pixel_f1", "pixel_iou", "pixel_accuracy"},
-    "compute_f1": {"pixel_precision", "pixel_recall", "pixel_f1", "pixel_iou", "object_precision", "object_recall", "object_f1"},
-    "inference_engine_pipeline": {"streaming_overlap_sec", "triton_batch_fill_ratio", "triton_request_duration_ms"},
-}
-
-STAGE_XCOM_DIRECT_COUNTERS = {
-    "prepare_dataset": {"split_strategy"},
-    "evaluate_pixel_metrics": {"threshold"},
-    "inference_engine_pipeline": {"backend", "source", "request_submitted_via_http", "inference_engine_job_id"},
-    "finalize_mlflow_run": {"mlflow_run_id", "mlflow_final_status"},
-    "log_mlflow_artifacts": {"mlflow_run_id"},
-}
-
-CLI_STAGE_ALIASES = {
+PIPELINE_STAGE_ALIASES = {
     "inventory": "inventory_scenes",
     "prepare-dataset": "prepare_dataset",
     "train": "train_model",
@@ -161,7 +82,7 @@ DISPATCHER_STAGE_NAMES = {
 }
 
 
-class AirflowExperimentConfig(BaseModel):
+class ExperimentStageConfig(BaseModel):
     schema_version: int | None = None
     experiment_id: str
     class_name: str | None = None
@@ -191,7 +112,7 @@ class AirflowExperimentConfig(BaseModel):
         return value
 
     @model_validator(mode="after")
-    def resolve_annotation_source(self) -> "AirflowExperimentConfig":
+    def resolve_annotation_source(self) -> "ExperimentStageConfig":
         annotations = dict(self.annotations or {})
         if _is_mlmarkup_source(annotations):
             resolved = _resolve_mlmarkup_annotation_config(annotations, self.class_name)
@@ -248,7 +169,7 @@ def _resolve_mlmarkup_annotation_config(annotations: dict[str, Any], class_name:
 
 def _default_mlmarkup_class_dir(class_name: str | None) -> str:
     normalized = str(class_name or "").strip().lower()
-    if normalized in {"deforest", "cuttings", "clearcuts", "clear_cuts", "вырубки"}:
+    if normalized in {"deforest", "cuttings", "clearcuts", "clear_cuts", "РІС‹СЂСѓР±РєРё", "вырубки"}:
         return "Вырубки"
     return str(class_name or "").strip() or "Вырубки"
 
@@ -330,13 +251,13 @@ def load_conf(conf_file: str | None = None, conf_json: str | None = None) -> dic
     return {}
 
 
-class AirflowRunStore:
-    def __init__(self, state_dir: Path, airflow_run_id: str, conf: dict[str, Any]) -> None:
+class ExperimentStageStore:
+    def __init__(self, state_dir: Path, pipeline_run_id: str, conf: dict[str, Any]) -> None:
         self.state_dir = state_dir
-        self.airflow_run_id = airflow_run_id
+        self.pipeline_run_id = pipeline_run_id
         self.conf = conf
-        self.experiment_id = str(conf.get("experiment_id") or safe_run_id(airflow_run_id))
-        self.run_dir = state_dir / self.experiment_id
+        self.experiment_id = str(conf.get("experiment_id") or safe_run_id(pipeline_run_id))
+        self.run_dir = state_dir / safe_run_id(pipeline_run_id)
         self.stage_dir = self.run_dir / "stages"
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.stage_dir.mkdir(parents=True, exist_ok=True)
@@ -352,7 +273,7 @@ class AirflowRunStore:
         payload = {
             "schema_version": 1,
             "experiment_id": self.experiment_id,
-            "airflow_run_id": self.airflow_run_id,
+            "pipeline_run_id": self.pipeline_run_id,
             "updated_at": utc_now(),
             "stages": {},
             "warnings": [],
@@ -382,7 +303,7 @@ class AirflowRunStore:
                 stage_payload,
                 path=report_path,
                 stage=stage,
-                run_id=self.airflow_run_id,
+                run_id=self.pipeline_run_id,
                 stage_json_path=stage_json_path,
                 container_status_root=self.state_dir,
             )
@@ -484,7 +405,7 @@ def _attach_stage_runtime_counters(result: dict[str, Any], stage: str, resources
     pool_name = (STAGE_POOLS.get(stage) or ("default_pool", 1))[0]
     counters.setdefault("requested_pool", pool_name)
     counters.setdefault("effective_pool", pool_name)
-    if stage not in GPU_XCOM_STAGES:
+    if stage not in GPU_RESOURCE_STAGES:
         result["counters"] = counters
         return
     before_gpu = _first_gpu(resources_before)
@@ -572,7 +493,7 @@ def _safe_rel(path: Path, root: Path) -> str:
         return path.as_posix()
 
 
-def _existing_artifacts(store: AirflowRunStore) -> dict[str, str]:
+def _existing_artifacts(store: ExperimentStageStore) -> dict[str, str]:
     names = [
         "train_scenes.txt",
         "val_scenes.txt",
@@ -591,11 +512,11 @@ def _existing_artifacts(store: AirflowRunStore) -> dict[str, str]:
     return {name: _safe_rel(store.run_dir / name, store.run_dir) for name in names if (store.run_dir / name).exists()}
 
 
-def _forbidden_logged_artifacts(store: AirflowRunStore) -> list[str]:
+def _forbidden_logged_artifacts(store: ExperimentStageStore) -> list[str]:
     return sorted(name for name in MLFLOW_EXCLUDED_ARTIFACT_NAMES if (store.run_dir / name).exists())
 
 
-def _cleanup_runtime_intermediates(conf: AirflowExperimentConfig, store: AirflowRunStore) -> dict[str, Any]:
+def _cleanup_runtime_intermediates(conf: ExperimentStageConfig, store: ExperimentStageStore) -> dict[str, Any]:
     cleanup_cfg = conf.pseudolabel.get("cleanup_intermediates", True)
     if cleanup_cfg is False or conf.pseudolabel.get("keep_intermediates"):
         return {"enabled": False, "reason": "disabled_by_config"}
@@ -646,12 +567,12 @@ def _cleanup_runtime_intermediates(conf: AirflowExperimentConfig, store: Airflow
     }
 
 
-def _read_training_result(store: AirflowRunStore) -> dict[str, Any]:
+def _read_training_result(store: ExperimentStageStore) -> dict[str, Any]:
     summary = store.read_summary()
     return summary.get("training_result") or read_json(store.run_dir / "training_result.json", default={}) or {}
 
 
-def _build_airflow_job(conf: AirflowExperimentConfig) -> JobSpec:
+def _build_pipeline_job(conf: ExperimentStageConfig) -> JobSpec:
     train_cfg = dict(conf.train or {})
     preprocess_cfg = dict(conf.preprocess or {})
     model_cfg = dict(conf.model or {})
@@ -696,7 +617,7 @@ def _build_airflow_job(conf: AirflowExperimentConfig) -> JobSpec:
         job_id=conf.experiment_id,
         task=conf.task,
         class_name=conf.class_name,
-        description="Airflow experiment run",
+        description="Pipeline experiment run",
         params=params_cfg,
         data={
             "images_uri": conf.images_uri,
@@ -715,7 +636,7 @@ def _build_airflow_job(conf: AirflowExperimentConfig) -> JobSpec:
     )
 
 
-def _run_training_pipeline(conf: AirflowExperimentConfig, store: AirflowRunStore) -> dict[str, Any]:
+def _run_training_pipeline(conf: ExperimentStageConfig, store: ExperimentStageStore) -> dict[str, Any]:
     summary = store.read_summary()
     mlflow_info = summary.get("mlflow") or {}
     run_id = mlflow_info.get("run_id")
@@ -724,13 +645,13 @@ def _run_training_pipeline(conf: AirflowExperimentConfig, store: AirflowRunStore
     train_pseudolabel = dict(conf.pseudolabel or {})
     train_pseudolabel["enabled"] = False
     train_only_conf = conf.model_copy(update={"pseudolabel": train_pseudolabel})
-    job = _build_airflow_job(train_only_conf)
+    job = _build_pipeline_job(train_only_conf)
     job.params.setdefault(
-        "airflow",
+        "pipeline",
         {
-            "dag_id": "mlsystem_experiment_pipeline",
-            "run_id": store.airflow_run_id,
-            "dag_conf": store.conf,
+            "pipeline_id": "mlsystem_experiment_pipeline",
+            "run_id": store.pipeline_run_id,
+            "pipeline_trace": store.conf,
         },
     )
     extra_tags, extra_params = _mlflow_tuning_metadata(conf.params)
@@ -738,12 +659,12 @@ def _run_training_pipeline(conf: AirflowExperimentConfig, store: AirflowRunStore
     if prepared_manifest.exists():
         job.preprocess.setdefault("prepared_dataset_manifest", str(prepared_manifest))
         job.preprocess.setdefault("use_prepared_dataset_manifest", True)
-    job_log = store.run_dir / "airflow_train.log"
+    job_log = store.run_dir / "train.log"
     tags = {
         "job_id": conf.experiment_id,
-        "airflow_run_id": store.airflow_run_id,
-        "orchestrator": "airflow",
-        "execution_path": "airflow_api",
+        "pipeline_run_id": store.pipeline_run_id,
+        "orchestrator": "pipeline",
+        "execution_path": "pipeline_api",
         "task": conf.task,
         "class_name": conf.class_name or "",
         "mlsystem.class_name": conf.class_name or "",
@@ -769,13 +690,13 @@ def _run_training_pipeline(conf: AirflowExperimentConfig, store: AirflowRunStore
     ) as mlflow_run:
         result = TrainingPipeline().run(pipeline_config, job, store.run_dir, mlflow_run, job_log, _append_log)
         result["mlflow"] = mlflow_run.result()
-        mlflow_run.set_tags({"job_status": "training_completed", "airflow_training_status": "success"})
+        mlflow_run.set_tags({"job_status": "training_completed", "pipeline_training_status": "success"})
     write_json(store.run_dir / "training_result.json", result)
     store.update_summary(training_result=result, mlflow=result.get("mlflow") or mlflow_info)
     return result
 
 
-def _write_run_summaries(conf: AirflowExperimentConfig, store: AirflowRunStore) -> tuple[Path, Path]:
+def _write_run_summaries(conf: ExperimentStageConfig, store: ExperimentStageStore) -> tuple[Path, Path]:
     summary = store.read_summary()
     result = _read_training_result(store)
     post_metrics = result.get("postprocess_metrics") or {}
@@ -783,7 +704,7 @@ def _write_run_summaries(conf: AirflowExperimentConfig, store: AirflowRunStore) 
     run_summary = {
         "schema_version": 1,
         "experiment_id": conf.experiment_id,
-        "airflow_run_id": store.airflow_run_id,
+        "pipeline_run_id": store.pipeline_run_id,
         "status": summary.get("status", "running"),
         "mlflow": summary.get("mlflow") or result.get("mlflow"),
         "training": {
@@ -810,7 +731,7 @@ def _write_run_summaries(conf: AirflowExperimentConfig, store: AirflowRunStore) 
     }
     codex_summary = {
         "experiment_id": conf.experiment_id,
-        "airflow_run_id": store.airflow_run_id,
+        "pipeline_run_id": store.pipeline_run_id,
         "mlflow_run_url": (summary.get("mlflow") or result.get("mlflow") or {}).get("run_url_external")
         or (summary.get("mlflow") or result.get("mlflow") or {}).get("external_run_url"),
         "current_stage": summary.get("current_stage"),
@@ -830,10 +751,10 @@ def _write_run_summaries(conf: AirflowExperimentConfig, store: AirflowRunStore) 
     return run_summary_path, codex_summary_path
 
 
-def _smoke_or_skip(conf: AirflowExperimentConfig, stage: str) -> dict[str, Any] | None:
+def _smoke_or_skip(conf: ExperimentStageConfig, stage: str) -> dict[str, Any] | None:
     if not conf.smoke:
         return None
-    skip_reason = "synthetic smoke validates Airflow/API orchestration only; external S3, dataset, training, inference, vectorization and MLflow writes are skipped."
+    skip_reason = "synthetic smoke validates Pipeline/API orchestration only; external S3, dataset, training, inference, vectorization and MLflow writes are skipped."
     return _stage_result(
         "skipped",
         summary="Synthetic smoke stage skipped: orchestration-only run.",
@@ -868,7 +789,7 @@ def _mlflow_url_fields(pipeline_config: Any, experiment_id: str | None, run_id: 
     return fields, warnings
 
 
-def _dataset_manifest(store: AirflowRunStore) -> dict[str, Any]:
+def _dataset_manifest(store: ExperimentStageStore) -> dict[str, Any]:
     return read_json(store.run_dir / "dataset_manifest.json", default={}) or {}
 
 
@@ -979,7 +900,7 @@ def _close_metric(left: float, right: float | None, *, rel_tol: float = 1e-3, ab
     return math.isclose(float(left), float(right), rel_tol=rel_tol, abs_tol=abs_tol)
 
 
-def _write_pixel_metrics_artifacts(store: AirflowRunStore, metrics: dict[str, Any], counters: dict[str, Any], aliases: list[dict[str, str]], warnings: list[str]) -> dict[str, str]:
+def _write_pixel_metrics_artifacts(store: ExperimentStageStore, metrics: dict[str, Any], counters: dict[str, Any], aliases: list[dict[str, str]], warnings: list[str]) -> dict[str, str]:
     payload = {
         "metrics": metrics,
         "counters": counters,
@@ -1033,7 +954,7 @@ def _object_metric_summary(training_result: dict[str, Any]) -> tuple[dict[str, A
     return normalized, counters, warnings
 
 
-def _log_mlflow_metrics_if_available(store: AirflowRunStore, metrics: dict[str, Any], counters: dict[str, Any] | None = None) -> list[str]:
+def _log_mlflow_metrics_if_available(store: ExperimentStageStore, metrics: dict[str, Any], counters: dict[str, Any] | None = None) -> list[str]:
     summary = store.read_summary()
     mlflow_info = summary.get("mlflow") or _read_training_result(store).get("mlflow") or {}
     run_id = mlflow_info.get("run_id")
@@ -1126,7 +1047,7 @@ def _mlflow_tuning_metadata(params: dict[str, Any] | None) -> tuple[dict[str, st
     return tags, mlflow_params
 
 
-def _create_mlflow_run(conf: AirflowExperimentConfig, store: AirflowRunStore) -> dict[str, Any]:
+def _create_mlflow_run(conf: ExperimentStageConfig, store: ExperimentStageStore) -> dict[str, Any]:
     try:
         import mlflow
 
@@ -1150,10 +1071,10 @@ def _create_mlflow_run(conf: AirflowExperimentConfig, store: AirflowRunStore) ->
             mlflow.set_tags(
                 {
                     "job_id": conf.experiment_id,
-                    "airflow_run_id": store.airflow_run_id,
-                    "orchestrator": "airflow",
+                    "pipeline_run_id": store.pipeline_run_id,
+                    "orchestrator": "pipeline",
                     "job_status": "running",
-                    "execution_path": "airflow_api",
+                    "execution_path": "pipeline_api",
                     "task": conf.task,
                     "class_name": conf.class_name or "",
                     "mlsystem.class_name": conf.class_name or "",
@@ -1226,7 +1147,7 @@ def _create_mlflow_run(conf: AirflowExperimentConfig, store: AirflowRunStore) ->
         raise
 
 
-def _finalize_mlflow_run(conf: AirflowExperimentConfig, store: AirflowRunStore) -> dict[str, Any]:
+def _finalize_mlflow_run(conf: ExperimentStageConfig, store: ExperimentStageStore) -> dict[str, Any]:
     summary = store.read_summary()
     mlflow_info = summary.get("mlflow") or {}
     run_id = mlflow_info.get("run_id")
@@ -1259,7 +1180,7 @@ def _finalize_mlflow_run(conf: AirflowExperimentConfig, store: AirflowRunStore) 
         url_fields, url_warnings = _mlflow_url_fields(pipeline_config, mlflow_info.get("experiment_id"), run_id)
         store.update_summary(status="success", finished_at=utc_now(), runtime_cleanup=cleanup)
         with mlflow.start_run(run_id=run_id):
-            mlflow.set_tags({"job_status": "success", "airflow_status": "success"})
+            mlflow.set_tags({"job_status": "success", "pipeline_status": "success"})
             mlflow.log_artifact(str(store.summary_path))
         return _stage_result(
             "success",
@@ -1275,7 +1196,7 @@ def _finalize_mlflow_run(conf: AirflowExperimentConfig, store: AirflowRunStore) 
         return _stage_result("failed", error=f"{type(exc).__name__}: {exc}", counters={**final_counters, "mlflow_run_id": run_id, "mlflow_final_status": "failed"})
 
 
-def _run_airflow_synthetic_pseudolabel_smoke(store: AirflowRunStore) -> dict[str, Any]:
+def _run_pipeline_synthetic_pseudolabel_smoke(store: ExperimentStageStore) -> dict[str, Any]:
     smoke_dir = store.run_dir / "synthetic_pseudolabel"
     smoke_dir.mkdir(parents=True, exist_ok=True)
     accepted_geojson = smoke_dir / f"{store.experiment_id}.accepted.geojson"
@@ -1284,7 +1205,7 @@ def _run_airflow_synthetic_pseudolabel_smoke(store: AirflowRunStore) -> dict[str
     root_prediction_examples = store.run_dir / "prediction_examples.html"
     smoke_summary = {
         "status": "success",
-        "mode": "airflow_synthetic",
+        "mode": "pipeline_synthetic",
         "coverage": {"width": 16, "height": 16, "covered_pixels": 256, "missing_pixels": 0},
         "objects": {"accepted": 1, "rejected": 0},
     }
@@ -1293,7 +1214,7 @@ def _run_airflow_synthetic_pseudolabel_smoke(store: AirflowRunStore) -> dict[str
         "features": [
             {
                 "type": "Feature",
-                "properties": {"score": 0.9, "source": "airflow_synthetic_smoke"},
+                "properties": {"score": 0.9, "source": "pipeline_synthetic_smoke"},
                 "geometry": {
                     "type": "Polygon",
                     "coordinates": [[[2, 2], [14, 2], [14, 14], [2, 14], [2, 2]]],
@@ -1304,11 +1225,11 @@ def _run_airflow_synthetic_pseudolabel_smoke(store: AirflowRunStore) -> dict[str
     geojson_text = json.dumps(geojson, ensure_ascii=False, indent=2)
     accepted_geojson.write_text(geojson_text, encoding="utf-8")
     root_accepted_geojson.write_text(geojson_text, encoding="utf-8")
-    prediction_html = "<!doctype html><html><body><h1>MLSystem Airflow smoke</h1><p>Synthetic pseudolabel smoke completed.</p></body></html>"
+    prediction_html = "<!doctype html><html><body><h1>MLSystem Pipeline smoke</h1><p>Synthetic pseudolabel smoke completed.</p></body></html>"
     prediction_examples.write_text(prediction_html, encoding="utf-8")
     root_prediction_examples.write_text(prediction_html, encoding="utf-8")
     coverage_report = {
-        "mode": "airflow_synthetic",
+        "mode": "pipeline_synthetic",
         "scenes_processed": 1,
         "total_expected_windows": 1,
         "total_predicted_windows": 1,
@@ -1317,7 +1238,7 @@ def _run_airflow_synthetic_pseudolabel_smoke(store: AirflowRunStore) -> dict[str
     }
     pseudolabel_summary = {
         "status": "success",
-        "mode": "airflow_synthetic",
+        "mode": "pipeline_synthetic",
         "accepted_geojson": str(root_accepted_geojson),
         "prediction_examples_html": str(root_prediction_examples),
         "metrics": {
@@ -1330,7 +1251,7 @@ def _run_airflow_synthetic_pseudolabel_smoke(store: AirflowRunStore) -> dict[str
     write_json(store.run_dir / "coverage_report.json", coverage_report)
     write_json(store.run_dir / "pseudolabel_summary.json", pseudolabel_summary)
     (store.run_dir / "pseudolabel_scenes.txt").write_text("synthetic\n", encoding="utf-8")
-    write_json(store.run_dir / "pseudolabel_scene_results_manifest.json", {"mode": "airflow_synthetic", "scenes": ["synthetic"]})
+    write_json(store.run_dir / "pseudolabel_scene_results_manifest.json", {"mode": "pipeline_synthetic", "scenes": ["synthetic"]})
     write_json(smoke_dir / "summary.json", smoke_summary)
     return {
         "summary": "Synthetic pseudolabel smoke completed without heavy ML dependencies.",
@@ -1342,15 +1263,15 @@ def _run_airflow_synthetic_pseudolabel_smoke(store: AirflowRunStore) -> dict[str
     }
 
 
-def _run_dispatcher_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: str, state_dir: Path) -> dict[str, Any]:
+def _run_dispatcher_stage(stage: str, conf_payload: dict[str, Any], pipeline_run_id: str, state_dir: Path) -> dict[str, Any]:
     started = time.time()
     resources_before = _resource_snapshot()
-    conf = AirflowExperimentConfig.model_validate(conf_payload)
-    store = AirflowRunStore(state_dir, airflow_run_id, conf.model_dump())
+    conf = ExperimentStageConfig.model_validate(conf_payload)
+    store = ExperimentStageStore(state_dir, pipeline_run_id, conf.model_dump())
     store.update_summary(
         status="running",
         experiment_config=conf.model_dump(),
-        airflow={"dag_id": "mlsystem_experiment_pipeline", "run_id": airflow_run_id},
+        pipeline={"pipeline_id": "mlsystem_experiment_pipeline", "run_id": pipeline_run_id},
         active_stage=stage,
         active_stage_started_at=utc_now(),
         active_stage_resources=resources_before,
@@ -1425,7 +1346,7 @@ def _run_dispatcher_stage(stage: str, conf_payload: dict[str, Any], airflow_run_
             _write_simple_key_value_report(txt_path, "Validation prediction", {"summary": prediction_summary})
             result = _stage_result(
                 "skipped",
-                summary="Validation prediction skipped because train/predict is disabled for this InferenceEngine-only DAG run.",
+                summary="Validation prediction skipped because train/predict is disabled for this InferenceEngine-only pipeline run.",
                 skip_reason=prediction_summary["reason"],
                 counters={
                     "validation_input_scenes": validation_input_scenes,
@@ -1565,7 +1486,7 @@ def _run_dispatcher_stage(stage: str, conf_payload: dict[str, Any], airflow_run_
         if not _section_enabled(conf.train):
             summary_payload = {
                 "status": "skipped",
-                "reason": "training and validation metrics are disabled for this InferenceEngine-only DAG run.",
+                "reason": "training and validation metrics are disabled for this InferenceEngine-only pipeline run.",
                 "pixel_metrics": {},
                 "object_metrics": {},
             }
@@ -1579,7 +1500,7 @@ def _run_dispatcher_stage(stage: str, conf_payload: dict[str, Any], airflow_run_
             _write_simple_key_value_report(object_matching_txt, "Object matching", {"summary": summary_payload})
             result = _stage_result(
                 "skipped",
-                summary="F1 computation skipped because training is disabled for this InferenceEngine-only DAG run.",
+                summary="F1 computation skipped because training is disabled for this InferenceEngine-only pipeline run.",
                 skip_reason=summary_payload["reason"],
                 counters={
                     "reference_objects": 0,
@@ -1712,7 +1633,7 @@ def _run_dispatcher_stage(stage: str, conf_payload: dict[str, Any], airflow_run_
     elif stage == "finalize_mlflow_run":
         result = _finalize_mlflow_run(conf, store)
     else:
-        raise ValueError(f"Unknown Airflow MLSystem stage: {stage}")
+        raise ValueError(f"Unknown Pipeline MLSystem stage: {stage}")
 
     result["duration_sec"] = round(time.time() - started, 3)
     monitor_payload = monitor.stop()
@@ -1723,7 +1644,7 @@ def _run_dispatcher_stage(stage: str, conf_payload: dict[str, Any], airflow_run_
     return store.write_stage(stage, result)
 
 
-def run_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: str, state_dir: Path) -> dict[str, Any]:
+def run_stage(stage: str, conf_payload: dict[str, Any], pipeline_run_id: str, state_dir: Path) -> dict[str, Any]:
     from .stages.context import StageContext
     from .stages.registry import get_stage_entrypoint
     from .stages.report import StageFailure, StageReport
@@ -1732,19 +1653,19 @@ def run_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: str, sta
         entrypoint = get_stage_entrypoint(stage)
     except KeyError:
         if stage not in DISPATCHER_STAGE_NAMES:
-            known = ", ".join(MAIN_DAG_STAGES + sorted(DISPATCHER_STAGE_NAMES))
-            raise ValueError(f"Unknown Airflow MLSystem stage: {stage}. Known stages: {known}")
-        return _run_dispatcher_stage(stage, conf_payload, airflow_run_id, state_dir)
+            known = ", ".join(DEFAULT_PIPELINE_STAGES + sorted(DISPATCHER_STAGE_NAMES))
+            raise ValueError(f"Unknown Pipeline MLSystem stage: {stage}. Known stages: {known}")
+        return _run_dispatcher_stage(stage, conf_payload, pipeline_run_id, state_dir)
 
     started = time.time()
     resources_before = _resource_snapshot()
-    conf = AirflowExperimentConfig.model_validate(conf_payload)
-    store = AirflowRunStore(state_dir, airflow_run_id, conf.model_dump())
-    logger = logging.getLogger(f"mlsystem.airflow.{stage}")
+    conf = ExperimentStageConfig.model_validate(conf_payload)
+    store = ExperimentStageStore(state_dir, pipeline_run_id, conf.model_dump())
+    logger = logging.getLogger(f"mlsystem.pipeline.{stage}")
     store.update_summary(
         status="running",
         experiment_config=conf.model_dump(),
-        airflow={"dag_id": "mlsystem_experiment_pipeline", "run_id": airflow_run_id},
+        pipeline={"pipeline_id": "mlsystem_experiment_pipeline", "run_id": pipeline_run_id},
         active_stage=stage,
         active_stage_started_at=utc_now(),
         active_stage_resources=resources_before,
@@ -1760,7 +1681,7 @@ def run_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: str, sta
         else:
             context = StageContext(
                 stage_id=stage,
-                run_id=airflow_run_id,
+                run_id=pipeline_run_id,
                 config=conf,
                 raw_conf=conf_payload,
                 status_dir=state_dir,
@@ -1769,7 +1690,7 @@ def run_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: str, sta
             )
             report = entrypoint(context)
             result = report.to_stage_payload()
-            log_text = report.to_airflow_log()
+            log_text = report.to_pipeline_log()
             if report.status == "failed":
                 logger.error(log_text)
                 failure_to_raise = RuntimeError(result.get("error") or report.summary or f"{stage} failed")
@@ -1778,12 +1699,12 @@ def run_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: str, sta
     except StageFailure as exc:
         report = exc.report
         result = report.to_stage_payload()
-        logger.error(report.to_airflow_log())
+        logger.error(report.to_pipeline_log())
         failure_to_raise = exc
     except Exception as exc:  # noqa: BLE001
         report = StageReport(stage_id=stage, status="failed", errors=[str(exc)])
         result = report.to_stage_payload()
-        logger.error(report.to_airflow_log())
+        logger.error(report.to_pipeline_log())
         failure_to_raise = exc
     finally:
         monitor_payload = monitor.stop()
@@ -1804,247 +1725,18 @@ def run_stage(stage: str, conf_payload: dict[str, Any], airflow_run_id: str, sta
     return written
 
 
-def run_airflow_stage(stage: str, dag_run_conf: dict[str, Any], airflow_run_id: str, state_dir: Path | str) -> dict[str, Any]:
-    from ..orchestration.airflow_api_client import run_stage_via_api
-
-    return run_stage_via_api(stage, dag_run_conf, airflow_run_id, Path(state_dir))
-
-
-def push_stage_xcom(summary: dict[str, Any], task_instance: Any) -> None:
-    """Push compact stage result as readable Airflow XCom key/value pairs."""
-    if task_instance is None:
-        return
-    enriched = dict(summary)
-    stage = _canonical_xcom_stage(str(enriched.get("stage") or ""))
-    if stage:
-        enriched.setdefault("pool", (STAGE_POOLS.get(str(stage)) or ("default_pool", 1))[0])
-    enriched.setdefault("execution_mode", str(os.getenv("MLSYSTEM_AIRFLOW_EXECUTION_MODE") or "api").lower())
-    for key in (
-        "stage",
-        "status",
-        "run_id",
-        "job_id",
-        "summary",
-        "report_path",
-        "stage_json_path",
-        "warnings_count",
-        "errors_count",
-        "duration_sec",
-        "pool",
-        "execution_mode",
-        "skip_reason",
-        "is_smoke_synthetic",
-        "mlflow_run_id",
-        "mlflow_final_status",
-        "summary_path",
-        "url_mlflow_run",
-        "url_mlflow_experiment",
-    ):
-        if key in enriched:
-            safe_xcom_push(task_instance, key, enriched.get(key))
-    counters = enriched.get("key_counters") or {}
-    requested_pool = counters.get("requested_pool") or enriched.get("pool")
-    effective_pool = counters.get("effective_pool") or requested_pool
-    safe_xcom_push(task_instance, "requested_pool", requested_pool)
-    safe_xcom_push(task_instance, "effective_pool", effective_pool)
-    if enriched.get("is_smoke_synthetic"):
-        return
-
-    metrics = enriched.get("key_metrics") or {}
-    object_metrics_available: bool | None = None
-    if stage == "compute_f1":
-        object_metric_keys = {"object_precision", "object_recall", "object_f1"}
-        pixel_metric_keys = {"pixel_precision", "pixel_recall", "pixel_f1", "pixel_iou", "pixel_accuracy"}
-        object_available = any(_is_numeric_xcom_value(metrics.get(name)) for name in object_metric_keys)
-        object_metrics_available = object_available
-        pixel_available = any(_is_numeric_xcom_value(metrics.get(name)) for name in pixel_metric_keys)
-        safe_xcom_push(task_instance, "object_metrics_available", object_available)
-        if not object_available:
-            safe_xcom_push(task_instance, "object_metrics_reason", "validation vectorization is not implemented as a distinct stage yet")
-        safe_xcom_push(task_instance, "pixel_metrics_available", pixel_available)
-        if not pixel_available:
-            safe_xcom_push(task_instance, "pixel_metrics_reason", "pixel metrics are not available in current training_result.json")
-
-    for name in sorted(STAGE_XCOM_DIRECT_COUNTERS.get(stage, set())):
-        if name in counters:
-            safe_xcom_push(task_instance, _xcom_key(name), counters.get(name))
-    if stage in GPU_XCOM_STAGES:
-        for name in ("device", "cuda_available", "gpu_name"):
-            if name in counters:
-                safe_xcom_push(task_instance, name, counters.get(name))
-    for name in sorted(STAGE_XCOM_COUNTERS.get(stage, set())):
-        if stage == "compute_f1" and object_metrics_available is False:
-            continue
-        if name in counters:
-            safe_xcom_push(task_instance, f"counter_{_xcom_key(name)}", counters.get(name))
-    for name in sorted(STAGE_XCOM_METRICS.get(stage, set())):
-        if name in metrics:
-            safe_xcom_push(task_instance, f"metric_{_xcom_key(name)}", metrics.get(name))
-
-
-def stage_return_message(summary: dict[str, Any]) -> str:
-    message = f"{summary.get('status')}: {summary.get('stage')}, report={summary.get('report_path')}"
-    return str(xcom_safe_value(message) or "")[:512]
-
-
-XCOM_MAX_VALUE_CHARS = 2000
-_XCOM_BASE_KEYS = {
-    "stage",
-    "status",
-    "run_id",
-    "job_id",
-    "summary",
-    "report_path",
-    "stage_json_path",
-    "warnings_count",
-    "errors_count",
-    "duration_sec",
-    "pool",
-    "execution_mode",
-    "requested_pool",
-    "effective_pool",
-    "skip_reason",
-    "is_smoke_synthetic",
-    "mlflow_run_id",
-    "mlflow_final_status",
-    "summary_path",
-    "url_mlflow_run",
-    "url_mlflow_experiment",
-}
-
-_XCOM_DIRECT_KEYS = {
-    "backend",
-    "device",
-    "cuda_available",
-    "gpu_name",
-    "split_strategy",
-    "vectorization_mode",
-    "threshold",
-    "limit_source",
-    "limit_reason",
-    "object_metrics_available",
-    "object_metrics_reason",
-    "pixel_metrics_available",
-    "pixel_metrics_reason",
-}
-
-
-def safe_xcom_push(task_instance: Any, key: str, value: Any) -> None:
-    """Push one XCom key after scalar-only normalization."""
-    normalized_key = _xcom_key(key)
-    logger = logging.getLogger("mlsystem.airflow.xcom")
-    if not _is_allowed_xcom_key(normalized_key):
-        logger.warning("Skipping unsupported XCom key %s", normalized_key)
-        return
-    safe_value, converted, skip_reason = _coerce_xcom_value(value, key=normalized_key)
-    if skip_reason:
-        logger.info(
-            "Skipping unsafe/unavailable XCom key=%s value_type=%s reason=%s",
-            normalized_key,
-            type(value).__name__,
-            skip_reason,
-        )
-        return
-    if converted:
-        logger.warning("Converted XCom value for key %s to safe scalar", normalized_key)
-    task_instance.xcom_push(key=normalized_key, value=safe_value)
-
-
-def xcom_safe_value(value: Any) -> str | int | float | bool | None:
-    """Return an Airflow metadata-safe scalar value."""
-    return _coerce_xcom_value(value)[0]
-
-
-def _is_allowed_xcom_key(key: str) -> bool:
-    return key in _XCOM_BASE_KEYS or key in _XCOM_DIRECT_KEYS or key.startswith("counter_") or key.startswith("metric_") or key.startswith("url_")
-
-
-def _canonical_xcom_stage(stage: str) -> str:
-    return stage
-
-
-def _coerce_xcom_value(value: Any, *, key: str | None = None) -> tuple[str | int | float | bool | None, bool, str | None]:
-    original_type = type(value)
-    normalized_key = _xcom_key(key or "")
-    is_metric = normalized_key.startswith("metric_")
-    is_counter = normalized_key.startswith("counter_")
-    try:
-        import numpy as np  # type: ignore
-
-        if isinstance(value, np.generic):
-            value = value.item()
-    except Exception:  # noqa: BLE001 - numpy is optional for the wrapper.
-        pass
-
-    if value is None:
-        return None, False, "unavailable None value"
-    if isinstance(value, bool):
-        if is_metric or is_counter:
-            return None, False, "boolean is not a numeric metric/counter"
-        return value, original_type is not bool, None
-    if isinstance(value, int) and not isinstance(value, bool):
-        return int(value), original_type is not int, None
-    if isinstance(value, float):
-        if not math.isfinite(float(value)):
-            return None, False, "non-finite float"
-        return float(value), original_type is not float, None
-    if isinstance(value, Decimal):
-        if not value.is_finite():
-            return None, False, "non-finite Decimal"
-        return float(value), True, None
-    if isinstance(value, datetime):
-        if is_metric or is_counter:
-            return None, False, "datetime is not a numeric metric/counter"
-        return value.isoformat(), True, None
-    if isinstance(value, date):
-        if is_metric or is_counter:
-            return None, False, "date is not a numeric metric/counter"
-        return value.isoformat(), True, None
-    if isinstance(value, Path):
-        if is_metric or is_counter:
-            return None, False, "Path is not a numeric metric/counter"
-        return _truncate_xcom_text(str(value)), True, None
-    if isinstance(value, str):
-        if is_metric or is_counter:
-            if value.strip().lower() in {"", "none", "null", "nan", "inf", "+inf", "-inf", "not_available", "not_computed", "unknown"}:
-                return None, False, "unavailable string value"
-            return None, False, "string is not a numeric metric/counter"
-        return _truncate_xcom_text(value), False, None
-    if isinstance(value, bytes):
-        return None, False, "bytes are not allowed in XCom"
-    if isinstance(value, (dict, list, tuple, set)):
-        return None, False, "container values are not allowed in scalar XCom"
-    return None, False, "custom object is not allowed in scalar XCom"
-
-
-def _is_numeric_xcom_value(value: Any) -> bool:
-    safe_value, _converted, skip_reason = _coerce_xcom_value(value, key="metric_value")
-    return skip_reason is None and isinstance(safe_value, (int, float)) and not isinstance(safe_value, bool)
-
-
-def _truncate_xcom_text(value: str, max_chars: int = XCOM_MAX_VALUE_CHARS) -> str:
-    if len(value) <= max_chars:
-        return value
-    return value[: max_chars - 3] + "..."
-
-
-def _xcom_key(value: Any) -> str:
-    key = re.sub(r"[^A-Za-z0-9_]+", "_", str(value)).strip("_")
-    return key[:180] or "value"
-
-
 def main() -> None:
-    parser = argparse.ArgumentParser(description="MLSystem Airflow task wrapper")
+    parser = argparse.ArgumentParser(description="MLSystem Pipeline task wrapper")
     sub = parser.add_subparsers(dest="command", required=True)
-    command_names = sorted(set([stage.replace("_", "-") for stage in MAIN_DAG_STAGES] + list(CLI_STAGE_ALIASES)))
+    command_names = sorted(set([stage.replace("_", "-") for stage in DEFAULT_PIPELINE_STAGES] + list(PIPELINE_STAGE_ALIASES)))
     for command_name in command_names:
         p = sub.add_parser(command_name)
         p.add_argument("--run-id", required=True)
-        p.add_argument("--state-dir", default=os.getenv("MLSYSTEM_AIRFLOW_STATE_DIR", "/data/mlsystem/airflow/status"))
+        p.add_argument("--state-dir", default=os.getenv("MLSYSTEM_RUN_ROOT", "/data/mlsystem/runs"))
         p.add_argument("--conf-file", default=None)
         p.add_argument("--conf-json", default=None)
     args = parser.parse_args()
-    stage = CLI_STAGE_ALIASES.get(args.command, args.command.replace("-", "_"))
+    stage = PIPELINE_STAGE_ALIASES.get(args.command, args.command.replace("-", "_"))
     payload = run_stage(stage, load_conf(args.conf_file, args.conf_json), args.run_id, Path(args.state_dir))
     print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True, default=str))
 

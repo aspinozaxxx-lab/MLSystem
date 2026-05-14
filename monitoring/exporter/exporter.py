@@ -5,7 +5,6 @@ import json
 import os
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -15,9 +14,6 @@ def env(name: str, default: str) -> str:
     return os.getenv(name, default).rstrip("/")
 
 
-AIRFLOW_URL = env("AIRFLOW_BASE_URL", "http://airflow-webserver:8080/airflow")
-AIRFLOW_USER = os.getenv("AIRFLOW_ADMIN_USER") or os.getenv("_AIRFLOW_WWW_USER_USERNAME") or "admin"
-AIRFLOW_PASSWORD = os.getenv("AIRFLOW_ADMIN_PASSWORD") or os.getenv("_AIRFLOW_WWW_USER_PASSWORD") or ""
 INFERENCE_ENGINE_URL = env("INFERENCE_ENGINE_API_URL", "http://inference-engine-api:8095")
 INFERENCE_ENGINE_TOKEN = os.getenv("INFERENCE_ENGINE_API_TOKEN")
 MLSYSTEM_API_URL = env("MLSYSTEM_API_URL", "http://mlsystem-api:8088")
@@ -50,19 +46,11 @@ def service_checks() -> list[tuple[str, str]]:
         ("frontend", f"{FRONTEND_URL}/health"),
         ("mlsystem_api", f"{MLSYSTEM_API_URL}/health"),
         ("inference_engine", f"{INFERENCE_ENGINE_URL}/health"),
-        ("airflow", f"{AIRFLOW_URL}/api/v1/health"),
         ("mlflow", f"{MLFLOW_URL}/health"),
         ("minio", f"{MINIO_URL}/minio/health/live"),
         ("triton", f"{TRITON_URL}/v2/health/ready"),
         ("rabbitmq_management", f"{RABBITMQ_URL}/api/overview"),
     ]
-
-
-def auth_headers() -> dict[str, str]:
-    if not AIRFLOW_PASSWORD:
-        return {}
-    token = base64.b64encode(f"{AIRFLOW_USER}:{AIRFLOW_PASSWORD}".encode("utf-8")).decode("ascii")
-    return {"Authorization": f"Basic {token}"}
 
 
 def rabbitmq_headers() -> dict[str, str]:
@@ -84,7 +72,6 @@ def render_metrics() -> str:
     ]
     lines.extend(render_service_metrics())
     lines.extend(render_inference_engine_metrics())
-    lines.extend(render_airflow_metrics())
     lines.append("")
     return "\n".join(lines)
 
@@ -97,7 +84,7 @@ def render_service_metrics() -> list[str]:
         "# TYPE mlsystem_service_http_status gauge",
     ]
     for service, url in service_checks():
-        headers = auth_headers() if service == "airflow" else rabbitmq_headers() if service == "rabbitmq_management" else {}
+        headers = rabbitmq_headers() if service == "rabbitmq_management" else {}
         status, _payload = http_json(url, timeout=5, headers=headers)
         up = 1 if 200 <= status < 400 else 0
         lines.append(f'mlsystem_service_up{{service="{label(service)}"}} {up}')
@@ -136,59 +123,6 @@ def render_inference_engine_metrics() -> list[str]:
     ]:
         lines.append(f'mlsystem_inference_engine_{key} {number(aggregate.get(key))}')
     return lines
-
-
-def render_airflow_metrics() -> list[str]:
-    headers = auth_headers()
-    lines = [
-        "# HELP airflow_scheduler_healthy Airflow scheduler health from REST API.",
-        "# TYPE airflow_scheduler_healthy gauge",
-    ]
-    status, health = http_json(f"{AIRFLOW_URL}/api/v1/health", headers=headers)
-    scheduler_ok = 0
-    if status == 200 and isinstance(health, dict):
-        scheduler_ok = 1 if (health.get("scheduler") or {}).get("status") == "healthy" else 0
-    lines.append(f"airflow_scheduler_healthy {scheduler_ok}")
-
-    dag_id = os.getenv("MLSYSTEM_MONITOR_AIRFLOW_DAG_ID", "mlsystem_experiment_pipeline")
-    status, runs = http_json(f"{AIRFLOW_URL}/api/v1/dags/{dag_id}/dagRuns?limit=5&order_by=-start_date", headers=headers)
-    if status != 200 or not isinstance(runs, dict):
-        return lines
-    dag_runs = runs.get("dag_runs") or []
-    lines.extend(
-        [
-            "# HELP airflow_dag_run_state Latest Airflow DAG run state labels.",
-            "# TYPE airflow_dag_run_state gauge",
-            "# HELP airflow_latest_dag_run_info Latest Airflow DAG run info.",
-            "# TYPE airflow_latest_dag_run_info gauge",
-            "# HELP airflow_task_state Airflow task state labels for recent runs.",
-            "# TYPE airflow_task_state gauge",
-            "# HELP airflow_task_duration_seconds Airflow task duration for recent runs.",
-            "# TYPE airflow_task_duration_seconds gauge",
-        ]
-    )
-    for idx, run in enumerate(dag_runs):
-        run_id = str(run.get("dag_run_id") or "")
-        state = str(run.get("state") or "unknown")
-        lines.append(f'airflow_dag_run_state{{dag_id="{label(dag_id)}",run_id="{label(run_id)}",state="{label(state)}"}} 1')
-        if idx == 0:
-            lines.append(f'airflow_latest_dag_run_info{{dag_id="{label(dag_id)}",run_id="{label(run_id)}",state="{label(state)}"}} 1')
-        task_status, tasks = http_json(f"{AIRFLOW_URL}/api/v1/dags/{dag_id}/dagRuns/{quote(run_id)}/taskInstances", headers=headers)
-        if task_status != 200 or not isinstance(tasks, dict):
-            continue
-        for task in tasks.get("task_instances") or []:
-            task_id = str(task.get("task_id") or "")
-            task_state = str(task.get("state") or "unknown")
-            duration = number(task.get("duration"))
-            lines.append(
-                f'airflow_task_state{{dag_id="{label(dag_id)}",run_id="{label(run_id)}",task_id="{label(task_id)}",state="{label(task_state)}"}} 1'
-            )
-            lines.append(f'airflow_task_duration_seconds{{dag_id="{label(dag_id)}",task_id="{label(task_id)}"}} {duration}')
-    return lines
-
-
-def quote(value: str) -> str:
-    return urllib.parse.quote(value, safe="")
 
 
 def number(value: Any) -> float:

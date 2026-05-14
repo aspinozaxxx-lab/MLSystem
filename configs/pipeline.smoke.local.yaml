@@ -1,0 +1,15 @@
+schema_version: 1
+run_id: smoke_pipeline_local
+experiment_id: smoke_pipeline_local
+smoke: true
+pipeline:
+  stages:
+    - inventory_scenes
+    - prepare_dataset
+  dry_run: true
+  stop_on_failure: true
+  log_mlflow: false
+pseudolabel:
+  enabled: false
+train:
+  enabled: false

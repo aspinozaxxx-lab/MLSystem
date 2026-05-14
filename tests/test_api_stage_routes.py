@@ -15,11 +15,11 @@ from mlsystem.src.api.stage_routes import debug_run_stage_sync, stages_payload, 
 class ApiStageRoutesTests(unittest.TestCase):
     def test_stages_payload_contains_main_stages(self) -> None:
         payload = stages_payload()
-        self.assertIn("inventory_scenes", payload["main_dag_stages"])
-        self.assertIn("inference_engine_pipeline", payload["main_dag_stages"])
-        self.assertNotIn("run_pseudolabel_inference", payload["main_dag_stages"])
+        self.assertIn("inventory_scenes", payload["pipeline_stages"])
+        self.assertIn("inference_engine_pipeline", payload["pipeline_stages"])
+        self.assertNotIn("run_pseudolabel_inference", payload["pipeline_stages"])
         self.assertNotIn("prepare_inference_scenes", payload["registry_stages"])
-        self.assertEqual(payload["aliases"], {})
+        self.assertEqual(payload["aliases"]["inventory"], "inventory_scenes")
 
     def test_unknown_stage_fails_validation(self) -> None:
         with self.assertRaisesRegex(ValueError, "Unknown stage"):

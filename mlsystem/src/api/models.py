@@ -14,12 +14,12 @@ def utc_now() -> str:
 
 class StageStartRequest(BaseModel):
     experiment_config: dict[str, Any] = Field(default_factory=dict)
-    airflow_run_id: str | None = None
-    status_root: str = "/data/mlsystem/airflow/status"
+    pipeline_run_id: str | None = None
+    status_root: str = "/data/mlsystem/runs"
     force: bool = False
     dry_run: bool = False
     request_id: str | None = None
-    source: str = "airflow"
+    source: str = "api"
 
 
 class StageStartResponse(BaseModel):
@@ -53,7 +53,7 @@ class JobStatusResponse(BaseModel):
 class ApiJob(BaseModel):
     job_id: str
     run_id: str
-    airflow_run_id: str
+    pipeline_run_id: str
     stage: str
     state: JobState = "queued"
     pid: int | None = None
@@ -62,8 +62,8 @@ class ApiJob(BaseModel):
     finished_at: str | None = None
     duration_sec: float | None = None
     request_id: str | None = None
-    source: str = "airflow"
-    status_root: str = "/data/mlsystem/airflow/status"
+    source: str = "api"
+    status_root: str = "/data/mlsystem/runs"
     report: dict[str, Any] | None = None
     error: JobError | None = None
     artifacts: dict[str, Any] = Field(default_factory=dict)

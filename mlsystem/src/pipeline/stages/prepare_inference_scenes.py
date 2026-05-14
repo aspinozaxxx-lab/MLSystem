@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-# Deprecated compatibility helper. Source of truth: InferenceEngine. Not used as a production Airflow stage.
+# Deprecated compatibility helper. Source of truth: InferenceEngine. Not used by the production pipeline runner.
 
 from typing import Any
 

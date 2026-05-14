@@ -1,6 +1,6 @@
 # Модуль подготовки тайлов
 
-`mlsystem/src/tile_preparation/` - отдельный модуль подготовки training/validation тайлов для сегментации. Он не зависит от Airflow, FastAPI и внутренних деталей `real_train.py`: входом являются уже разделённые списки сцен и путь к GeoJSON, выходом - ленивые `Dataset`/batch iterator с готовыми `image`, `mask` и lightweight metadata.
+`mlsystem/src/tile_preparation/` - отдельный модуль подготовки training/validation тайлов для сегментации. Он не зависит от orchestration layer, FastAPI и внутренних деталей `real_train.py`: входом являются уже разделённые списки сцен и путь к GeoJSON, выходом - ленивые `Dataset`/batch iterator с готовыми `image`, `mask` и lightweight metadata.
 
 ## Главное правило
 

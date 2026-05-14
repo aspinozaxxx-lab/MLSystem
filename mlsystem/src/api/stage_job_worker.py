@@ -20,10 +20,14 @@ def run_job(job_id: str, job_root: Path | None = None) -> int:
     stdout_buffer = io.StringIO()
     stderr_buffer = io.StringIO()
     try:
-        from ..pipeline.airflow_tasks import run_stage
+        from ..pipeline_runner.config import PipelineRunConfig
+        from ..pipeline_runner.run_store import PipelineRunStore
+        from ..pipeline_runner.stages import run_stage
 
         with redirect_stdout(stdout_buffer), redirect_stderr(stderr_buffer):
-            result = run_stage(job.stage, request.experiment_config, job.airflow_run_id, Path(request.status_root))
+            config = PipelineRunConfig.model_validate(request.experiment_config)
+            pipeline_store = PipelineRunStore(Path(request.status_root), job.pipeline_run_id, config)
+            result = run_stage(job.stage, config, pipeline_store, job.pipeline_run_id)
         report = mask_secrets(result)
         finish_job(store, job, state="succeeded", report=report)
         _write_tails(store, job_id, stdout_buffer.getvalue(), stderr_buffer.getvalue())
@@ -35,7 +39,7 @@ def run_job(job_id: str, job_root: Path | None = None) -> int:
             message=mask_text(str(exc)),
             traceback_tail=mask_text("\n".join(tb.splitlines()[-40:])),
         )
-        report = _load_written_stage_report(request, job.stage, job.airflow_run_id)
+        report = _load_written_stage_report(request, job.stage, job.pipeline_run_id)
         if not report:
             report = {"stage": job.stage, "status": "failed"}
         report["status"] = "failed"
@@ -52,9 +56,9 @@ def _write_tails(store: JobStore, job_id: str, stdout_text: str, stderr_text: st
     (job_dir / "stderr_tail.txt").write_text(stderr_text[-max_chars:], encoding="utf-8")
 
 
-def _load_written_stage_report(request: StageStartRequest, stage: str, airflow_run_id: str) -> dict | None:
+def _load_written_stage_report(request: StageStartRequest, stage: str, pipeline_run_id: str) -> dict | None:
     experiment_id = request.experiment_config.get("experiment_id") if isinstance(request.experiment_config, dict) else None
-    run_dir_name = str(experiment_id or _safe_run_id(airflow_run_id))
+    run_dir_name = _safe_run_id(pipeline_run_id or str(experiment_id or "run"))
     path = Path(request.status_root) / run_dir_name / "stages" / f"{stage}.json"
     if not path.exists():
         return None

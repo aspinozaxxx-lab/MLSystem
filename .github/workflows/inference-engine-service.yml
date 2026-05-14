@@ -5,7 +5,6 @@ on:
     paths:
       - "InferenceEngine/**"
       - "mlsystem/**"
-      - "airflow/**"
       - "tests/**"
       - "scripts/**"
       - "docs/**"
@@ -15,7 +14,6 @@ on:
     paths:
       - "InferenceEngine/**"
       - "mlsystem/**"
-      - "airflow/**"
       - "tests/**"
       - "scripts/**"
       - "docs/**"
@@ -51,7 +49,7 @@ jobs:
       - name: Run repository unit tests
         run: python -m unittest discover -s tests
       - name: Compile
-        run: python -m compileall -q InferenceEngine mlsystem airflow tests scripts
+        run: python -m compileall -q InferenceEngine mlsystem tests scripts
       - name: Validate queue contracts
         run: python -c "from InferenceEngine.src.inference_engine.queues.messages import validate_queue_contracts; print(validate_queue_contracts())"
       - name: Whitespace check

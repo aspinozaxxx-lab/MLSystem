@@ -1117,7 +1117,7 @@ def run_debug_pseudolabel(
     patch_size = int(job.preprocess.get("tile_size") or job.train.get("patch_size") or 1024)
     model_name = str(model_cfg.get("name") or job.predict.get("model_name") or "tiny_unet_4ch")
     checkpoint_path = pseudolabel_cfg.get("checkpoint_path") or job.predict.get("checkpoint_path") or job.params.get("checkpoint_path")
-    stage_mode = str(pseudolabel_cfg.get("_airflow_stage_mode") or pseudolabel_cfg.get("_stage_mode") or "full").lower()
+    stage_mode = str(pseudolabel_cfg.get("_pipeline_stage_mode") or pseudolabel_cfg.get("_stage_mode") or "full").lower()
     if stage_mode in {"postprocess", "vectorize"}:
         gt_shapes = _load_shapes(config, annotation_uri) if annotation_uri else []
         if run_on in {"all_available_images", "all_images"}:
@@ -1961,12 +1961,12 @@ def run_real_train(
     )
     metrics_debug_report: dict[str, Any] | None = None
     if debug_enabled and bool(metrics_debug_cfg.get("report_enabled", True)):
-        airflow_metadata = job.params.get("airflow") if isinstance(job.params.get("airflow"), dict) else {}
+        pipeline_metadata = job.params.get("pipeline") if isinstance(job.params.get("pipeline"), dict) else {}
         report_root = Path(str(metrics_debug_cfg.get("report_root") or (experiment_dir / "metrics_debug_reports")))
         report_timestamp = time.strftime("%Y%m%d_%H%M%S")
         report_name = str(
             metrics_debug_cfg.get("report_name")
-            or f"metrics_debug_cuttings_airflow_{airflow_metadata.get('run_id') or job.job_id}_{report_timestamp}"
+            or f"metrics_debug_cuttings_pipeline_{pipeline_metadata.get('run_id') or job.job_id}_{report_timestamp}"
         )
         dataset_check = {
             "class_name": metrics_debug_cfg.get("class_name") or metric_class_name,
@@ -2004,10 +2004,10 @@ def run_real_train(
             "branch": os.getenv("MLSYSTEM_GIT_BRANCH") or job.params.get("git_branch") or "",
             "commit": os.getenv("MLSYSTEM_COMMIT") or os.getenv("MLSYSTEM_GIT_COMMIT") or job.params.get("git_commit") or "",
             "pushed_remote": job.params.get("pushed_remote") or "",
-            "airflow": airflow_metadata,
-            "airflow_url": airflow_metadata.get("url") or "",
-            "dag_conf": airflow_metadata.get("dag_conf") or {},
-            "task_statuses": airflow_metadata.get("task_statuses") or {},
+            "pipeline": pipeline_metadata,
+            "pipeline_url": pipeline_metadata.get("url") or "",
+            "pipeline_trace": pipeline_metadata.get("trace") or {},
+            "stage_statuses": pipeline_metadata.get("stage_statuses") or {},
             "mlflow_run_id": mlflow_run.run_id,
             "mlflow_url": (mlflow_run.result() or {}).get("run_url_external"),
             "debug_root": str(metrics_debug_root / job.job_id),

@@ -17,7 +17,6 @@ class MonitoringConfigTests(unittest.TestCase):
             "dcgm-exporter",
             "rabbitmq",
             "triton",
-            "airflow-statsd",
             "inference-engine",
             "mlsystem-monitor-exporter",
         ]:
@@ -46,10 +45,10 @@ class MonitoringConfigTests(unittest.TestCase):
             "node-exporter:",
             "cadvisor:",
             "dcgm-exporter:",
-            "statsd-exporter:",
             "mlsystem-monitor-exporter:",
         ]:
             self.assertIn(service, text)
+        self.assertNotIn("airflow", text.lower())
         self.assertIn("rabbitmq_prometheus", Path("ansible/roles/gpu_platform/tasks/main.yml").read_text(encoding="utf-8"))
 
 

@@ -87,7 +87,7 @@
     - { key: "MLSYSTEM_FRONTEND_UPLOAD_ROOT", value: "/data/mlsystem/frontend/uploads" }
     - { key: "MLSYSTEM_FRONTEND_TRAINING_REPORT_ROOT", value: "/data/mlsystem/frontend/training_report" }
     - { key: "MLSYSTEM_TUNING_ROOT", value: "/data/mlsystem/tuning" }
-    - { key: "MLSYSTEM_AIRFLOW_STATUS_ROOT", value: "/data/mlsystem/airflow/status" }
+    - { key: "MLSYSTEM_RUN_ROOT", value: "/data/mlsystem/runs" }
     - { key: "MLSYSTEM_MLMARKUP_REPO_PATH", value: "/data/MLMarkup" }
     - { key: "MLSYSTEM_API_BASE_URL", value: "http://mlsystem-api:8088" }
     - { key: "MLSYSTEM_FRONTEND_DEFAULT_IMAGES_URI", value: "{{ mlsystem_gpu_frontend_default_images_uri }}" }
@@ -95,7 +95,6 @@
     - { key: "MLSYSTEM_FRONTEND_DEFAULT_SPLIT_STRATEGY", value: "{{ mlsystem_gpu_frontend_default_split_strategy }}" }
     - { key: "MLSYSTEM_FRONTEND_MAX_UPLOAD_MB", value: "{{ mlsystem_gpu_frontend_max_upload_mb }}" }
     - { key: "MLSYSTEM_FRONTEND_S3_PREFIX", value: "frontend-checks" }
-    - { key: "FRONTEND_AIRFLOW_UI_URL", value: "/airflow/" }
     - { key: "FRONTEND_MLFLOW_UI_URL", value: "/mlflow/" }
     - { key: "FRONTEND_MINIO_UI_URL", value: "/minio-browser/" }
     - { key: "FRONTEND_RABBITMQ_MANAGEMENT_URL", value: "/rabbitmq/" }

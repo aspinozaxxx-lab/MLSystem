@@ -225,16 +225,16 @@ def write_metrics_debug_report(
     report_dir.mkdir(parents=True, exist_ok=True)
 
     epochs_out = report_dir / "epochs"
-    airflow_dir = report_dir / "airflow"
+    pipeline_dir = report_dir / "pipeline"
     checks_dir = report_dir / "checks"
-    airflow_dir.mkdir(parents=True, exist_ok=True)
+    pipeline_dir.mkdir(parents=True, exist_ok=True)
     checks_dir.mkdir(parents=True, exist_ok=True)
 
     _write_json(report_dir / "run_metadata.json", run_metadata)
-    _write_json(airflow_dir / "dag_conf.json", run_metadata.get("dag_conf") or {})
-    _write_json(airflow_dir / "dag_run.json", run_metadata.get("airflow") or {})
-    _write_json(airflow_dir / "task_statuses.json", run_metadata.get("task_statuses") or {})
-    (airflow_dir / "airflow_url.txt").write_text(str(run_metadata.get("airflow_url") or ""), encoding="utf-8")
+    _write_json(pipeline_dir / "trace.json", run_metadata.get("pipeline_trace") or {})
+    _write_json(pipeline_dir / "run.json", run_metadata.get("pipeline") or {})
+    _write_json(pipeline_dir / "stage_statuses.json", run_metadata.get("stage_statuses") or {})
+    (pipeline_dir / "run_url.txt").write_text(str(run_metadata.get("pipeline_url") or ""), encoding="utf-8")
 
     timeseries: list[dict[str, Any]] = []
     mlflow_checks: list[dict[str, Any]] = []
@@ -589,9 +589,8 @@ def _write_summary_md(
         f"- branch: `{run_metadata.get('branch') or ''}`",
         f"- commit: `{run_metadata.get('commit') or ''}`",
         f"- pushed_remote: `{run_metadata.get('pushed_remote') or ''}`",
-        f"- Airflow DAG id: `{(run_metadata.get('airflow') or {}).get('dag_id') or ''}`",
-        f"- Airflow dag_run_id: `{(run_metadata.get('airflow') or {}).get('run_id') or ''}`",
-        f"- Airflow URL: `{run_metadata.get('airflow_url') or ''}`",
+        f"- pipeline run id: `{(run_metadata.get('pipeline') or {}).get('run_id') or ''}`",
+        f"- pipeline URL: `{run_metadata.get('pipeline_url') or ''}`",
         f"- MLflow run id: `{run_metadata.get('mlflow_run_id') or ''}`",
         f"- MLflow URL: `{run_metadata.get('mlflow_url') or ''}`",
         f"- server debug artifact path: `{run_metadata.get('debug_root') or ''}`",
@@ -657,7 +656,7 @@ def _write_summary_md(
             "",
             "## Вывод",
             "",
-            f"- Run zapushchen cherez Airflow: `{bool((run_metadata.get('airflow') or {}).get('run_id'))}`",
+            f"- Pipeline run recorded: `{bool((run_metadata.get('pipeline') or {}).get('run_id'))}`",
             f"- Epochs completed: `{len(timeseries)}`",
             f"- Metrics consistency OK: `{all(row.get('ok') for row in mlflow_checks)}`",
             f"- Raw dataset images copied into report: `{report_structure.get('raw_images_copied')}`",

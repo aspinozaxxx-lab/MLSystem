@@ -1,12 +1,12 @@
 # MLSystem Python package
 
-This package contains production code used by `mlsystem-api` and Airflow stages.
+This package contains production code used by `mlsystem-api` and the MLSystem pipeline runner.
 
-The current server path does not use a filesystem job queue or local CLI executor. Airflow starts stages through the API, and the API persists job state outside the repository.
+The current server path starts complete pipeline runs through FastAPI and persists run state outside the repository.
 
 Useful local checks:
 
 ```bash
 python -m unittest discover -s tests
-python -m compileall -q mlsystem airflow tests
+python -m compileall -q mlsystem tests
 ```

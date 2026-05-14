@@ -24,7 +24,7 @@ class JobStore:
         job = ApiJob(
             job_id=job_id,
             run_id=run_id,
-            airflow_run_id=request.airflow_run_id or run_id,
+            pipeline_run_id=request.pipeline_run_id or run_id,
             stage=stage,
             state="queued",
             request_id=request.request_id,
