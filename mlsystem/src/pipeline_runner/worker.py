@@ -44,9 +44,9 @@ def run_worker(run_id: str, run_root: str | Path | None = None) -> int:
                     print(f"[{utc_now()}] starting stage {stage}", flush=True)
                     if config.pipeline.dry_run:
                         report = _dry_run_report(stage)
-                        store.write_stage_report(run_id, stage, report)
                     else:
                         report = stages.run_stage(stage, config, store, run_id)
+                    report = store.write_stage_report(run_id, stage, report)
                     print(f"[{utc_now()}] finished stage {stage}: {report.get('status')}", flush=True)
             except Exception as exc:  # noqa: BLE001
                 failed = True

@@ -29,6 +29,30 @@ class PipelineRunnerWorkerTests(unittest.TestCase):
             self.assertEqual(status["state"], "succeeded")
             self.assertEqual(status["progress_percent"], 100)
 
+    def test_worker_imports_raw_stage_payload_into_run_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = PipelineRunStore(Path(tmp))
+            store.create_run(PipelineRunConfig.model_validate({"run_id": "raw_payload", "experiment_id": "unit", "pipeline": {"stages": ["train_model"]}}))
+
+            def fake_run_stage(_stage, _config, _stage_store, _run_id):
+                return {
+                    "status": "success",
+                    "summary": "raw dispatcher payload",
+                    "mlflow": {"run_id": "mlflow-run-1", "experiment_id": "40"},
+                    "artifacts": {"training_result.json": "training_result.json"},
+                }
+
+            with patch("mlsystem.src.pipeline_runner.worker.stages.run_stage", side_effect=fake_run_stage):
+                rc = run_worker("raw_payload", Path(tmp))
+
+            self.assertEqual(rc, 0)
+            status = store.read_run("raw_payload")
+            self.assertEqual(status["state"], "succeeded")
+            self.assertEqual(status["stages"][0]["state"], "succeeded")
+            self.assertEqual(status["stages"][0]["status"], "success")
+            self.assertEqual(status["mlflow"]["run_id"], "mlflow-run-1")
+            self.assertEqual(status["artifacts"]["training_result.json"], "training_result.json")
+
     def test_failure_stops_pipeline(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = PipelineRunStore(Path(tmp))

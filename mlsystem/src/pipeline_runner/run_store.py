@@ -216,6 +216,9 @@ class PipelineRunStore:
         artifacts = dict(current.get("artifacts") or {})
         artifacts.update(stage_payload.get("artifacts") or {})
         mlflow = current.get("mlflow") or {}
+        stage_mlflow = stage_payload.get("mlflow")
+        if isinstance(stage_mlflow, dict):
+            mlflow = {**mlflow, **stage_mlflow}
         details_mlflow = (stage_payload.get("details") or {}).get("mlflow")
         if isinstance(details_mlflow, dict):
             mlflow = {**mlflow, **details_mlflow}
