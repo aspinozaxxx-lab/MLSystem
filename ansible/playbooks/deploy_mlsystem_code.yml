@@ -88,6 +88,8 @@
           docker compose --env-file "{{ mlsystem_gpu_env_path }}"
           -f "{{ mlsystem_gpu_compose_path }}"
           build mlsystem-api
+      async: 3600
+      poll: 30
       changed_when: true
       when:
         - gpu_platform_compose_stat.stat.exists

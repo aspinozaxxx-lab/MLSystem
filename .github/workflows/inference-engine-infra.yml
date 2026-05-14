@@ -90,6 +90,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: plan-or-check
     if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'apply')
+    concurrency:
+      group: mlsystem-gpu-server-${{ github.ref }}
+      cancel-in-progress: false
     env:
       GPU_SERVER_HOST: ${{ secrets.GPU_SERVER_HOST }}
       GPU_SERVER_USER: ${{ secrets.GPU_SERVER_USER }}
@@ -131,7 +134,7 @@ jobs:
           ssh-keyscan -H "$GPU_SERVER_HOST" >> ~/.ssh/known_hosts
           cat > ansible/inventory/gpu-ci.ini <<EOF
           [gpu_mlserver]
-          gpu-mlserver ansible_host=${GPU_SERVER_HOST} ansible_user=${GPU_SERVER_USER} ansible_ssh_private_key_file=$HOME/.ssh/gpu_server_key ansible_python_interpreter=/usr/bin/python3
+          gpu-mlserver ansible_host=${GPU_SERVER_HOST} ansible_user=${GPU_SERVER_USER} ansible_ssh_private_key_file=$HOME/.ssh/gpu_server_key ansible_python_interpreter=/usr/bin/python3 ansible_ssh_common_args='-o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o TCPKeepAlive=yes'
           EOF
       - name: Apply RabbitMQ and InferenceEngine infra
         run: ansible-playbook -i ansible/inventory/gpu-ci.ini ansible/playbooks/deploy_inference_engine.yml -e "mlsystem_git_commit=${GITHUB_SHA}"
@@ -140,6 +143,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: apply-infra
     if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'apply')
+    concurrency:
+      group: mlsystem-gpu-server-${{ github.ref }}
+      cancel-in-progress: false
     env:
       GPU_SERVER_HOST: ${{ secrets.GPU_SERVER_HOST }}
       GPU_SERVER_USER: ${{ secrets.GPU_SERVER_USER }}
