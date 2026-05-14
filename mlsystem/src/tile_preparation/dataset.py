@@ -71,6 +71,10 @@ class TrainingTileDataset(torch.utils.data.Dataset):
                 "mosaic_unfilled_pixel_count": mosaic.unfilled_pixel_count,
                 "valid_pixel_share_before_mosaic": mosaic.anchor_valid_pixel_share,
                 "valid_pixel_share_after_mosaic": mosaic.final_valid_pixel_share,
+                "mosaic_candidate_neighbors": mosaic.candidate_neighbors,
+                "mosaic_intersecting_neighbors": mosaic.intersecting_neighbors,
+                "mosaic_actually_used_neighbors": mosaic.actually_used_neighbors,
+                "mosaic_skipped_non_intersecting_neighbors": mosaic.skipped_non_intersecting_neighbors,
                 "mosaic_warnings": mosaic.warnings,
             }
             valid_source = mosaic.valid_data_source

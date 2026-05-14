@@ -33,6 +33,8 @@ def build_tile_records(
     base_records: list[TileSampleRecord] = []
     scene_reports: list[dict[str, Any]] = []
     annotation_summary: dict[str, Any] | None = None
+    annotation_by_scene: dict[str, dict[str, Any]] = {}
+    skip_totals = {"skipped_fully_invalid_tiles": 0, "skipped_low_valid_share_tiles": 0}
     rng = random.Random(config.seed)
     open_datasets: dict[str, Any] = {}
     scene_ids_by_path: dict[str, str] = {}
@@ -50,9 +52,12 @@ def build_tile_records(
             ds = open_datasets[image_path]
             annotation_geoms = load_annotation_geometries(annotation, raster_crs=ds.crs)
             annotation_summary = annotation_geoms.to_dict(annotation.geojson_path)
+            annotation_by_scene[scene_id] = dict(annotation_summary)
             warnings.extend(annotation_geoms.warnings)
             neighbor_datasets = _neighbor_datasets(image_path, open_datasets, scene_ids_by_path, config)
-            scene_records = _build_scene_records(ds, scene_id, image_path, annotation_geoms, config, neighbor_datasets=neighbor_datasets)
+            scene_records, scene_skip_counts = _build_scene_records(ds, scene_id, image_path, annotation_geoms, config, neighbor_datasets=neighbor_datasets)
+            for key in skip_totals:
+                skip_totals[key] += int(scene_skip_counts.get(key, 0))
             before_limit = list(scene_records)
             scene_records, limit_warnings = limit_empty_tile_share(scene_records, config.max_empty_tile_share, seed=config.seed)
             warnings.extend(limit_warnings)
@@ -68,8 +73,13 @@ def build_tile_records(
                     "height": int(ds.height),
                     "bands": int(ds.count),
                     "crs": str(ds.crs) if ds.crs else None,
+                    "raster_crs": str(ds.crs) if ds.crs else None,
+                    "annotation_crs": annotation_summary.get("annotation_crs"),
+                    "annotation_crs_source": annotation_summary.get("annotation_crs_source"),
+                    "transformed_to_raster_crs": annotation_summary.get("transformed_to_raster_crs"),
                     "records_before_empty_limit": len(before_limit),
                     "records_after_empty_limit": len(scene_records),
+                    **scene_skip_counts,
                     **scene_summary,
                 }
             )
@@ -93,12 +103,16 @@ def build_tile_records(
         scene_reports=scene_reports,
         metadata={
             "annotation": annotation_summary,
+            "annotation_by_scene": annotation_by_scene,
             "positive_stride": config.positive_stride,
             "hard_negative_stride": config.hard_negative_stride,
             "negative_stride": config.negative_stride,
             "base_record_count": len(base_records),
             "virtual_record_count": len(virtual_records),
             "effective_samples_per_epoch": len(virtual_records),
+            "min_valid_pixel_share": config.min_valid_pixel_share,
+            "drop_fully_invalid_tiles": config.drop_fully_invalid_tiles,
+            **skip_totals,
         },
     )
 
@@ -160,6 +174,8 @@ def build_validation_tile_records(
     records: list[TileSampleRecord] = []
     scene_reports: list[dict[str, Any]] = []
     annotation_summary: dict[str, Any] | None = None
+    annotation_by_scene: dict[str, dict[str, Any]] = {}
+    skip_totals = {"skipped_fully_invalid_tiles": 0, "skipped_low_valid_share_tiles": 0}
     open_datasets: dict[str, Any] = {}
     scene_ids_by_path: dict[str, str] = {}
     try:
@@ -175,21 +191,35 @@ def build_validation_tile_records(
             ds = open_datasets[image_path]
             annotation_geoms = load_annotation_geometries(annotation, raster_crs=ds.crs)
             annotation_summary = annotation_geoms.to_dict(annotation.geojson_path)
+            annotation_by_scene[scene_id] = dict(annotation_summary)
             warnings.extend(annotation_geoms.warnings)
             neighbor_datasets = _neighbor_datasets(image_path, open_datasets, scene_ids_by_path, config)
             scene_records: list[TileSampleRecord] = []
+            scene_skip_counts = {"skipped_fully_invalid_tiles": 0, "skipped_low_valid_share_tiles": 0}
             for window in generate_window_grid_for_scene(ds.width, ds.height, config.tile_size, config.stride, scene_id=scene_id):
                 valid = read_valid_data_mask_with_source(ds, window, mode=config.valid_pixel_mode)
                 valid_mask = valid.mask
                 mosaic_sources: list[str] = []
                 mosaic_filled = 0
                 mosaic_unfilled = int(valid_mask.size - np.count_nonzero(valid_mask))
+                mosaic_candidate_neighbors = 0
+                mosaic_intersecting_neighbors = 0
+                mosaic_actually_used_neighbors: list[str] = []
+                mosaic_skipped_non_intersecting_neighbors = 0
                 if config.mosaic_enabled and neighbor_datasets:
                     mosaic = read_mosaic_window(ds, neighbor_datasets, window, config)
                     valid_mask = mosaic.valid_mask
                     mosaic_sources = mosaic.source_scenes
                     mosaic_filled = mosaic.filled_pixel_count
                     mosaic_unfilled = mosaic.unfilled_pixel_count
+                    mosaic_candidate_neighbors = mosaic.candidate_neighbors
+                    mosaic_intersecting_neighbors = mosaic.intersecting_neighbors
+                    mosaic_actually_used_neighbors = mosaic.actually_used_neighbors
+                    mosaic_skipped_non_intersecting_neighbors = mosaic.skipped_non_intersecting_neighbors
+                final_valid_share = float(np.count_nonzero(valid_mask)) / float(valid_mask.size) if valid_mask.size else 0.0
+                if config.drop_fully_invalid_tiles and final_valid_share <= 0.0:
+                    scene_skip_counts["skipped_fully_invalid_tiles"] += 1
+                    continue
                 mask_result = rasterize_mask_for_window(
                     ds,
                     annotation_geoms.geometries,
@@ -200,7 +230,8 @@ def build_validation_tile_records(
                 kind, positive_pixels = classify_mask(mask_result.mask, config)
                 if kind == "hard_negative":
                     kind = "negative"
-                if config.exclude_empty_valid_tiles and mask_result.valid_pixel_share < config.min_valid_pixel_share:
+                if config.exclude_empty_valid_tiles and final_valid_share < config.min_valid_pixel_share:
+                    scene_skip_counts["skipped_low_valid_share_tiles"] += 1
                     continue
                 scene_records.append(
                     TileSampleRecord(
@@ -224,8 +255,16 @@ def build_validation_tile_records(
                         mosaic_sources=mosaic_sources,
                         mosaic_filled_pixel_count=mosaic_filled,
                         mosaic_unfilled_pixel_count=mosaic_unfilled,
+                        metadata={
+                            "mosaic_candidate_neighbors": mosaic_candidate_neighbors,
+                            "mosaic_intersecting_neighbors": mosaic_intersecting_neighbors,
+                            "mosaic_actually_used_neighbors": mosaic_actually_used_neighbors,
+                            "mosaic_skipped_non_intersecting_neighbors": mosaic_skipped_non_intersecting_neighbors,
+                        },
                     )
                 )
+            for key in skip_totals:
+                skip_totals[key] += int(scene_skip_counts.get(key, 0))
             scene_records.sort(key=lambda item: (item.y, item.x))
             if config.max_records_per_scene is not None and len(scene_records) > config.max_records_per_scene:
                 scene_records = scene_records[: config.max_records_per_scene]
@@ -239,8 +278,13 @@ def build_validation_tile_records(
                     "height": int(ds.height),
                     "bands": int(ds.count),
                     "crs": str(ds.crs) if ds.crs else None,
+                    "raster_crs": str(ds.crs) if ds.crs else None,
+                    "annotation_crs": annotation_summary.get("annotation_crs"),
+                    "annotation_crs_source": annotation_summary.get("annotation_crs_source"),
+                    "transformed_to_raster_crs": annotation_summary.get("transformed_to_raster_crs"),
                     "positive_scene": bool(summary["positive_tiles"] or summary["partial_positive_tiles"]),
                     "samples": len(scene_records),
+                    **scene_skip_counts,
                     **summary,
                 }
             )
@@ -257,12 +301,16 @@ def build_validation_tile_records(
         scene_reports=scene_reports,
         metadata={
             "annotation": annotation_summary,
+            "annotation_by_scene": annotation_by_scene,
             "positive_stride": config.stride,
             "hard_negative_stride": config.stride,
             "negative_stride": config.stride,
             "base_record_count": len(records),
             "virtual_record_count": len(records),
             "effective_samples_per_epoch": len(records),
+            "min_valid_pixel_share": config.min_valid_pixel_share,
+            "drop_fully_invalid_tiles": config.drop_fully_invalid_tiles,
+            **skip_totals,
         },
     )
 
@@ -310,6 +358,10 @@ def iter_training_tiles(
                     "mosaic_unfilled_pixel_count": mosaic.unfilled_pixel_count,
                     "valid_pixel_share_before_mosaic": mosaic.anchor_valid_pixel_share,
                     "valid_pixel_share_after_mosaic": mosaic.final_valid_pixel_share,
+                    "mosaic_candidate_neighbors": mosaic.candidate_neighbors,
+                    "mosaic_intersecting_neighbors": mosaic.intersecting_neighbors,
+                    "mosaic_actually_used_neighbors": mosaic.actually_used_neighbors,
+                    "mosaic_skipped_non_intersecting_neighbors": mosaic.skipped_non_intersecting_neighbors,
                     "mosaic_warnings": mosaic.warnings,
                 }
             else:
@@ -438,7 +490,8 @@ def _build_scene_records(
     config: TilePreparationConfig,
     *,
     neighbor_datasets: list[tuple[str, Any]] | None = None,
-) -> list[TileSampleRecord]:
+) -> tuple[list[TileSampleRecord], dict[str, int]]:
+    skip_counts = {"skipped_fully_invalid_tiles": 0, "skipped_low_valid_share_tiles": 0}
     candidates: dict[tuple[int, int, int, int], tuple[TileWindow, set[str]]] = {}
     for source, stride in (
         ("positive_dense", config.positive_stride),
@@ -462,6 +515,10 @@ def _build_scene_records(
         filled_pixel_count = 0
         unfilled_pixel_count = int(valid_mask.size - np.count_nonzero(valid_mask))
         valid_before_mosaic = valid.valid_pixel_share
+        mosaic_candidate_neighbors = 0
+        mosaic_intersecting_neighbors = 0
+        mosaic_actually_used_neighbors: list[str] = []
+        mosaic_skipped_non_intersecting_neighbors = 0
         if config.mosaic_enabled and neighbor_datasets:
             mosaic = read_mosaic_window(ds, neighbor_datasets, window, config)
             valid_mask = mosaic.valid_mask
@@ -469,6 +526,14 @@ def _build_scene_records(
             filled_pixel_count = mosaic.filled_pixel_count
             unfilled_pixel_count = mosaic.unfilled_pixel_count
             valid_before_mosaic = mosaic.anchor_valid_pixel_share
+            mosaic_candidate_neighbors = mosaic.candidate_neighbors
+            mosaic_intersecting_neighbors = mosaic.intersecting_neighbors
+            mosaic_actually_used_neighbors = mosaic.actually_used_neighbors
+            mosaic_skipped_non_intersecting_neighbors = mosaic.skipped_non_intersecting_neighbors
+        final_valid_share = float(np.count_nonzero(valid_mask)) / float(valid_mask.size) if valid_mask.size else 0.0
+        if config.drop_fully_invalid_tiles and final_valid_share <= 0.0:
+            skip_counts["skipped_fully_invalid_tiles"] += 1
+            continue
         mask_result = rasterize_mask_for_window(
             ds,
             annotation_geoms.geometries,
@@ -476,7 +541,8 @@ def _build_scene_records(
             all_touched=config.all_touched,
             valid_mask=valid_mask if config.clip_mask_to_valid_data else None,
         )
-        if config.exclude_empty_valid_tiles and mask_result.valid_pixel_share < config.min_valid_pixel_share:
+        if config.exclude_empty_valid_tiles and final_valid_share < config.min_valid_pixel_share:
+            skip_counts["skipped_low_valid_share_tiles"] += 1
             continue
         kind, positive_pixels = classify_mask(mask_result.mask, config)
         bbox = positive_pixel_bbox(mask_result.mask, x_offset=window.x, y_offset=window.y)
@@ -497,6 +563,10 @@ def _build_scene_records(
             "mosaic_sources": mosaic_sources,
             "mosaic_filled_pixel_count": filled_pixel_count,
             "mosaic_unfilled_pixel_count": unfilled_pixel_count,
+            "mosaic_candidate_neighbors": mosaic_candidate_neighbors,
+            "mosaic_intersecting_neighbors": mosaic_intersecting_neighbors,
+            "mosaic_actually_used_neighbors": mosaic_actually_used_neighbors,
+            "mosaic_skipped_non_intersecting_neighbors": mosaic_skipped_non_intersecting_neighbors,
         }
 
     records: list[TileSampleRecord] = []
@@ -543,11 +613,15 @@ def _build_scene_records(
                 metadata={
                     "sources": sorted(sources),
                     "valid_pixel_share_before_mosaic": item["valid_pixel_share_before_mosaic"],
+                    "mosaic_candidate_neighbors": item["mosaic_candidate_neighbors"],
+                    "mosaic_intersecting_neighbors": item["mosaic_intersecting_neighbors"],
+                    "mosaic_actually_used_neighbors": item["mosaic_actually_used_neighbors"],
+                    "mosaic_skipped_non_intersecting_neighbors": item["mosaic_skipped_non_intersecting_neighbors"],
                 },
             )
         )
     records.sort(key=lambda item: (_kind_priority(item.kind), item.y, item.x, item.stride))
-    return records
+    return records, skip_counts
 
 
 def classify_mask(mask: np.ndarray, config: TilePreparationConfig) -> tuple[TileKind, int]:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Literal
 
 
 @dataclass(frozen=True)
@@ -49,20 +49,21 @@ class TilePreparationConfig:
     min_valid_pixel_share: float = 0.0
     clip_mask_to_valid_data: bool = True
     exclude_empty_valid_tiles: bool = False
+    drop_fully_invalid_tiles: bool = True
     mosaic_enabled: bool = False
     mosaic_fill_nodata: bool = True
     mosaic_require_same_crs: bool = False
     mosaic_resampling: str = "bilinear"
     augmentations: dict[str, Any] = field(default_factory=dict)
     apply_random_augmentations: bool = False
-    cutout_mask_mode: str = "erase"
+    cutout_mask_mode: Literal["erase", "preserve", "ignore"] = "erase"
     max_records: int | None = None
     max_records_per_scene: int | None = None
     shuffle: bool = False
     seed: int = 42
     augmentation_mode: str = "all"
     augmentation_seed: int = 42
-    augmentation_level: int | None = None
+    augmentation_level: int = 0
 
     def __post_init__(self) -> None:
         self.tile_size = max(1, int(self.tile_size))
@@ -90,6 +91,7 @@ class TilePreparationConfig:
         self.cutout_mask_mode = str(self.cutout_mask_mode or "erase").lower()
         if self.cutout_mask_mode not in {"erase", "preserve", "ignore"}:
             raise ValueError("cutout_mask_mode must be one of: erase, preserve, ignore")
+        self.augmentation_level = max(0, min(3, int(self.augmentation_level)))
 
     @property
     def positive_stride(self) -> int:
@@ -144,6 +146,7 @@ def resolve_tile_preparation_config(
                 min_valid_pixel_share=max(0.0, min(1.0, float(raw.get("min_valid_pixel_share", preprocess.get("min_valid_pixel_share", 0.0)) or 0.0))),
                 clip_mask_to_valid_data=bool(raw.get("clip_mask_to_valid_data", preprocess.get("clip_mask_to_valid_data", True))),
                 exclude_empty_valid_tiles=bool(raw.get("exclude_empty_valid_tiles", preprocess.get("exclude_empty_valid_tiles", False))),
+                drop_fully_invalid_tiles=bool(raw.get("drop_fully_invalid_tiles", preprocess.get("drop_fully_invalid_tiles", True))),
                 mosaic_enabled=bool(raw.get("mosaic_enabled", preprocess.get("mosaic_enabled", False))),
                 mosaic_fill_nodata=bool(raw.get("mosaic_fill_nodata", preprocess.get("mosaic_fill_nodata", True))),
                 mosaic_require_same_crs=bool(raw.get("mosaic_require_same_crs", preprocess.get("mosaic_require_same_crs", False))),
@@ -169,6 +172,7 @@ def resolve_tile_preparation_config(
         min_valid_pixel_share=max(0.0, min(1.0, float(raw.get("min_valid_pixel_share", preprocess.get("min_valid_pixel_share", 0.0)) or 0.0))),
         clip_mask_to_valid_data=bool(raw.get("clip_mask_to_valid_data", preprocess.get("clip_mask_to_valid_data", True))),
         exclude_empty_valid_tiles=bool(raw.get("exclude_empty_valid_tiles", preprocess.get("exclude_empty_valid_tiles", False))),
+        drop_fully_invalid_tiles=bool(raw.get("drop_fully_invalid_tiles", preprocess.get("drop_fully_invalid_tiles", True))),
         mosaic_enabled=bool(raw.get("mosaic_enabled", preprocess.get("mosaic_enabled", False))),
         mosaic_fill_nodata=bool(raw.get("mosaic_fill_nodata", preprocess.get("mosaic_fill_nodata", True))),
         mosaic_require_same_crs=bool(raw.get("mosaic_require_same_crs", preprocess.get("mosaic_require_same_crs", False))),

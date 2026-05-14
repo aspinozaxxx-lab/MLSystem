@@ -78,7 +78,7 @@ def preview_annotated_tile_report(
         hard_negative_context_px=max(1, int(tile_size) // 2),
         mosaic_enabled=mosaic_enabled,
         cutout_mask_mode=cutout_mask_mode,
-        augmentation_level=augmentation_level,
+        augmentation_level=0 if augmentation_level is None else int(augmentation_level),
     )
     result = build_tile_records(scenes, annotation, config)
     with rasterio.open(scene.image_path) as ds:
@@ -88,7 +88,7 @@ def preview_annotated_tile_report(
         "status": "ok",
         "facade_available": True,
         "recommended_entrypoint": "TilePreparationFacade",
-        "augmentation_level": augmentation_level,
+        "augmentation_level": 0 if augmentation_level is None else int(augmentation_level),
         "cutout_mask_mode": config.cutout_mask_mode,
         "mask_visualization": dict(MASK_VISUALIZATION),
         "valid_data_clipping": {
@@ -99,14 +99,20 @@ def preview_annotated_tile_report(
             "enabled": bool(config.mosaic_enabled),
             "scene_count": len(scenes),
             "scenes": [item.resolved_scene_id() for item in scenes],
+            **_mosaic_record_summary(result.base_records),
         },
         "raster": raster,
         "tiling_summary": _tiling_checks(raster["width"], raster["height"], config),
         "classification_summary": {
             **base_summary,
+            "skipped_fully_invalid_tiles": int(result.metadata.get("skipped_fully_invalid_tiles", 0)),
+            "skipped_low_valid_share_tiles": int(result.metadata.get("skipped_low_valid_share_tiles", 0)),
+            "min_valid_pixel_share": config.min_valid_pixel_share,
+            "drop_fully_invalid_tiles": config.drop_fully_invalid_tiles,
             "virtual_records_after_repeats": len(result.records),
             "effective_samples_per_epoch": len(result.records),
         },
+        "scene_reports": result.scene_reports,
         "preview_records": [record.to_dict() for record in result.base_records[: max(0, int(max_records_preview))]],
         "warnings": result.warnings,
     }
@@ -177,6 +183,10 @@ def generate_annotated_tile_report(
 
     classification_summary = {
         **summarize_tile_records(result.base_records),
+        "skipped_fully_invalid_tiles": int(result.metadata.get("skipped_fully_invalid_tiles", 0)),
+        "skipped_low_valid_share_tiles": int(result.metadata.get("skipped_low_valid_share_tiles", 0)),
+        "min_valid_pixel_share": config.min_valid_pixel_share,
+        "drop_fully_invalid_tiles": config.drop_fully_invalid_tiles,
         "total_base_records": len(result.base_records),
         "virtual_records_after_repeats": len(result.records),
         "effective_samples_per_epoch": len(result.records),
@@ -206,9 +216,11 @@ def generate_annotated_tile_report(
             "resampling": config.mosaic_resampling,
             "scene_count": len(scenes),
             "scenes": [item.resolved_scene_id() for item in scenes],
+            **_mosaic_record_summary(result.base_records),
         },
         "raster": raster,
         "annotation": result.metadata.get("annotation"),
+        "scene_reports": result.scene_reports,
         "config": _config_to_dict(config, augmentation_mode, augmentation_seed, max_tile_examples, max_augmentation_tiles),
         "tiling_checks": _tiling_checks(raster["width"], raster["height"], config),
         "classification_summary": classification_summary,
@@ -443,6 +455,10 @@ def _write_tile_examples(
                 "mosaic_unfilled_pixel_count": mosaic.unfilled_pixel_count,
                 "valid_pixel_share_before_mosaic": mosaic.anchor_valid_pixel_share,
                 "valid_pixel_share_after_mosaic": mosaic.final_valid_pixel_share,
+                "mosaic_candidate_neighbors": mosaic.candidate_neighbors,
+                "mosaic_intersecting_neighbors": mosaic.intersecting_neighbors,
+                "mosaic_actually_used_neighbors": mosaic.actually_used_neighbors,
+                "mosaic_skipped_non_intersecting_neighbors": mosaic.skipped_non_intersecting_neighbors,
                 "mosaic_warnings": mosaic.warnings,
             }
         else:
@@ -453,6 +469,10 @@ def _write_tile_examples(
                 "mosaic_unfilled_pixel_count": int(valid_mask.size - np.count_nonzero(valid_mask)),
                 "valid_pixel_share_before_mosaic": valid.valid_pixel_share,
                 "valid_pixel_share_after_mosaic": valid.valid_pixel_share,
+                "mosaic_candidate_neighbors": 0,
+                "mosaic_intersecting_neighbors": 0,
+                "mosaic_actually_used_neighbors": [],
+                "mosaic_skipped_non_intersecting_neighbors": 0,
                 "mosaic_warnings": [],
             }
         mask_result = rasterize_mask_for_window(
@@ -648,7 +668,7 @@ def _render_html(summary: dict[str, Any]) -> str:
         f"<figure><img src=\"{tile['preview_mask']}\"><figcaption>clipped training mask</figcaption></figure>"
         f"<figure><img src=\"{tile['preview_raw_yellow_clipped_red_overlay']}\"><figcaption>yellow raw contour, red clipped contour</figcaption></figure>"
         + (f"<figure><img src=\"{tile['preview_source_map']}\"><figcaption>mosaic source map</figcaption></figure>" if tile.get("preview_source_map") else "")
-        + f"<pre>{html.escape(json.dumps({key: tile.get(key) for key in ['tile_id', 'kind', 'raw_positive_pixels_runtime', 'clipped_positive_pixels_runtime', 'valid_pixel_share_runtime', 'mosaic_sources', 'mosaic_filled_pixel_count', 'mosaic_unfilled_pixel_count']}, ensure_ascii=False, indent=2, default=str))}</pre>"
+        + f"<pre>{html.escape(json.dumps({key: tile.get(key) for key in ['tile_id', 'kind', 'raw_positive_pixels_runtime', 'clipped_positive_pixels_runtime', 'valid_pixel_share_runtime', 'mosaic_sources', 'mosaic_filled_pixel_count', 'mosaic_unfilled_pixel_count', 'mosaic_candidate_neighbors', 'mosaic_intersecting_neighbors', 'mosaic_actually_used_neighbors', 'mosaic_skipped_non_intersecting_neighbors']}, ensure_ascii=False, indent=2, default=str))}</pre>"
         "</div>"
         for tile in summary["tile_examples"][:8]
     )
@@ -925,6 +945,26 @@ def _config_to_dict(config: TilePreparationConfig, augmentation_mode: str, augme
         }
     )
     return payload
+
+
+def _mosaic_record_summary(records: list[TileSampleRecord]) -> dict[str, Any]:
+    candidate = 0
+    intersecting = 0
+    skipped = 0
+    used: set[str] = set()
+    for record in records:
+        metadata = record.metadata or {}
+        candidate += int(metadata.get("mosaic_candidate_neighbors") or 0)
+        intersecting += int(metadata.get("mosaic_intersecting_neighbors") or 0)
+        skipped += int(metadata.get("mosaic_skipped_non_intersecting_neighbors") or 0)
+        for scene_id in metadata.get("mosaic_actually_used_neighbors") or []:
+            used.add(str(scene_id))
+    return {
+        "candidate_neighbors": int(candidate),
+        "intersecting_neighbors": int(intersecting),
+        "actually_used_neighbors": sorted(used),
+        "skipped_non_intersecting_neighbors": int(skipped),
+    }
 
 
 def _clear_pngs(directory: Path) -> None:

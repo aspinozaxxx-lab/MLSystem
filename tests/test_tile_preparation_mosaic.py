@@ -47,13 +47,35 @@ class TilePreparationMosaicTests(unittest.TestCase):
             self.assertGreater(mosaic_mask.clipped_positive_pixels, anchor_mask.clipped_positive_pixels)
             self.assertEqual(mosaic.unfilled_pixel_count, 0)
             self.assertIn("neighbor", mosaic.source_scenes)
+            self.assertEqual(mosaic.candidate_neighbors, 1)
+            self.assertEqual(mosaic.intersecting_neighbors, 1)
+            self.assertEqual(mosaic.actually_used_neighbors, ["neighbor"])
+
+    def test_far_neighbor_is_skipped_by_footprint_index(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            anchor_path = root / "anchor.tif"
+            far_path = root / "far_neighbor.tif"
+            _write_raster(anchor_path, left_value=90, right_value=0)
+            _write_raster(far_path, left_value=160, right_value=160, transform=from_origin(10000, 64, 1, 1))
+            config = TilePreparationConfig(tile_size=64, stride=64, valid_pixel_mode="nonzero_any", mosaic_enabled=True)
+            window = TileWindow("anchor", 0, 0, 64, 64, 64, 64)
+
+            with rasterio.open(anchor_path) as anchor, rasterio.open(far_path) as far_neighbor:
+                mosaic = read_mosaic_window(anchor, [("far_neighbor", far_neighbor)], window, config)
+
+            self.assertEqual(mosaic.candidate_neighbors, 1)
+            self.assertEqual(mosaic.intersecting_neighbors, 0)
+            self.assertEqual(mosaic.skipped_non_intersecting_neighbors, 1)
+            self.assertEqual(mosaic.actually_used_neighbors, [])
+            self.assertAlmostEqual(mosaic.final_valid_pixel_share, 0.5)
 
 
-def _write_raster(path: Path, *, left_value: int, right_value: int) -> None:
+def _write_raster(path: Path, *, left_value: int, right_value: int, transform: object | None = None) -> None:
     data = np.zeros((3, 64, 64), dtype="uint8")
     data[:, :, :32] = left_value
     data[:, :, 32:] = right_value
-    with rasterio.open(path, "w", driver="GTiff", width=64, height=64, count=3, dtype="uint8", crs="EPSG:3857", transform=from_origin(0, 64, 1, 1)) as ds:
+    with rasterio.open(path, "w", driver="GTiff", width=64, height=64, count=3, dtype="uint8", crs="EPSG:3857", transform=transform or from_origin(0, 64, 1, 1)) as ds:
         ds.write(data)
 
 

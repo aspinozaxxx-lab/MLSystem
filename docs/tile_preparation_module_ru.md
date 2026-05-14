@@ -38,6 +38,17 @@ for indices, x, y in TilePreparationFacade.train_dataloader(bundle, batch_size=2
 - `seed`: seed для split, shuffle и аугментаций.
 - `input_bands`: список raster bands, если нужны не все каналы.
 
+## CRS и GeoJSON
+
+GeoJSON загружается один раз как источник разметки, но геометрии приводятся к CRS каждого raster отдельно. В `scene_reports` и JSON-отчёте для каждой сцены пишутся:
+
+- `raster_crs`;
+- `annotation_crs`;
+- `annotation_crs_source`;
+- `transformed_to_raster_crs`.
+
+Если GeoJSON не содержит CRS и `allow_inferred_annotation_crs=False`, модуль падает с понятной ошибкой. Для debug-режимов можно включить inference, но это всегда сопровождается warning.
+
 ## augmentation_level
 
 | level | augmentations | repeat factors | dense stride | max empty share |
@@ -71,9 +82,13 @@ Training mask строится так:
 
 На чёрной области без данных training mask должна быть равна 0.
 
+Полностью невалидные тайлы не попадают в records никогда, если `drop_fully_invalid_tiles=True` (default). Это жёсткий invariant: `final_valid_pixel_share == 0` означает, что tile нельзя отдавать в обучение. В summary пишутся `skipped_fully_invalid_tiles`, `skipped_low_valid_share_tiles`, `min_valid_pixel_share`.
+
 ## Mosaic fill
 
 Если `mosaic_mode=auto` и в split есть несколько сцен, либо `mosaic_mode=force`, invalid pixels anchor-сцены могут заполняться соседними снимками. Маска после этого клипится уже по union valid mask. Если сосед не покрывает область, пиксели остаются invalid, а mask там зануляется.
+
+Перед чтением соседей используется footprint index: модуль проверяет пересечение bounds tile и bounds соседнего raster. Для разных CRS bounds соседей приводятся через `transform_bounds`. В mosaic summary пишутся `candidate_neighbors`, `intersecting_neighbors`, `actually_used_neighbors`, `skipped_non_intersecting_neighbors`.
 
 ## Cutout/dropout
 

@@ -6,6 +6,7 @@ from typing import Any
 import numpy as np
 from rasterio.enums import Resampling
 from rasterio.vrt import WarpedVRT
+from rasterio.warp import transform_bounds
 from rasterio.windows import Window
 
 from .config import TilePreparationConfig
@@ -25,6 +26,10 @@ class MosaicReadResult:
     anchor_valid_pixel_share: float = 0.0
     final_valid_pixel_share: float = 0.0
     valid_data_source: str = "unknown"
+    candidate_neighbors: int = 0
+    intersecting_neighbors: int = 0
+    actually_used_neighbors: list[str] = field(default_factory=list)
+    skipped_non_intersecting_neighbors: int = 0
 
 
 def read_mosaic_window(
@@ -40,8 +45,12 @@ def read_mosaic_window(
     source_map = np.zeros(valid.shape, dtype="uint16")
     source_map[valid > 0] = 1
     source_scenes = [str(getattr(record, "scene_id", "") or "anchor")]
+    actually_used_neighbors: list[str] = []
     warnings: list[str] = []
     filled = 0
+    candidate_neighbors = len(neighbor_datasets)
+    intersecting_neighbors = 0
+    skipped_non_intersecting_neighbors = 0
 
     if not config.mosaic_enabled or not config.mosaic_fill_nodata or valid.all():
         return MosaicReadResult(
@@ -55,13 +64,27 @@ def read_mosaic_window(
             anchor_valid_pixel_share=anchor_valid.valid_pixel_share,
             final_valid_pixel_share=anchor_valid.valid_pixel_share,
             valid_data_source=anchor_valid.source,
+            candidate_neighbors=candidate_neighbors,
+            intersecting_neighbors=0,
+            actually_used_neighbors=[],
+            skipped_non_intersecting_neighbors=0,
         )
 
     target_transform = anchor_ds.window_transform(raster_window)
+    target_bounds = anchor_ds.window_bounds(raster_window)
     for source_index, (scene_id, neighbor_ds) in enumerate(neighbor_datasets, start=2):
         if config.mosaic_require_same_crs and neighbor_ds.crs != anchor_ds.crs:
             warnings.append(f"mosaic skipped {scene_id}: CRS differs from anchor")
             continue
+        try:
+            neighbor_bounds = _neighbor_bounds_in_anchor_crs(neighbor_ds, anchor_ds.crs)
+        except Exception as exc:  # noqa: BLE001
+            warnings.append(f"mosaic skipped {scene_id}: bounds transform failed: {type(exc).__name__}: {exc}")
+            continue
+        if not _bounds_intersect(target_bounds, neighbor_bounds):
+            skipped_non_intersecting_neighbors += 1
+            continue
+        intersecting_neighbors += 1
         try:
             with WarpedVRT(
                 neighbor_ds,
@@ -84,6 +107,7 @@ def read_mosaic_window(
         source_map[fill] = source_index
         filled += int(np.count_nonzero(fill))
         source_scenes.append(str(scene_id))
+        actually_used_neighbors.append(str(scene_id))
         if valid.all():
             break
 
@@ -99,6 +123,10 @@ def read_mosaic_window(
         anchor_valid_pixel_share=anchor_valid.valid_pixel_share,
         final_valid_pixel_share=final_share,
         valid_data_source=anchor_valid.source,
+        candidate_neighbors=candidate_neighbors,
+        intersecting_neighbors=intersecting_neighbors,
+        actually_used_neighbors=actually_used_neighbors,
+        skipped_non_intersecting_neighbors=skipped_non_intersecting_neighbors,
     )
 
 
@@ -118,3 +146,27 @@ def _resampling(value: str) -> Resampling:
         "cubic": Resampling.cubic,
         "average": Resampling.average,
     }.get(name, Resampling.bilinear)
+
+
+def _neighbor_bounds_in_anchor_crs(neighbor_ds: Any, anchor_crs: Any) -> tuple[float, float, float, float]:
+    bounds = neighbor_ds.bounds
+    if neighbor_ds.crs and anchor_crs and neighbor_ds.crs != anchor_crs:
+        return tuple(
+            float(value)
+            for value in transform_bounds(
+                neighbor_ds.crs,
+                anchor_crs,
+                bounds.left,
+                bounds.bottom,
+                bounds.right,
+                bounds.top,
+                densify_pts=21,
+            )
+        )
+    return (float(bounds.left), float(bounds.bottom), float(bounds.right), float(bounds.top))
+
+
+def _bounds_intersect(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> bool:
+    left_a, bottom_a, right_a, top_a = a
+    left_b, bottom_b, right_b, top_b = b
+    return not (right_a <= left_b or right_b <= left_a or top_a <= bottom_b or top_b <= bottom_a)
