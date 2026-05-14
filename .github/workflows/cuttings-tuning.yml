@@ -1,0 +1,100 @@
+name: cuttings-tuning
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["ansible"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mlsystem-cuttings-tuning
+  cancel-in-progress: false
+
+jobs:
+  start-tuning:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    env:
+      GPU_SERVER_HOST: ${{ secrets.GPU_SERVER_HOST }}
+      GPU_SERVER_USER: ${{ secrets.GPU_SERVER_USER }}
+    steps:
+      - name: Check required SSH secrets
+        run: |
+          missing=0
+          for name in GPU_SERVER_HOST GPU_SERVER_USER; do
+            if [ -z "${!name:-}" ]; then
+              echo "Missing GitHub secret: ${name}" >&2
+              missing=1
+            fi
+          done
+          if [ -z "${{ secrets.GPU_SERVER_SSH_KEY }}" ]; then
+            echo "Missing GitHub secret: GPU_SERVER_SSH_KEY" >&2
+            missing=1
+          fi
+          exit "$missing"
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          umask 077
+          cat > ~/.ssh/gpu_server_key <<'KEY'
+          ${{ secrets.GPU_SERVER_SSH_KEY }}
+          KEY
+          sed -i 's/^          //' ~/.ssh/gpu_server_key
+          ssh-keyscan -H "$GPU_SERVER_HOST" >> ~/.ssh/known_hosts
+
+      - name: Install and start cuttings tuning service
+        run: |
+          SSH="ssh -i ~/.ssh/gpu_server_key -o StrictHostKeyChecking=yes ${GPU_SERVER_USER}@${GPU_SERVER_HOST}"
+          $SSH 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          WORK_DIR=/data/mlsystem/tuning/cuttings
+          REPO_DIR=/opt/mlsystem/repo
+          mkdir -p "$WORK_DIR"/{queue,traces,runs,reports}
+          if [ ! -f "$REPO_DIR/scripts/tune_cuttings_forever.py" ]; then
+            echo "Missing $REPO_DIR/scripts/tune_cuttings_forever.py; deploy must run before tuning." >&2
+            exit 1
+          fi
+          cat >/etc/systemd/system/mlsystem-cuttings-tuning.service <<'UNIT'
+          [Unit]
+          Description=MLSystem cuttings tuning through pipeline runner
+          After=docker.service
+
+          [Service]
+          Type=simple
+          WorkingDirectory=/opt/mlsystem/repo
+          Environment=PYTHONUNBUFFERED=1
+          Environment=PYTHONIOENCODING=utf-8
+          Environment=MLSYSTEM_RUN_ROOT=/data/mlsystem/runs
+          ExecStart=/usr/bin/python3 /opt/mlsystem/repo/scripts/tune_cuttings_forever.py --api-url http://127.0.0.1:8088 --token-file /etc/mlsystem/gpu-platform.env --mlmarkup-repo /data/mlsystem/MLMarkup --experiment-name mlsystem-cuttings-tuning --work-dir /data/mlsystem/tuning/cuttings --max-active-train-runs 1 --pending-queue-size 3 --poll-sec 45
+          Restart=on-failure
+          RestartSec=30
+          StandardOutput=append:/data/mlsystem/tuning/cuttings/supervisor.log
+          StandardError=append:/data/mlsystem/tuning/cuttings/supervisor.err
+
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+          sed -i 's/^          //' /etc/systemd/system/mlsystem-cuttings-tuning.service
+          systemctl daemon-reload
+          systemctl enable mlsystem-cuttings-tuning.service
+          if [ -f "$WORK_DIR/STOP_TUNING" ]; then
+            echo "$WORK_DIR/STOP_TUNING exists; service is installed but not restarted."
+          else
+            systemctl restart mlsystem-cuttings-tuning.service
+          fi
+          sleep 10
+          systemctl --no-pager --full status mlsystem-cuttings-tuning.service || true
+          echo "==== MLMarkup snapshot ===="
+          cat "$WORK_DIR/mlmarkup_snapshot.json" 2>/dev/null || true
+          echo "==== tuning state ===="
+          cat "$WORK_DIR/tuning_state.json" 2>/dev/null || true
+          echo "==== supervisor log tail ===="
+          tail -80 "$WORK_DIR/supervisor.log" 2>/dev/null || true
+          echo "==== supervisor err tail ===="
+          tail -80 "$WORK_DIR/supervisor.err" 2>/dev/null || true
+          REMOTE

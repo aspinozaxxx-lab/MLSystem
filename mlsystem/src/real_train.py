@@ -1739,12 +1739,14 @@ def run_real_train(
             train_loss_acc = WeightedLossAccumulator()
             train_metric_acc = PixelMetricAccumulator(threshold=metric_threshold)
             train_dataset.set_epoch(epoch)
+            train_batch_count = 0
             for _batch_indices, x_cpu, y_cpu in iter_dataset_batches(
                 train_dataset,
                 batch_size,
                 shuffle=True,
                 seed=seed + epoch,
             ):
+                train_batch_count += 1
                 x = x_cpu.to(device)
                 y = y_cpu.to(device)
                 optimizer.zero_grad(set_to_none=True)
@@ -1764,6 +1766,7 @@ def run_real_train(
             val_threshold_accs = {threshold: PixelMetricAccumulator(threshold=threshold) for threshold in metric_thresholds}
             val_sample_rows: list[dict[str, Any]] = []
             val_sample_payloads: list[dict[str, Any]] = []
+            val_batch_count = 0
             with torch.no_grad():
                 val_dataset.set_epoch(0)
                 for batch_indices, x_cpu, y_cpu in iter_dataset_batches(
@@ -1772,6 +1775,7 @@ def run_real_train(
                     shuffle=False,
                     seed=seed,
                 ):
+                    val_batch_count += 1
                     x = x_cpu.to(device)
                     y = y_cpu.to(device)
                     logits = model(x)
@@ -1803,6 +1807,9 @@ def run_real_train(
                 key=lambda item: (float(item[1]["pixel_f1"]), -abs(float(item[0]) - metric_threshold)),
             )
             val_object_metrics = _object_summary_from_sample_rows(val_sample_rows) if debug_enabled else {}
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+            epoch_duration_sec = round(time.time() - epoch_started, 4)
 
             row = {
                 "epoch": float(epoch),
@@ -1848,7 +1855,10 @@ def run_real_train(
                 f"val/{metric_class_key}_gt_pixels": float(int(val_metrics["pixel_tp"]) + int(val_metrics["pixel_fn"])),
                 f"val/{metric_class_key}_pred_pixels": float(int(val_metrics["pixel_tp"]) + int(val_metrics["pixel_fp"])),
                 "learning_rate": float(optimizer.param_groups[0]["lr"]),
-                "epoch_duration_sec": round(time.time() - epoch_started, 4),
+                "epoch_duration_sec": epoch_duration_sec,
+                "train/epoch_duration_sec": epoch_duration_sec,
+                "train/batches": float(train_batch_count),
+                "val/batches": float(val_batch_count),
             }
             row.update(
                 {
@@ -2119,6 +2129,28 @@ def run_real_train(
     mlflow_run.log_artifacts(artifacts)
 
     last = history[-1] if history else {}
+    epoch_duration_values = sorted(float(row.get("epoch_duration_sec", 0.0)) for row in history if row.get("epoch_duration_sec") is not None)
+    if epoch_duration_values:
+        middle = len(epoch_duration_values) // 2
+        if len(epoch_duration_values) % 2:
+            median_epoch_duration_sec = epoch_duration_values[middle]
+        else:
+            median_epoch_duration_sec = (epoch_duration_values[middle - 1] + epoch_duration_values[middle]) / 2.0
+        epoch_duration_stats = {
+            "median_sec": round(median_epoch_duration_sec, 4),
+            "min_sec": round(epoch_duration_values[0], 4),
+            "max_sec": round(epoch_duration_values[-1], 4),
+        }
+        mlflow_run.log_metrics(
+            {
+                "train/epoch_duration_median_sec": epoch_duration_stats["median_sec"],
+                "train/epoch_duration_min_sec": epoch_duration_stats["min_sec"],
+                "train/epoch_duration_max_sec": epoch_duration_stats["max_sec"],
+            },
+            step=len(history),
+        )
+    else:
+        epoch_duration_stats = {"median_sec": None, "min_sec": None, "max_sec": None}
     postprocess_duration_sec = postprocess_metrics.get("postprocess_sec")
     pseudolabel_status = "done" if postprocess_metrics.get("pseudolabel_enabled") else "skipped"
     selected_postprocess_params = {
@@ -2145,6 +2177,7 @@ def run_real_train(
         "epochs_completed": len(history),
         "time_limit_sec": time_limit_sec,
         "max_wallclock_seconds": wallclock_limit_sec,
+        "epoch_duration": epoch_duration_stats,
         "best_epoch": best_epoch,
         "best_val_iou": best_val_iou,
         "best_objective_metric": objective_metric,

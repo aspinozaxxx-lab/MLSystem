@@ -1031,12 +1031,21 @@ def _get_or_create_mlflow_experiment_id(client: Any, experiment_name: str, *, at
 
 def _mlflow_tuning_metadata(params: dict[str, Any] | None) -> tuple[dict[str, str], dict[str, str]]:
     params = params or {}
-    prefixes = ("tuning.", "dataset.", "validation.")
+    prefixes = (
+        "tuning.",
+        "dataset.",
+        "validation.",
+        "mlmarkup.",
+        "tile_preparation.",
+        "pipeline_runner.",
+        "validity.",
+    )
+    exact_keys = {"tuning"}
     tags: dict[str, str] = {}
     mlflow_params: dict[str, str] = {}
     for key, value in params.items():
         key_str = str(key)
-        if not key_str.startswith(prefixes):
+        if key_str not in exact_keys and not key_str.startswith(prefixes):
             continue
         if isinstance(value, (dict, list, tuple, set)):
             value_str = json.dumps(value, ensure_ascii=False, sort_keys=True)
