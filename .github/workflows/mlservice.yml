@@ -34,7 +34,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
           python -m pip install \
-            PyYAML pydantic fastapi uvicorn requests mlflow boto3 numpy shapely rasterio pillow \
+            PyYAML pydantic fastapi uvicorn requests mlflow boto3 numpy shapely pyproj rasterio pillow \
             onnx onnxscript tritonclient[http] segmentation-models-pytorch
 
       - name: Run unit tests
@@ -179,3 +179,5 @@ jobs:
           assert not (old & main), old & main
           assert not (old & registry), old & registry
           PY
+          $SSH "cd /opt/mlsystem/repo && timeout 21600 python3 scripts/smoke_pipeline_api_no_airflow.py --api http://127.0.0.1:8088 --token-file /etc/mlsystem/gpu-platform.env --dry-run --real-train --poll-sec 30 --out /tmp/mlsystem-pipeline-smoke.json"
+          $SSH "cat /tmp/mlsystem-pipeline-smoke.json"

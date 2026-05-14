@@ -82,6 +82,17 @@
         mode: "0600"
       when: gpu_platform_env_stat.stat.exists
 
+    - name: Rebuild MLSystem API image after code deploy
+      ansible.builtin.command:
+        cmd: >-
+          docker compose --env-file "{{ mlsystem_gpu_env_path }}"
+          -f "{{ mlsystem_gpu_compose_path }}"
+          build mlsystem-api
+      changed_when: true
+      when:
+        - gpu_platform_compose_stat.stat.exists
+        - gpu_platform_env_stat.stat.exists
+
     - name: Ensure MLSystem API container exists after code deploy
       ansible.builtin.command:
         cmd: >-

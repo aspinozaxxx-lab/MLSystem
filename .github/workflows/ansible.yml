@@ -113,7 +113,7 @@ jobs:
       - name: Check required infrastructure secrets
         run: |
           missing=0
-          for name in GPU_SERVER_HOST GPU_SERVER_USER MINIO_ROOT_USER MINIO_ROOT_PASSWORD MLFLOW_DB_PASSWORD MLSYSTEM_API_TOKEN; do
+          for name in GPU_SERVER_HOST GPU_SERVER_USER MINIO_ROOT_USER MINIO_ROOT_PASSWORD MLFLOW_DB_PASSWORD; do
             if [ -z "${!name:-}" ]; then
               echo "Missing GitHub secret: ${name}" >&2
               missing=1

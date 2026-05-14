@@ -65,6 +65,7 @@ jobs:
           RABBITMQ_DEFAULT_PASS=rabbitsecret
           INFERENCE_ENGINE_API_TOKEN=ietoken
           INFERENCE_ENGINE_RABBITMQ_URL=amqp://mlsystem:rabbitsecret@rabbitmq:5672/
+          MLSYSTEM_API_TOKEN=api-token
           EOF
       - name: Validate compose config
         env:
@@ -76,6 +77,7 @@ jobs:
           RABBITMQ_MANAGEMENT_LISTEN_HOST: 127.0.0.1
           INFERENCE_ENGINE_API_TOKEN: ietoken
           INFERENCE_ENGINE_RABBITMQ_URL: amqp://mlsystem:rabbitsecret@rabbitmq:5672/
+          MLSYSTEM_API_TOKEN: api-token
         run: docker compose -f deploy/docker-compose.gpu.yml config >/tmp/compose.yml
       - name: Verify RabbitMQ and InferenceEngine service definitions
         run: |

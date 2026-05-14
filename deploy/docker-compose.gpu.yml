@@ -294,7 +294,7 @@ services:
     - bash
     - -lc
     - "python - <<'PY'\nimport importlib.util\nmissing = [name for name in (\"mlflow\"\
-      , \"boto3\", \"torch\", \"rasterio\", \"shapely\", \"tritonclient\") if importlib.util.find_spec(name)\
+      , \"boto3\", \"torch\", \"rasterio\", \"shapely\", \"pyproj\", \"tritonclient\") if importlib.util.find_spec(name)\
       \ is None]\nif missing:\n    raise SystemExit(\"Missing runtime dependencies\
       \ in mlsystem runtime image: \" + \", \".join(missing))\nPY\npython -m uvicorn\
       \ src.api.app:app --host 0.0.0.0 --port 8088\n"
