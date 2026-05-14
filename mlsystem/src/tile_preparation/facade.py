@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import json
-import random
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Literal
 
 from .config import AnnotationInput, SceneInput, TilePreparationConfig
 from .dataset import TrainingTileDataset, iter_dataset_batches
@@ -12,16 +10,11 @@ from .report import generate_annotated_tile_report
 from .summary import summarize_tile_records
 
 
-@dataclass(frozen=True)
-class TilePreparationSimpleParams:
-    tile_size: int = 768
-    stride: int | None = None
-    stride_ratio: float = 0.67
-    augmentation_level: int = 2
-    mosaic_mode: Literal["off", "auto", "force"] = "auto"
-    max_empty_tile_share: float | None = None
-    seed: int = 42
-    input_bands: list[int] | None = None
+DEFAULT_SEED = 42
+DEFAULT_MOSAIC_MODE = "auto"
+DEFAULT_ANNOTATION_CRS = "auto"
+DEFAULT_ALLOW_INFERRED_ANNOTATION_CRS = True
+DEFAULT_INPUT_BANDS = None
 
 
 @dataclass
@@ -37,16 +30,12 @@ class TilePreparationBundle:
 def config_from_augmentation_level(
     level: int,
     *,
-    tile_size: int = 768,
-    stride: int | None = None,
-    stride_ratio: float = 0.67,
-    max_empty_tile_share: float | None = None,
-    seed: int = 42,
-    input_bands: list[int] | None = None,
+    tile_size: int,
+    stride: int,
 ) -> TilePreparationConfig:
     level = max(0, min(3, int(level)))
     tile_size = max(1, int(tile_size))
-    effective_stride = max(1, int(stride if stride is not None else round(tile_size * float(stride_ratio))))
+    stride = max(1, int(stride))
 
     presets = {
         0: {
@@ -101,13 +90,11 @@ def config_from_augmentation_level(
         },
     }
     preset = dict(presets[level])
-    if max_empty_tile_share is not None:
-        preset["max_empty_tile_share"] = max_empty_tile_share
     return TilePreparationConfig(
         tile_size=tile_size,
-        stride=effective_stride,
-        input_bands=input_bands,
-        seed=seed,
+        stride=stride,
+        input_bands=DEFAULT_INPUT_BANDS,
+        seed=DEFAULT_SEED,
         augmentation_level=level,
         apply_random_augmentations=bool(preset["augmentations"]),
         cutout_mask_mode="erase",
@@ -119,80 +106,33 @@ class TilePreparationFacade:
     @staticmethod
     def default_config(
         *,
-        tile_size: int = 768,
-        stride: int | None = None,
-        stride_ratio: float = 0.67,
+        tile_size: int,
+        stride: int,
         augmentation_level: int = 2,
-        mosaic_mode: str = "auto",
-        max_empty_tile_share: float | None = None,
-        seed: int = 42,
-        input_bands: list[int] | None = None,
     ) -> TilePreparationConfig:
-        config = config_from_augmentation_level(
-            augmentation_level,
-            tile_size=tile_size,
-            stride=stride,
-            stride_ratio=stride_ratio,
-            max_empty_tile_share=max_empty_tile_share,
-            seed=seed,
-            input_bands=input_bands,
-        )
-        if mosaic_mode == "force":
-            config.mosaic_enabled = True
-        elif mosaic_mode == "off":
-            config.mosaic_enabled = False
-        return config
-
-    @staticmethod
-    def from_scene_list(
-        *,
-        images_root: Path,
-        scene_list_path: Path,
-        annotation_path: Path,
-        tile_size: int = 768,
-        stride: int | None = None,
-        stride_ratio: float = 0.67,
-        augmentation_level: int = 2,
-        mosaic_mode: str = "auto",
-        train_fraction: float = 0.8,
-        seed: int = 42,
-        input_bands: list[int] | None = None,
-    ) -> TilePreparationBundle:
-        scenes = _read_scene_list(images_root, scene_list_path)
-        train_scenes, val_scenes, warnings = _split_scenes(scenes, train_fraction=train_fraction, seed=seed)
-        annotation = AnnotationInput(Path(annotation_path), annotation_crs="auto", allow_inferred_annotation_crs=True)
-        params = TilePreparationSimpleParams(
-            tile_size=tile_size,
-            stride=stride,
-            stride_ratio=stride_ratio,
-            augmentation_level=augmentation_level,
-            mosaic_mode=mosaic_mode,  # type: ignore[arg-type]
-            seed=seed,
-            input_bands=input_bands,
-        )
-        bundle = TilePreparationFacade.build_datasets(train_scenes=train_scenes, val_scenes=val_scenes, annotation=annotation, params=params)
-        bundle.warnings.extend(warnings)
-        return bundle
+        return config_from_augmentation_level(augmentation_level, tile_size=tile_size, stride=stride)
 
     @staticmethod
     def build_datasets(
         *,
         train_scenes: list[SceneInput],
         val_scenes: list[SceneInput],
-        annotation: AnnotationInput,
-        params: TilePreparationSimpleParams,
+        annotation_path: Path,
+        tile_size: int,
+        stride: int,
+        augmentation_level: int = 2,
     ) -> TilePreparationBundle:
-        train_config = TilePreparationFacade.default_config(
-            tile_size=params.tile_size,
-            stride=params.stride,
-            stride_ratio=params.stride_ratio,
-            augmentation_level=params.augmentation_level,
-            mosaic_mode=params.mosaic_mode,
-            max_empty_tile_share=params.max_empty_tile_share,
-            seed=params.seed,
-            input_bands=params.input_bands,
+        annotation = AnnotationInput(
+            geojson_path=Path(annotation_path),
+            annotation_crs=DEFAULT_ANNOTATION_CRS,
+            allow_inferred_annotation_crs=DEFAULT_ALLOW_INFERRED_ANNOTATION_CRS,
         )
-        train_config.mosaic_enabled = params.mosaic_mode == "force" or (params.mosaic_mode == "auto" and len(train_scenes) > 1)
+        train_config = TilePreparationFacade.default_config(
+            tile_size=tile_size,
+            stride=stride,
+            augmentation_level=augmentation_level,
+        )
+        train_config.mosaic_enabled = DEFAULT_MOSAIC_MODE == "auto" and len(train_scenes) > 1
 
         val_config = replace(
             train_config,
@@ -210,36 +150,15 @@ class TilePreparationFacade:
             augmentations={},
             apply_random_augmentations=False,
             shuffle=False,
+            augmentation_level=0,
         )
-        val_config.mosaic_enabled = params.mosaic_mode == "force" or (params.mosaic_mode == "auto" and len(val_scenes) > 1)
+        val_config.mosaic_enabled = DEFAULT_MOSAIC_MODE == "auto" and len(val_scenes) > 1
 
         train_dataset = TrainingTileDataset(train_scenes, annotation, train_config, train=True)
         val_dataset = TrainingTileDataset(val_scenes, annotation, val_config, train=False)
         warnings = list(train_dataset.warnings) + list(val_dataset.warnings)
-        train_summary = {
-            **summarize_tile_records(train_dataset.base_records),
-            "records": len(train_dataset.records),
-            "base_records": len(train_dataset.base_records),
-            "skipped_fully_invalid_tiles": int(train_dataset.metadata.get("skipped_fully_invalid_tiles", 0)),
-            "skipped_low_valid_share_tiles": int(train_dataset.metadata.get("skipped_low_valid_share_tiles", 0)),
-            "min_valid_pixel_share": train_config.min_valid_pixel_share,
-            "drop_fully_invalid_tiles": train_config.drop_fully_invalid_tiles,
-            "augmentation_level": params.augmentation_level,
-            "mosaic_enabled": train_config.mosaic_enabled,
-            "cutout_mask_mode": train_config.cutout_mask_mode,
-        }
-        val_summary = {
-            **summarize_tile_records(val_dataset.base_records),
-            "records": len(val_dataset.records),
-            "base_records": len(val_dataset.base_records),
-            "skipped_fully_invalid_tiles": int(val_dataset.metadata.get("skipped_fully_invalid_tiles", 0)),
-            "skipped_low_valid_share_tiles": int(val_dataset.metadata.get("skipped_low_valid_share_tiles", 0)),
-            "min_valid_pixel_share": val_config.min_valid_pixel_share,
-            "drop_fully_invalid_tiles": val_config.drop_fully_invalid_tiles,
-            "augmentation_level": 0,
-            "mosaic_enabled": val_config.mosaic_enabled,
-            "cutout_mask_mode": val_config.cutout_mask_mode,
-        }
+        train_summary = _dataset_summary(train_dataset, train_config, augmentation_level=augmentation_level)
+        val_summary = _dataset_summary(val_dataset, val_config, augmentation_level=0)
         return TilePreparationBundle(
             config=train_config,
             train_dataset=train_dataset,
@@ -250,13 +169,11 @@ class TilePreparationFacade:
         )
 
     @staticmethod
-    def train_dataloader(bundle: TilePreparationBundle, batch_size: int, workers: int = 0):
-        _ = workers
+    def train_dataloader(bundle: TilePreparationBundle, batch_size: int):
         return iter_dataset_batches(bundle.train_dataset, batch_size, shuffle=True, seed=bundle.config.seed)
 
     @staticmethod
-    def val_dataloader(bundle: TilePreparationBundle, batch_size: int, workers: int = 0):
-        _ = workers
+    def val_dataloader(bundle: TilePreparationBundle, batch_size: int):
         return iter_dataset_batches(bundle.val_dataset, batch_size, shuffle=False, seed=bundle.config.seed)
 
     @staticmethod
@@ -265,8 +182,8 @@ class TilePreparationFacade:
         input_dir: Path,
         output_dir: Path | None = None,
         config: TilePreparationConfig,
-        annotation_crs: str | None = "auto",
-        allow_inferred_annotation_crs: bool = True,
+        annotation_crs: str | None = DEFAULT_ANNOTATION_CRS,
+        allow_inferred_annotation_crs: bool = DEFAULT_ALLOW_INFERRED_ANNOTATION_CRS,
         max_tile_examples: int = 32,
         max_augmentation_tiles: int = 8,
     ) -> dict:
@@ -283,37 +200,19 @@ class TilePreparationFacade:
         )
 
 
-def _read_scene_list(images_root: Path, scene_list_path: Path) -> list[SceneInput]:
-    root = Path(images_root)
-    rows = Path(scene_list_path).read_text(encoding="utf-8").splitlines()
-    scenes: list[SceneInput] = []
-    for line in rows:
-        value = line.strip()
-        if not value or value.startswith("#"):
-            continue
-        path = Path(value)
-        image_path = path if path.is_absolute() else root / path
-        if not image_path.is_file() or image_path.suffix.lower() not in {".tif", ".tiff"}:
-            matches = sorted(root.glob(f"{value}.tif")) + sorted(root.glob(f"{value}.tiff"))
-            if matches:
-                image_path = matches[0]
-        if not image_path.is_file() or image_path.suffix.lower() not in {".tif", ".tiff"}:
-            raise FileNotFoundError(f"Scene list entry does not resolve to an image: {value}")
-        scenes.append(SceneInput(image_path=image_path, scene_id=image_path.stem))
-    if not scenes:
-        raise ValueError(f"Scene list is empty: {scene_list_path}")
-    return scenes
-
-
-def _split_scenes(scenes: list[SceneInput], *, train_fraction: float, seed: int) -> tuple[list[SceneInput], list[SceneInput], list[str]]:
-    warnings: list[str] = []
-    shuffled = list(scenes)
-    random.Random(seed).shuffle(shuffled)
-    if len(shuffled) == 1:
-        warnings.append("scene list contains one scene; train-smoke reuses it for validation")
-        return shuffled, shuffled, warnings
-    train_count = max(1, min(len(shuffled) - 1, int(round(len(shuffled) * float(train_fraction)))))
-    return shuffled[:train_count], shuffled[train_count:], warnings
+def _dataset_summary(dataset: TrainingTileDataset, config: TilePreparationConfig, *, augmentation_level: int) -> dict:
+    return {
+        **summarize_tile_records(dataset.base_records),
+        "records": len(dataset.records),
+        "base_records": len(dataset.base_records),
+        "skipped_fully_invalid_tiles": int(dataset.metadata.get("skipped_fully_invalid_tiles", 0)),
+        "skipped_low_valid_share_tiles": int(dataset.metadata.get("skipped_low_valid_share_tiles", 0)),
+        "min_valid_pixel_share": config.min_valid_pixel_share,
+        "drop_fully_invalid_tiles": config.drop_fully_invalid_tiles,
+        "augmentation_level": augmentation_level,
+        "mosaic_enabled": config.mosaic_enabled,
+        "cutout_mask_mode": config.cutout_mask_mode,
+    }
 
 
 def bundle_to_jsonable(bundle: TilePreparationBundle) -> dict:

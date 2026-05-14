@@ -26,19 +26,22 @@ class TilePreparationTrainSmokeTests(unittest.TestCase):
             root = Path(tmp)
             _write_scene(root / "scene_a.tif", offset=0)
             _write_scene(root / "scene_b.tif", offset=40)
-            scene_list = root / "scenes.txt"
-            scene_list.write_text("scene_a.tif\nscene_b.tif\n", encoding="utf-8")
+            train_scene_list = root / "train.txt"
+            val_scene_list = root / "val.txt"
+            train_scene_list.write_text("scene_a.tif\n", encoding="utf-8")
+            val_scene_list.write_text("scene_b.tif\n", encoding="utf-8")
             annotation = root / "deforestation.geojson"
             _write_annotation(annotation)
             output_json = root / "train_smoke_result.json"
 
             result = run_train_smoke(
                 images_root=root,
-                scene_list=scene_list,
+                train_scene_list=train_scene_list,
+                val_scene_list=val_scene_list,
                 annotation=annotation,
                 tile_size=128,
+                stride=128,
                 augmentation_level=1,
-                mosaic_mode="auto",
                 batch_size=2,
                 max_train_batches=1,
                 max_val_batches=1,

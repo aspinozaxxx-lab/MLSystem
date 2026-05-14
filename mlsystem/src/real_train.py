@@ -20,11 +20,11 @@ from .io_utils import write_json
 from .data import scene_matching as scene_matching_mod
 from .job_schema import JobSpec
 from .tile_preparation import (
-    AnnotationInput,
     SceneInput,
+    TilePreparationFacade,
     TrainingTileDataset,
 )
-from .tile_preparation.config import resolve_tile_preparation_config, train_sampling_enabled as resolve_train_sampling_enabled
+from .tile_preparation.config import train_sampling_enabled as resolve_train_sampling_enabled
 from .tile_preparation.dataset import iter_dataset_batches
 from .tile_preparation.summary import summarize_tile_records
 from .mlflow_adapter import MLflowJobRun, trace_stage
@@ -1419,46 +1419,39 @@ def run_real_train(
         if explicit_max_val_tiles is None:
             max_val_tiles = max(1, len(val_matches) * max_tiles_per_scene)
     annotation_geojson_path = _write_training_annotation_geojson(config, annotation_uri, experiment_dir)
-    annotation_input = AnnotationInput(
-        geojson_path=annotation_geojson_path,
-        annotation_crs=str(job.preprocess.get("annotation_crs") or "auto"),
-        allow_inferred_annotation_crs=bool(job.preprocess.get("allow_inferred_annotation_crs", True)),
-    )
     train_sampling_enabled = resolve_train_sampling_enabled(job.preprocess)
     base_stride = int(job.preprocess.get("stride") or job.preprocess.get("train_stride") or patch_size)
-    train_tile_config = resolve_tile_preparation_config(
-        job.preprocess,
-        job.train,
-        tile_size=patch_size,
-        stride=base_stride,
-        input_bands=input_bands,
-        seed=seed,
-        train_mode=True,
-        max_records=max_train_tiles,
-        max_records_per_scene=max_tiles_per_scene,
-    )
-    val_tile_config = resolve_tile_preparation_config(
-        job.preprocess,
-        job.train,
-        tile_size=patch_size,
-        stride=int(job.preprocess.get("stride") or patch_size),
-        input_bands=input_bands,
-        seed=seed + 1000,
-        train_mode=False,
-        max_records=max_val_tiles,
-        max_records_per_scene=max(1, max_tiles_per_scene // 2),
+    train_sampling_cfg = job.preprocess.get("train_sampling") if isinstance(job.preprocess.get("train_sampling"), dict) else {}
+    augmentation_level = int(
+        train_sampling_cfg.get(
+            "augmentation_level",
+            job.preprocess.get("augmentation_level", 2 if train_sampling_enabled else 0),
+        )
     )
     train_scenes = _scene_inputs_for_matches(config, train_matches)
     val_scenes = _scene_inputs_for_matches(config, val_matches)
-    train_dataset = TrainingTileDataset(train_scenes, annotation_input, train_tile_config, train=True)
-    val_dataset = TrainingTileDataset(val_scenes, annotation_input, val_tile_config, train=False)
+    tile_bundle = TilePreparationFacade.build_datasets(
+        train_scenes=train_scenes,
+        val_scenes=val_scenes,
+        annotation_path=annotation_geojson_path,
+        tile_size=patch_size,
+        stride=base_stride,
+        augmentation_level=augmentation_level,
+    )
+    train_dataset = tile_bundle.train_dataset
+    val_dataset = tile_bundle.val_dataset
+    train_tile_config = train_dataset.config
+    val_tile_config = val_dataset.config
     if len(val_dataset) == 0 and len(train_dataset) > 0 and bool(job.train.get("allow_train_val_sample_fallback", False)):
         fallback_count = max(1, min(max_val_tiles, max(1, len(train_dataset.base_records) // 4)))
         fallback_records = list(train_dataset.base_records[-fallback_count:])
-        val_dataset = TrainingTileDataset(train_scenes, annotation_input, val_tile_config, records=fallback_records, train=False, build_result=train_dataset.build_result)
+        val_dataset.close()
+        val_dataset = TrainingTileDataset(train_scenes, train_dataset.annotation, val_tile_config, records=fallback_records, train=False, build_result=train_dataset.build_result)
         val_dataset.warnings.append("validation fallback used base train tile records; use a real val scene split for final runs")
     if len(train_dataset) == 0 or len(val_dataset) == 0:
         raise RuntimeError(f"Not enough samples: train={len(train_dataset)} val={len(val_dataset)}")
+    dataset_input_channels = int(train_dataset[0].image.shape[0])
+    input_bands = list(range(1, dataset_input_channels + 1))
 
     train_report = train_dataset.scene_reports
     val_report = val_dataset.scene_reports

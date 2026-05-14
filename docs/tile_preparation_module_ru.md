@@ -1,78 +1,114 @@
 # Модуль подготовки тайлов
 
-`mlsystem/src/tile_preparation/` - отдельный модуль подготовки training/validation тайлов для сегментации. Он не зависит от Airflow, FastAPI и `real_train.py`: входом являются пути к GeoTIFF, GeoJSON и txt scene list, выходом - ленивый `Dataset`/batch iterator с готовыми `image`, `mask` и lightweight metadata.
+`mlsystem/src/tile_preparation/` - отдельный модуль подготовки training/validation тайлов для сегментации. Он не зависит от Airflow, FastAPI и внутренних деталей `real_train.py`: входом являются уже разделённые списки сцен и путь к GeoJSON, выходом - ленивые `Dataset`/batch iterator с готовыми `image`, `mask` и lightweight metadata.
+
+## Главное правило
+
+Модуль не делает train/val split. Split делает стадия `prepare_dataset`, а `tile_preparation` получает уже готовые `train_scenes` и `val_scenes`.
 
 ## Рекомендуемая точка входа
 
-Используйте фасад:
-
 ```python
 from pathlib import Path
-from mlsystem.src.tile_preparation import TilePreparationFacade
+from mlsystem.src.tile_preparation import SceneInput, TilePreparationFacade
 
-bundle = TilePreparationFacade.from_scene_list(
-    images_root=Path("E:/Projects/NSPD/Images/test"),
-    scene_list_path=Path("E:/Projects/NSPD/Images/test/deforestation.txt"),
+bundle = TilePreparationFacade.build_datasets(
+    train_scenes=[
+        SceneInput(image_path=Path("E:/Projects/NSPD/Images/test/train_scene.tif"), scene_id="train_scene"),
+    ],
+    val_scenes=[
+        SceneInput(image_path=Path("E:/Projects/NSPD/Images/test/val_scene.tif"), scene_id="val_scene"),
+    ],
     annotation_path=Path("E:/Projects/NSPD/Images/test/deforestation.geojson"),
     tile_size=512,
+    stride=512,
     augmentation_level=1,
-    mosaic_mode="auto",
-    seed=42,
 )
 
 for indices, x, y in TilePreparationFacade.train_dataloader(bundle, batch_size=2):
-    # x: [B, C, H, W], y: [B, 1, H, W]
+    # x: torch.Tensor [B, C, H, W]
+    # y: torch.Tensor [B, 1, H, W], значения 0/1
     break
 ```
 
-Публичный API пакета ограничен: `TilePreparationFacade`, `TilePreparationSimpleParams`, `TilePreparationBundle`, `TilePreparationConfig`, `SceneInput`, `AnnotationInput`, `TrainingTileDataset`, `ReadyTileSample`. Низкоуровневые функции из `windows`, `mask_rasterizer`, `validity`, `mosaic`, `iterator` считаются internal API и импортируются напрямую только в тестах/разработке.
+Публичный API пакета:
 
-## Высокоуровневые параметры
+- `TilePreparationFacade`;
+- `TilePreparationBundle`;
+- `TilePreparationConfig`;
+- `SceneInput`;
+- `AnnotationInput`;
+- `TrainingTileDataset`;
+- `ReadyTileSample`.
 
-- `tile_size`: размер квадратного тайла.
-- `stride`: шаг сетки; если не задан, считается как `tile_size * stride_ratio`.
-- `stride_ratio`: fallback для `stride`.
-- `augmentation_level`: агрегированный уровень аугментации и виртуального расширения train set.
-- `mosaic_mode`: `off`, `auto`, `force`.
-- `max_empty_tile_share`: явный override доли empty/hard-negative тайлов.
-- `seed`: seed для split, shuffle и аугментаций.
-- `input_bands`: список raster bands, если нужны не все каналы.
+Низкоуровневые функции из `windows`, `mask_rasterizer`, `validity`, `mosaic`, `iterator` считаются internal API. Их можно импортировать напрямую в тестах и при разработке, но не использовать как пользовательский entrypoint.
+
+## Публичные параметры фасада
+
+`TilePreparationFacade.default_config` принимает только:
+
+- `tile_size`;
+- `stride`;
+- `augmentation_level`.
+
+`TilePreparationFacade.build_datasets` принимает только:
+
+- `train_scenes`;
+- `val_scenes`;
+- `annotation_path`;
+- `tile_size`;
+- `stride`;
+- `augmentation_level`.
+
+Удалённые из публичного API параметры: `from_scene_list`, `train_fraction`, `stride_ratio`, `mosaic_mode`, `seed`, `input_bands`, `max_empty_tile_share`. Они не должны управляться снаружи фасада.
+
+## Внутренние defaults
+
+В `facade.py` закреплены внутренние значения:
+
+- `DEFAULT_SEED = 42`;
+- `DEFAULT_MOSAIC_MODE = "auto"`;
+- `DEFAULT_ANNOTATION_CRS = "auto"`;
+- `DEFAULT_ALLOW_INFERRED_ANNOTATION_CRS = True`;
+- `DEFAULT_INPUT_BANDS = None`.
+
+`stride` всегда задаётся явно. `DEFAULT_INPUT_BANDS = None` означает чтение всех доступных raster bands.
 
 ## CRS и GeoJSON
 
-GeoJSON загружается один раз как источник разметки, но геометрии приводятся к CRS каждого raster отдельно. В `scene_reports` и JSON-отчёте для каждой сцены пишутся:
+GeoJSON загружается как единый источник разметки, но геометрии приводятся к CRS каждого raster отдельно. В `scene_reports` и JSON-отчётах для каждой сцены пишутся:
 
 - `raster_crs`;
 - `annotation_crs`;
 - `annotation_crs_source`;
 - `transformed_to_raster_crs`.
 
-Если GeoJSON не содержит CRS и `allow_inferred_annotation_crs=False`, модуль падает с понятной ошибкой. Для debug-режимов можно включить inference, но это всегда сопровождается warning.
+Если GeoJSON не содержит CRS и inference выключен на low-level API, модуль падает с понятной ошибкой. Фасад использует debug-friendly `annotation_crs="auto"` и `allow_inferred_annotation_crs=True`; inference сопровождается warning.
 
 ## augmentation_level
+
+`augmentation_level` управляет и аугментациями, и виртуальным расширением train set.
 
 | level | augmentations | repeat factors | dense stride | max empty share |
 |---|---|---|---|---|
 | 0 | none | positive=1, hard_negative=1, negative=1 | all 1.0 | none |
-| 1 | flips, rot90 | positive=2, hard_negative=1, negative=1 | positive=1.0, hard_negative=1.0, negative=1.0 | 0.5 |
+| 1 | flips, rot90 | positive=2, hard_negative=1, negative=1 | all 1.0 | 0.5 |
 | 2 | flips, rot90, brightness_contrast, gamma, noise, blur | positive=4, hard_negative=2, negative=1 | positive=0.5, hard_negative=0.5, negative=1.0 | 0.35 |
 | 3 | all including cutout/coarse_dropout | positive=6, hard_negative=3, negative=1 | positive=0.25, hard_negative=0.5, negative=1.0 | 0.25 |
 
-Если `max_empty_tile_share` передан явно, он перекрывает default уровня.
-
 ## Class-aware repeats
 
-Виртуальные повторы не материализуют изображения на диск. Модуль хранит lightweight `TileSampleRecord` и повторяет индексы/records:
+Виртуальные повторы не материализуют изображения на диск. Модуль хранит lightweight `TileSampleRecord` и повторяет records:
 
 - `positive` и `partial_positive`: самый сильный repeat;
 - `hard_negative`: умеренный repeat;
 - `negative`: обычно без repeat.
 
-Validation всегда строится отдельно: без repeat, без random augmentation, без dense train stride и без train-like oversampling.
+Validation строится отдельно: без repeat, без random augmentation, без dense train stride и без train-like oversampling.
 
 ## Valid data clipping
 
-Для каждого tile читается `valid_data_mask`. Режимы: `auto`, `dataset_mask`, `alpha`, `nodata`, `nonzero_any`, `nonzero_all`. Для Kanopus с чёрным прямоугольным background важен fallback `nonzero_any`.
+Для каждого tile читается `valid_data_mask`. Режимы internal config: `auto`, `dataset_mask`, `alpha`, `nodata`, `nonzero_any`, `nonzero_all`. Для Kanopus с чёрным прямоугольным background важен fallback `nonzero_any`.
 
 Training mask строится так:
 
@@ -80,19 +116,24 @@ Training mask строится так:
 2. Если `clip_mask_to_valid_data=True`, mask умножается на `valid_data_mask`.
 3. `positive_pixels` и классификация считаются после clipping.
 
-На чёрной области без данных training mask должна быть равна 0.
-
-Полностью невалидные тайлы не попадают в records никогда, если `drop_fully_invalid_tiles=True` (default). Это жёсткий invariant: `final_valid_pixel_share == 0` означает, что tile нельзя отдавать в обучение. В summary пишутся `skipped_fully_invalid_tiles`, `skipped_low_valid_share_tiles`, `min_valid_pixel_share`.
+На чёрной области без данных training mask равна 0. Полностью невалидные тайлы не попадают в records никогда, если `drop_fully_invalid_tiles=True` (default). В summary пишутся `skipped_fully_invalid_tiles`, `skipped_low_valid_share_tiles`, `min_valid_pixel_share`.
 
 ## Mosaic fill
 
-Если `mosaic_mode=auto` и в split есть несколько сцен, либо `mosaic_mode=force`, invalid pixels anchor-сцены могут заполняться соседними снимками. Маска после этого клипится уже по union valid mask. Если сосед не покрывает область, пиксели остаются invalid, а mask там зануляется.
+Mosaic работает автоматически и только внутри своего split:
+
+- train может использовать соседей только из `train_scenes`;
+- val может использовать соседей только из `val_scenes`;
+- train никогда не использует val-сцены как mosaic neighbors;
+- val никогда не использует train-сцены как mosaic neighbors.
+
+Если в split больше одной сцены, invalid pixels anchor-сцены могут заполняться соседними снимками. Маска после этого клипится по union valid mask. Если сосед не покрывает область, пиксели остаются invalid, а mask там зануляется.
 
 Перед чтением соседей используется footprint index: модуль проверяет пересечение bounds tile и bounds соседнего raster. Для разных CRS bounds соседей приводятся через `transform_bounds`. В mosaic summary пишутся `candidate_neighbors`, `intersecting_neighbors`, `actually_used_neighbors`, `skipped_non_intersecting_neighbors`.
 
 ## Cutout/dropout
 
-Default production behavior: `cutout_mask_mode="erase"`.
+Internal default: `cutout_mask_mode="erase"`.
 
 Если cutout или coarse dropout попадает внутрь объекта:
 
@@ -100,11 +141,18 @@ Default production behavior: `cutout_mask_mode="erase"`.
 - соответствующие пиксели binary mask тоже зануляются;
 - metadata пишет `mask_erased_pixels`, `cutout_intersected_positive`, `cutout_boxes`.
 
-Это нужно, чтобы чёрный квадрат внутри объекта не считался объектом. В HTML-отчёте красный пунктирный контур после cutout показывает и внешнюю границу объекта, и внутреннюю границу вырезанной дырки.
+Это нужно, чтобы чёрный квадрат внутри объекта не считался объектом. В HTML-отчёте красный пунктирный контур после cutout показывает и внешнюю границу объекта, и внутреннюю границу вырезанной области.
 
 ## Training loop
 
 Обучение использует Python `TrainingTileDataset`/batch iterator напрямую. FastAPI не участвует в training path и нужен только для lightweight debug preview.
+
+`ReadyTileSample` содержит:
+
+- `sample.image`: `np.ndarray [C, H, W]`, `float32`;
+- `sample.mask`: `np.ndarray [1, H, W]`, `float32`, значения 0/1;
+- `sample.record`: lightweight `TileSampleRecord`;
+- `sample.metadata`: valid clipping, mosaic и augmentation metadata.
 
 ## Debug
 
@@ -123,21 +171,24 @@ python scripts\debug_annotated_tile_report.py `
   --cutout-mask-mode erase
 ```
 
-Train smoke:
+Train smoke с готовыми split lists:
 
 ```powershell
 python scripts\debug_tile_preparation_train_smoke.py `
   --images-root E:\Projects\NSPD\Images\test `
-  --scene-list E:\Projects\NSPD\Images\test\deforestation.txt `
+  --train-scene-list E:\Projects\NSPD\Images\test\train.txt `
+  --val-scene-list E:\Projects\NSPD\Images\test\val.txt `
   --annotation E:\Projects\NSPD\Images\test\deforestation.geojson `
   --tile-size 512 `
+  --stride 512 `
   --augmentation-level 1 `
-  --mosaic-mode auto `
   --batch-size 2 `
   --max-train-batches 2 `
   --max-val-batches 1 `
   --device cpu
 ```
+
+Если локально есть только общий txt, script поддерживает debug-only fallback `--scene-list ... --debug-split-first-n-train ...`. Это split внутри debug script, не внутри `tile_preparation`.
 
 Debug outputs и реальные GeoTIFF/GeoJSON не коммитятся.
 

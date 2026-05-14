@@ -12,31 +12,74 @@ if str(REPO_ROOT) not in sys.path:
 
 import torch
 
+from mlsystem.src.tile_preparation import SceneInput
 from mlsystem.src.tile_preparation.facade import TilePreparationFacade, bundle_to_jsonable
+
+
+def _read_scene_list(images_root: Path, scene_list_path: Path) -> list[SceneInput]:
+    root = Path(images_root)
+    rows = Path(scene_list_path).read_text(encoding="utf-8").splitlines()
+    scenes: list[SceneInput] = []
+    for line in rows:
+        value = line.strip().lstrip("\ufeff")
+        if not value or value.startswith("#"):
+            continue
+        path = Path(value)
+        image_path = path if path.is_absolute() else root / path
+        if not image_path.is_file() or image_path.suffix.lower() not in {".tif", ".tiff"}:
+            matches = sorted(root.glob(f"{value}.tif")) + sorted(root.glob(f"{value}.tiff"))
+            if matches:
+                image_path = matches[0]
+        if not image_path.is_file() or image_path.suffix.lower() not in {".tif", ".tiff"}:
+            raise FileNotFoundError(f"Scene list entry does not resolve to an image: {value}")
+        scenes.append(SceneInput(image_path=image_path, scene_id=image_path.stem))
+    if not scenes:
+        raise ValueError(f"Scene list is empty: {scene_list_path}")
+    return scenes
 
 
 def run_train_smoke(
     *,
     images_root: Path,
-    scene_list: Path,
+    train_scene_list: Path | None = None,
+    val_scene_list: Path | None = None,
+    scene_list: Path | None = None,
+    debug_split_first_n_train: int | None = None,
     annotation: Path,
     tile_size: int,
+    stride: int,
     augmentation_level: int,
-    mosaic_mode: str,
     batch_size: int,
     max_train_batches: int,
     max_val_batches: int,
     device: str,
     output_json: Path,
 ) -> dict[str, Any]:
-    bundle = TilePreparationFacade.from_scene_list(
-        images_root=images_root,
-        scene_list_path=scene_list,
+    if train_scene_list and val_scene_list:
+        train_scenes = _read_scene_list(images_root, train_scene_list)
+        val_scenes = _read_scene_list(images_root, val_scene_list)
+        split_source = "explicit_train_val_scene_lists"
+    elif scene_list:
+        scenes = _read_scene_list(images_root, scene_list)
+        if len(scenes) == 1:
+            train_scenes = scenes
+            val_scenes = scenes
+        else:
+            train_count = int(debug_split_first_n_train or max(1, len(scenes) - 1))
+            train_count = max(1, min(len(scenes) - 1, train_count))
+            train_scenes = scenes[:train_count]
+            val_scenes = scenes[train_count:]
+        split_source = "debug_script_local_split"
+    else:
+        raise ValueError("provide either --train-scene-list and --val-scene-list, or debug-only --scene-list")
+
+    bundle = TilePreparationFacade.build_datasets(
+        train_scenes=train_scenes,
+        val_scenes=val_scenes,
         annotation_path=annotation,
         tile_size=tile_size,
+        stride=stride,
         augmentation_level=augmentation_level,
-        mosaic_mode=mosaic_mode,
-        seed=42,
     )
     model: torch.nn.Module | None = None
     optimizer: torch.optim.Optimizer | None = None
@@ -76,6 +119,9 @@ def run_train_smoke(
         "status": "ok",
         "entrypoint": "TilePreparationFacade",
         "uses_fastapi": False,
+        "split_source": split_source,
+        "train_scenes": [scene.resolved_scene_id() for scene in train_scenes],
+        "val_scenes": [scene.resolved_scene_id() for scene in val_scenes],
         "bundle": bundle_to_jsonable(bundle),
         "train_batches": train_batches,
         "val_batches": val_batches,
@@ -91,11 +137,14 @@ def run_train_smoke(
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run a tiny local train smoke test through tile_preparation facade.")
     parser.add_argument("--images-root", required=True)
-    parser.add_argument("--scene-list", required=True)
+    parser.add_argument("--train-scene-list")
+    parser.add_argument("--val-scene-list")
+    parser.add_argument("--scene-list", help="Debug-only fallback: split this local list inside the script, not in tile_preparation.")
+    parser.add_argument("--debug-split-first-n-train", type=int)
     parser.add_argument("--annotation", required=True)
     parser.add_argument("--tile-size", type=int, default=512)
+    parser.add_argument("--stride", type=int, default=512)
     parser.add_argument("--augmentation-level", type=int, default=1)
-    parser.add_argument("--mosaic-mode", choices=("off", "auto", "force"), default="auto")
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--max-train-batches", type=int, default=2)
     parser.add_argument("--max-val-batches", type=int, default=1)
@@ -105,11 +154,14 @@ def main() -> int:
 
     result = run_train_smoke(
         images_root=Path(args.images_root),
-        scene_list=Path(args.scene_list),
+        train_scene_list=Path(args.train_scene_list) if args.train_scene_list else None,
+        val_scene_list=Path(args.val_scene_list) if args.val_scene_list else None,
+        scene_list=Path(args.scene_list) if args.scene_list else None,
+        debug_split_first_n_train=args.debug_split_first_n_train,
         annotation=Path(args.annotation),
         tile_size=args.tile_size,
+        stride=args.stride,
         augmentation_level=args.augmentation_level,
-        mosaic_mode=args.mosaic_mode,
         batch_size=args.batch_size,
         max_train_batches=args.max_train_batches,
         max_val_batches=args.max_val_batches,
