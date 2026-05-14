@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import faulthandler
 import json
 import os
 import traceback
@@ -17,6 +18,7 @@ from .run_store import PipelineRunStore, utc_now
 
 
 def run_worker(run_id: str, run_root: str | Path | None = None) -> int:
+    faulthandler.enable(all_threads=True)
     store = PipelineRunStore(run_root, run_id)
     config = store.read_config()
     started_at = utc_now()

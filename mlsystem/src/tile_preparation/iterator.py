@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import itertools
 import math
+import os
 import random
 from collections.abc import Iterator
 from pathlib import Path
@@ -44,11 +45,13 @@ def build_tile_records(
             open_datasets[image_path] = rasterio.open(image_path)
             scene_ids_by_path[image_path] = scene.resolved_scene_id()
 
-        for scene in scenes:
+        total_scenes = len(scenes)
+        for scene_index, scene in enumerate(scenes, start=1):
             if bool(scene.metadata.get("mosaic_neighbor_only")):
                 continue
             image_path = _rasterio_path(scene.image_path)
             scene_id = scene.resolved_scene_id()
+            _log_progress(f"build_train_records scene={scene_id} index={scene_index}/{total_scenes}")
             ds = open_datasets[image_path]
             annotation_geoms = load_annotation_geometries(annotation, raster_crs=ds.crs)
             annotation_summary = annotation_geoms.to_dict(annotation.geojson_path)
@@ -56,6 +59,7 @@ def build_tile_records(
             warnings.extend(annotation_geoms.warnings)
             neighbor_datasets = _neighbor_datasets(image_path, open_datasets, scene_ids_by_path, config)
             scene_records, scene_skip_counts = _build_scene_records(ds, scene_id, image_path, annotation_geoms, config, neighbor_datasets=neighbor_datasets)
+            _log_progress(f"built_train_records scene={scene_id} records={len(scene_records)}")
             for key in skip_totals:
                 skip_totals[key] += int(scene_skip_counts.get(key, 0))
             before_limit = list(scene_records)
@@ -183,11 +187,13 @@ def build_validation_tile_records(
             image_path = _rasterio_path(scene.image_path)
             open_datasets[image_path] = rasterio.open(image_path)
             scene_ids_by_path[image_path] = scene.resolved_scene_id()
-        for scene in scenes:
+        total_scenes = len(scenes)
+        for scene_index, scene in enumerate(scenes, start=1):
             if bool(scene.metadata.get("mosaic_neighbor_only")):
                 continue
             image_path = _rasterio_path(scene.image_path)
             scene_id = scene.resolved_scene_id()
+            _log_progress(f"build_val_records scene={scene_id} index={scene_index}/{total_scenes}")
             ds = open_datasets[image_path]
             annotation_geoms = load_annotation_geometries(annotation, raster_crs=ds.crs)
             annotation_summary = annotation_geoms.to_dict(annotation.geojson_path)
@@ -269,6 +275,7 @@ def build_validation_tile_records(
             if config.max_records_per_scene is not None and len(scene_records) > config.max_records_per_scene:
                 scene_records = scene_records[: config.max_records_per_scene]
             records.extend(scene_records)
+            _log_progress(f"built_val_records scene={scene_id} records={len(scene_records)}")
             summary = summarize_tile_records(scene_records)
             scene_reports.append(
                 {
@@ -678,6 +685,13 @@ def _limit_records(records: list[TileSampleRecord], limit: int, rng: random.Rand
 
 def _kind_priority(kind: str) -> int:
     return {"positive": 0, "partial_positive": 1, "hard_negative": 2, "negative": 3}.get(kind, 9)
+
+
+def _log_progress(message: str) -> None:
+    value = os.getenv("MLSYSTEM_TILE_PREPARATION_PROGRESS", "1").strip().lower()
+    if value in {"0", "false", "no", "off"}:
+        return
+    print(f"[tile_preparation] {message}", flush=True)
 
 
 def _neighbor_datasets(
