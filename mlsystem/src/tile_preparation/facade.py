@@ -121,6 +121,7 @@ class TilePreparationFacade:
         tile_size: int,
         stride: int,
         augmentation_level: int = 2,
+        mosaic_enabled: bool | None = None,
     ) -> TilePreparationBundle:
         annotation = AnnotationInput(
             geojson_path=Path(annotation_path),
@@ -132,7 +133,8 @@ class TilePreparationFacade:
             stride=stride,
             augmentation_level=augmentation_level,
         )
-        train_config.mosaic_enabled = DEFAULT_MOSAIC_MODE == "auto" and len(train_scenes) > 1
+        mosaic_active = DEFAULT_MOSAIC_MODE == "auto" if mosaic_enabled is None else bool(mosaic_enabled)
+        train_config.mosaic_enabled = mosaic_active and len(train_scenes) > 1
 
         val_config = replace(
             train_config,
@@ -152,7 +154,7 @@ class TilePreparationFacade:
             shuffle=False,
             augmentation_level=0,
         )
-        val_config.mosaic_enabled = DEFAULT_MOSAIC_MODE == "auto" and len(val_scenes) > 1
+        val_config.mosaic_enabled = mosaic_active and len(val_scenes) > 1
 
         train_dataset = TrainingTileDataset(train_scenes, annotation, train_config, train=True)
         val_dataset = TrainingTileDataset(val_scenes, annotation, val_config, train=False)

@@ -703,6 +703,36 @@ def _full_dataset_tiles_requested(job: JobSpec) -> bool:
     )
 
 
+def _coerce_optional_bool(value: Any) -> bool | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on", "enabled", "enable"}:
+        return True
+    if text in {"0", "false", "no", "n", "off", "disabled", "disable"}:
+        return False
+    return None
+
+
+def _resolve_mosaic_enabled(job: JobSpec) -> bool | None:
+    if "mosaic_enabled" in job.preprocess:
+        return _coerce_optional_bool(job.preprocess.get("mosaic_enabled"))
+    train_sampling = job.preprocess.get("train_sampling")
+    if isinstance(train_sampling, dict) and "mosaic_enabled" in train_sampling:
+        return _coerce_optional_bool(train_sampling.get("mosaic_enabled"))
+    mode = job.preprocess.get("mosaic_mode") or job.preprocess.get("mosaic")
+    if mode is None:
+        return None
+    text = str(mode).strip().lower()
+    if text == "auto":
+        return None
+    return _coerce_optional_bool(text)
+
+
 def _resolve_wallclock_limit(job: JobSpec) -> int | None:
     for source in (job.train, job.params.get("debug_run") if isinstance(job.params.get("debug_run"), dict) else {}):
         if not isinstance(source, dict):
@@ -1445,6 +1475,12 @@ def run_real_train(
             job.preprocess.get("augmentation_level", 2 if train_sampling_enabled else 0),
         )
     )
+    mosaic_enabled = _resolve_mosaic_enabled(job)
+    log_fn(
+        job_log,
+        "real_train tile_preparation_config "
+        f"tile_size={patch_size} stride={base_stride} augmentation_level={augmentation_level} mosaic_enabled={mosaic_enabled if mosaic_enabled is not None else 'auto'}",
+    )
     train_scenes = _scene_inputs_for_matches(config, train_matches)
     val_scenes = _scene_inputs_for_matches(config, val_matches)
     tile_bundle = TilePreparationFacade.build_datasets(
@@ -1454,6 +1490,7 @@ def run_real_train(
         tile_size=patch_size,
         stride=base_stride,
         augmentation_level=augmentation_level,
+        mosaic_enabled=mosaic_enabled,
     )
     train_dataset = tile_bundle.train_dataset
     val_dataset = tile_bundle.val_dataset
@@ -1554,6 +1591,7 @@ def run_real_train(
     write_json(dataset_report_path, dataset_report)
     train_scenes_path = _write_scene_list(experiment_dir / "train_scenes.txt", train_matches)
     val_scenes_path = _write_scene_list(experiment_dir / "val_scenes.txt", val_matches)
+    mosaic_param_value = "auto" if mosaic_enabled is None else str(bool(mosaic_enabled)).lower()
     mlflow_run.log_params(
         {
             "positive_scene_count": dataset_report["positive_scene_count"],
@@ -1561,6 +1599,9 @@ def run_real_train(
             "positive_tile_count": dataset_report["positive_tile_count"],
             "negative_tile_count": dataset_report["negative_tile_count"],
             "train_sampling_enabled": train_sampling_enabled,
+            "tile_preparation.mosaic_enabled_requested": mosaic_param_value,
+            "tile_preparation.train_mosaic_enabled": train_tile_config.mosaic_enabled,
+            "tile_preparation.val_mosaic_enabled": val_tile_config.mosaic_enabled,
             "base_train_tile_count": dataset_report["base_train_tile_count"],
             "virtual_train_tile_count": dataset_report["virtual_train_tile_count"],
             "effective_train_samples_per_epoch": dataset_report["effective_train_samples_per_epoch"],

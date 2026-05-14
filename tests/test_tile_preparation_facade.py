@@ -58,6 +58,29 @@ class TilePreparationFacadeTests(unittest.TestCase):
                 bundle.train_dataset.close()
                 bundle.val_dataset.close()
 
+    def test_build_datasets_can_disable_mosaic_for_multi_scene_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_scene(root / "scene_a.tif", crs="EPSG:3857", transform=from_origin(0, 256, 1, 1))
+            _write_scene(root / "scene_b.tif", crs="EPSG:3857", transform=from_origin(0, 256, 1, 1))
+            _write_geojson(root / "ann.geojson", Polygon([(32, 224), (160, 224), (160, 96), (32, 96)]), "EPSG:3857")
+
+            bundle = TilePreparationFacade.build_datasets(
+                train_scenes=[SceneInput(root / "scene_a.tif", "scene_a"), SceneInput(root / "scene_b.tif", "scene_b")],
+                val_scenes=[SceneInput(root / "scene_a.tif", "scene_a"), SceneInput(root / "scene_b.tif", "scene_b")],
+                annotation_path=root / "ann.geojson",
+                tile_size=128,
+                stride=128,
+                augmentation_level=1,
+                mosaic_enabled=False,
+            )
+            try:
+                self.assertFalse(bundle.train_dataset.config.mosaic_enabled)
+                self.assertFalse(bundle.val_dataset.config.mosaic_enabled)
+            finally:
+                bundle.train_dataset.close()
+                bundle.val_dataset.close()
+
     def test_multicrs_annotation_is_transformed_per_raster(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
