@@ -3,5 +3,44 @@
   hosts: gpu_mlserver
   gather_facts: false
   become: true
+  pre_tasks:
+    - name: Ensure rsync is installed on target
+      ansible.builtin.apt:
+        name: rsync
+        state: present
+        update_cache: true
+
+    - name: Ensure repo parent exists
+      ansible.builtin.file:
+        path: "{{ mlsystem_gpu_repo_root | dirname }}"
+        state: directory
+        mode: "0755"
+
+    - name: Ensure repo root exists
+      ansible.builtin.file:
+        path: "{{ mlsystem_gpu_repo_root }}"
+        state: directory
+        mode: "0755"
+
+    - name: Rsync checked-out repository from controller
+      ansible.builtin.command: >-
+        rsync -az --delete
+        --exclude .git
+        --exclude __pycache__
+        --exclude .pytest_cache
+        --exclude .tmp_*
+        --exclude results/reports/synthetic_pseudolabel_smoke
+        -e "ssh -o StrictHostKeyChecking=yes{% if ansible_ssh_private_key_file is defined %} -i {{ ansible_ssh_private_key_file }}{% endif %}"
+        "{{ playbook_dir }}/../../"
+        "{{ ansible_user | default('root') }}@{{ ansible_host | default(inventory_hostname) }}:{{ mlsystem_gpu_repo_root }}/"
+      delegate_to: localhost
+      become: false
+      changed_when: true
+
+    - name: Remove Python cache directories from deployed repo
+      ansible.builtin.command:
+        cmd: find "{{ mlsystem_gpu_repo_root }}" -type d -name __pycache__ -prune -exec rm -rf {} +
+      changed_when: false
+
   roles:
     - role: gpu_platform

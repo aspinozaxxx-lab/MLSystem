@@ -183,3 +183,8 @@ jobs:
           $SSH "curl -fsS http://127.0.0.1:8088/ready | python3 -m json.tool"
           COMPOSE="docker compose --env-file /etc/mlsystem/gpu-platform.env -f /data/mlsystem/platform/docker-compose.yml"
           $SSH "$COMPOSE exec -T mlsystem-api python -c \"from src.pipeline_runner.stages import DEFAULT_PIPELINE_STAGES; print(','.join(DEFAULT_PIPELINE_STAGES))\""
+          $SSH "$COMPOSE exec -T mlsystem-api sh -lc 'nvidia-smi || python -c \"import torch; print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else \\\"NO_CUDA\\\")\"'"
+          $SSH "docker ps --format '{{.Names}}' | grep -i airflow && exit 1 || true"
+          $SSH "$COMPOSE ps | grep -i airflow && exit 1 || true"
+          $SSH "cd /opt/mlsystem/repo && timeout 21600 python3 scripts/smoke_pipeline_api_no_airflow.py --api http://127.0.0.1:8088 --token-file /etc/mlsystem/gpu-platform.env --dry-run --real-train --poll-sec 30 --out /tmp/mlsystem-pipeline-smoke.json"
+          $SSH "cat /tmp/mlsystem-pipeline-smoke.json"

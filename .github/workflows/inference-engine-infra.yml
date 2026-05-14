@@ -89,7 +89,7 @@ jobs:
   apply-infra:
     runs-on: ubuntu-latest
     needs: plan-or-check
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'apply')
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'apply'
     concurrency:
       group: mlsystem-gpu-server-${{ github.ref }}
       cancel-in-progress: false
@@ -142,7 +142,7 @@ jobs:
   validate-infra:
     runs-on: ubuntu-latest
     needs: apply-infra
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'apply')
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'apply'
     concurrency:
       group: mlsystem-gpu-server-${{ github.ref }}
       cancel-in-progress: false
