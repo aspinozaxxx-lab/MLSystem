@@ -744,6 +744,15 @@ def _resolve_augmentation_level(job: JobSpec, *, train_sampling_enabled: bool) -
     return 2 if train_sampling_enabled else 0
 
 
+def _resolve_batch_limit(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, str) and value.strip().lower() in {"none", "null", "false", "off"}:
+        return None
+    limit = int(value)
+    return limit if limit > 0 else None
+
+
 def _resolve_wallclock_limit(job: JobSpec) -> int | None:
     for source in (job.train, job.params.get("debug_run") if isinstance(job.params.get("debug_run"), dict) else {}):
         if not isinstance(source, dict):
@@ -1785,6 +1794,8 @@ def run_real_train(
     metrics_debug_artifacts: list[Path] = []
     train_trace = trace_stage("train_model", {"job_id": job.job_id, "model_name": model_name, "tile_size": patch_size, "epoch_count": epochs})
     train_trace.__enter__()
+    max_train_batches = _resolve_batch_limit(job.train.get("max_train_batches"))
+    max_val_batches = _resolve_batch_limit(job.train.get("max_val_batches"))
     try:
         for epoch in range(1, epochs + 1):
             if history and wallclock_limit_sec is not None and time.time() - started > wallclock_limit_sec:
@@ -1804,6 +1815,8 @@ def run_real_train(
                 shuffle=True,
                 seed=seed + epoch,
             ):
+                if max_train_batches is not None and train_batch_count >= max_train_batches:
+                    break
                 train_batch_count += 1
                 x = x_cpu.to(device)
                 y = y_cpu.to(device)
@@ -1833,6 +1846,8 @@ def run_real_train(
                     shuffle=False,
                     seed=seed,
                 ):
+                    if max_val_batches is not None and val_batch_count >= max_val_batches:
+                        break
                     val_batch_count += 1
                     x = x_cpu.to(device)
                     y = y_cpu.to(device)

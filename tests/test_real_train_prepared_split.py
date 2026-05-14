@@ -16,6 +16,7 @@ from mlsystem.src.real_train import (
     _configure_dropout,
     _load_initial_checkpoint,
     _load_prepared_dataset_split,
+    _resolve_batch_limit,
     _resolve_augmentation_level,
     _resolve_metric_thresholds,
     _threshold_metric_suffix,
@@ -140,6 +141,12 @@ class RealTrainPreparedSplitTests(unittest.TestCase):
 
         override = SimpleNamespace(preprocess={"augmentation_level": 3, "train_sampling": {"enabled": True}}, train={"augmentation_level": 1})
         self.assertEqual(_resolve_augmentation_level(override, train_sampling_enabled=True), 3)
+
+    def test_batch_limit_resolves_null_and_positive_values(self) -> None:
+        self.assertIsNone(_resolve_batch_limit(None))
+        self.assertIsNone(_resolve_batch_limit("null"))
+        self.assertIsNone(_resolve_batch_limit(0))
+        self.assertEqual(_resolve_batch_limit("3"), 3)
 
 
 if __name__ == "__main__":
