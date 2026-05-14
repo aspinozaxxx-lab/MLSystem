@@ -29,6 +29,9 @@ on:
     paths:
       - "ansible/**"
       - "deploy/**"
+      - "mlsystem/**"
+      - "InferenceEngine/**"
+      - "scripts/**"
       - ".github/workflows/ansible.yml"
 permissions:
   contents: read
