@@ -1,5 +1,7 @@
 # Virtual Tile Sampling Debug
 
+> Основная русская инструкция по новому независимому модулю подготовки тайлов находится в [`docs/tile_preparation_module_ru.md`](tile_preparation_module_ru.md). Этот документ оставлен как compatibility/debug reference для virtual sampling параметров и старых preview-команд.
+
 Virtual tile sampling is an opt-in training mode for small segmentation datasets. It expands the effective train epoch with lightweight tile records, repeat factors, denser positive windows, hard negatives, and optional train-only jitter. It does not save augmented image or mask tiles to disk.
 
 ## Why This Exists

@@ -42,6 +42,8 @@ def main() -> int:
         default="all",
     )
     parser.add_argument("--augmentation-seed", type=int, default=42)
+    parser.add_argument("--augmentation-level", type=int, default=2)
+    parser.add_argument("--cutout-mask-mode", choices=("erase", "preserve", "ignore"), default="erase")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -63,6 +65,8 @@ def main() -> int:
             mosaic_fill_nodata=True,
             augmentation_mode=args.augmentation_mode,
             augmentation_seed=args.augmentation_seed,
+            augmentation_level=args.augmentation_level,
+            cutout_mask_mode=args.cutout_mask_mode,
             augmentations={
                 "flips": True,
                 "rot90": True,

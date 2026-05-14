@@ -60,6 +60,8 @@ class AnnotatedTileReportTests(unittest.TestCase):
             self.assertIn("valid_data_clipping", summary)
             self.assertIn("mosaic", summary)
             self.assertEqual(summary["mask_visualization"]["mode"], "dashed_contour")
+            self.assertEqual(summary["config"]["cutout_mask_mode"], "erase")
+            self.assertEqual(summary["augmentation_report"]["cutout_mask_behavior"], "erase")
             self.assertGreater(summary["classification_summary"]["positive_tiles"], 0)
             self.assertGreater(summary["augmentation_report"]["checks_summary"]["passed"], 0)
             self.assertEqual(summary["augmentation_report"]["checks_summary"]["failed"], 0)
@@ -67,6 +69,7 @@ class AnnotatedTileReportTests(unittest.TestCase):
             self.assertTrue(list((scene_dir / "annotated_tiles").glob("*_valid_mask.png")))
             self.assertTrue(list((scene_dir / "annotated_tiles").glob("*_raw_annotation_mask.png")))
             self.assertTrue(list((scene_dir / "annotated_augmentations").glob("*_overlay.png")))
+            self.assertTrue(list((scene_dir / "annotated_augmentations").glob("*_mask_before.png")))
             self.assertEqual(sorted(path.name for path in root.glob("*.tif")), ["scene.tif"])
 
     def test_annotated_report_mosaic_case_generates_source_map(self) -> None:
@@ -109,6 +112,9 @@ class AnnotatedTileReportTests(unittest.TestCase):
                 include_augmentation_catalog=True,
             )
             self.assertEqual(body["status"], "ok")
+            self.assertTrue(body["facade_available"])
+            self.assertEqual(body["recommended_entrypoint"], "TilePreparationFacade")
+            self.assertEqual(body["cutout_mask_mode"], "erase")
             self.assertEqual(body["mask_visualization"]["mode"], "dashed_contour")
             self.assertIn("annotation", body)
             self.assertIn("classification_summary", body)
@@ -146,6 +152,8 @@ class AnnotatedTileReportTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             body = response.json()
             self.assertEqual(body["status"], "ok")
+            self.assertTrue(body["facade_available"])
+            self.assertEqual(body["recommended_entrypoint"], "TilePreparationFacade")
             self.assertEqual(body["mask_visualization"]["mode"], "dashed_contour")
             self.assertIn("annotation", body)
             self.assertIn("classification_summary", body)

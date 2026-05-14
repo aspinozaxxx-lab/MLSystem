@@ -101,6 +101,7 @@ class TrainingTileDataset(torch.utils.data.Dataset):
                 mask,
                 self.config.augmentations,
                 seed=int(self.config.seed) + self._epoch * 1_000_003 + int(index),
+                cutout_mask_mode=self.config.cutout_mask_mode,
             )
             metadata["augmentation"] = augmentation_metadata
         if image.ndim == 3 and image.shape[0] <= 16:

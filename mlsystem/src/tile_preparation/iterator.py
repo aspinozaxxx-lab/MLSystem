@@ -338,6 +338,7 @@ def iter_training_tiles(
                     mask,
                     config.augmentations,
                     seed=config.seed + index,
+                    cutout_mask_mode=config.cutout_mask_mode,
                 )
                 metadata["augmentation"] = aug_metadata
             out_mask = mask.astype("float32")[None, :, :] if config.output_format.startswith("chw") else mask.astype("uint8")

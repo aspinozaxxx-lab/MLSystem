@@ -55,12 +55,14 @@ class TilePreparationConfig:
     mosaic_resampling: str = "bilinear"
     augmentations: dict[str, Any] = field(default_factory=dict)
     apply_random_augmentations: bool = False
+    cutout_mask_mode: str = "erase"
     max_records: int | None = None
     max_records_per_scene: int | None = None
     shuffle: bool = False
     seed: int = 42
     augmentation_mode: str = "all"
     augmentation_seed: int = 42
+    augmentation_level: int | None = None
 
     def __post_init__(self) -> None:
         self.tile_size = max(1, int(self.tile_size))
@@ -85,6 +87,9 @@ class TilePreparationConfig:
         self.valid_pixel_mode = str(self.valid_pixel_mode or "auto")
         self.min_valid_pixel_share = max(0.0, min(1.0, float(self.min_valid_pixel_share)))
         self.mosaic_resampling = str(self.mosaic_resampling or "bilinear")
+        self.cutout_mask_mode = str(self.cutout_mask_mode or "erase").lower()
+        if self.cutout_mask_mode not in {"erase", "preserve", "ignore"}:
+            raise ValueError("cutout_mask_mode must be one of: erase, preserve, ignore")
 
     @property
     def positive_stride(self) -> int:
@@ -143,6 +148,7 @@ def resolve_tile_preparation_config(
                 mosaic_fill_nodata=bool(raw.get("mosaic_fill_nodata", preprocess.get("mosaic_fill_nodata", True))),
                 mosaic_require_same_crs=bool(raw.get("mosaic_require_same_crs", preprocess.get("mosaic_require_same_crs", False))),
                 mosaic_resampling=str(raw.get("mosaic_resampling", preprocess.get("mosaic_resampling", "bilinear")) or "bilinear"),
+                cutout_mask_mode=str(raw.get("cutout_mask_mode", preprocess.get("cutout_mask_mode", "erase")) or "erase"),
                 input_bands=input_bands,
             apply_random_augmentations=False,
             max_records=max_records,
@@ -167,6 +173,7 @@ def resolve_tile_preparation_config(
         mosaic_fill_nodata=bool(raw.get("mosaic_fill_nodata", preprocess.get("mosaic_fill_nodata", True))),
         mosaic_require_same_crs=bool(raw.get("mosaic_require_same_crs", preprocess.get("mosaic_require_same_crs", False))),
         mosaic_resampling=str(raw.get("mosaic_resampling", preprocess.get("mosaic_resampling", "bilinear")) or "bilinear"),
+        cutout_mask_mode=str(raw.get("cutout_mask_mode", preprocess.get("cutout_mask_mode", "erase")) or "erase"),
         max_empty_tile_share=None if max_empty_tile_share is None else max(0.0, min(1.0, float(max_empty_tile_share))),
         hard_negative_context_px=None if raw.get("hard_negative_context_px") is None else max(0, int(raw.get("hard_negative_context_px") or 0)),
         virtual_epoch_multiplier=max(1, int(raw.get("virtual_epoch_multiplier", 1) or 1)) if enabled else 1,

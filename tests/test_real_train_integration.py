@@ -10,6 +10,7 @@ class RealTrainIntegrationTests(unittest.TestCase):
         self.assertIn("TrainingTileDataset", text)
         self.assertIn("iter_dataset_batches", text)
         self.assertIn("resolve_tile_preparation_config", text)
+        self.assertNotIn("data.virtual_tile_sampling", text)
         self.assertNotIn("from .data.virtual_tile_sampling import", text)
         self.assertNotIn("FastAPI", text)
         self.assertNotIn("/api/debug/annotated-tile-report/preview", text)

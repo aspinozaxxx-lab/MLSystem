@@ -14,7 +14,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from mlsystem.src.data.virtual_tile_sampling import generate_window_grid_for_scene, preview_from_manifest
+from mlsystem.src.data.virtual_tile_sampling import preview_from_manifest
+from mlsystem.src.tile_preparation.windows import generate_window_grid_for_scene
 
 
 def main() -> int:

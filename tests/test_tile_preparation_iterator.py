@@ -9,7 +9,8 @@ from pathlib import Path
 import numpy as np
 from shapely.geometry import Polygon, mapping
 
-from mlsystem.src.tile_preparation import AnnotationInput, SceneInput, TilePreparationConfig, build_tile_records, iter_training_tiles
+from mlsystem.src.tile_preparation import AnnotationInput, SceneInput, TilePreparationConfig
+from mlsystem.src.tile_preparation.iterator import build_tile_records, iter_training_tiles
 
 try:
     import rasterio

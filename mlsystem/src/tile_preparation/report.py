@@ -56,6 +56,8 @@ def preview_annotated_tile_report(
     annotation_name: str | None = None,
     include_neighbors: bool = False,
     mosaic_enabled: bool = False,
+    augmentation_level: int | None = None,
+    cutout_mask_mode: str = "erase",
 ) -> dict[str, Any]:
     scenes, annotation = find_annotated_scenes(
         input_dir,
@@ -75,6 +77,8 @@ def preview_annotated_tile_report(
         min_positive_pixels=min_positive_pixels,
         hard_negative_context_px=max(1, int(tile_size) // 2),
         mosaic_enabled=mosaic_enabled,
+        cutout_mask_mode=cutout_mask_mode,
+        augmentation_level=augmentation_level,
     )
     result = build_tile_records(scenes, annotation, config)
     with rasterio.open(scene.image_path) as ds:
@@ -82,6 +86,10 @@ def preview_annotated_tile_report(
     base_summary = summarize_tile_records(result.base_records)
     response: dict[str, Any] = {
         "status": "ok",
+        "facade_available": True,
+        "recommended_entrypoint": "TilePreparationFacade",
+        "augmentation_level": augmentation_level,
+        "cutout_mask_mode": config.cutout_mask_mode,
         "mask_visualization": dict(MASK_VISUALIZATION),
         "valid_data_clipping": {
             "enabled": bool(config.clip_mask_to_valid_data),
@@ -180,6 +188,11 @@ def generate_annotated_tile_report(
         "annotation_path": str(annotation.geojson_path),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "git_commit": _git_commit(),
+        "facade": {
+            "available": True,
+            "recommended_entrypoint": "TilePreparationFacade",
+            "augmentation_level": config.augmentation_level,
+        },
         "mask_visualization": dict(MASK_VISUALIZATION),
         "valid_data_clipping": {
             "enabled": bool(config.clip_mask_to_valid_data),
@@ -496,19 +509,34 @@ def _write_tile_examples(
             augmented_positive_tiles += 1
             for aug_index, operation in enumerate(operations):
                 seed = augmentation_seed + index * 1000 + aug_index
-                aug_rgb, aug_mask, metadata = apply_debug_augmentation_with_mask(rgb, operation, seed=seed, mask=mask)
+                aug_rgb, aug_mask, metadata = apply_debug_augmentation_with_mask(
+                    rgb,
+                    operation,
+                    seed=seed,
+                    mask=mask,
+                    cutout_mask_mode=config.cutout_mask_mode,
+                )
                 aug_stem = f"tile_{index:03d}_{operation}"
                 rgb_name = f"{aug_stem}_rgb.png"
                 mask_aug_name = f"{aug_stem}_mask.png"
                 overlay_aug_name = f"{aug_stem}_overlay.png"
+                mask_before_name = f"{aug_stem}_mask_before.png"
+                overlay_before_name = f"{aug_stem}_overlay_before.png"
                 Image.fromarray(aug_rgb, mode="RGB").save(augmentations_dir / rgb_name)
-                Image.fromarray(((aug_mask if aug_mask is not None else mask) * 255).astype("uint8"), mode="L").save(augmentations_dir / mask_aug_name)
-                Image.fromarray(overlay_mask_contour(aug_rgb, aug_mask if aug_mask is not None else mask), mode="RGB").save(augmentations_dir / overlay_aug_name)
+                after_mask = aug_mask if aug_mask is not None else mask
+                Image.fromarray((mask * 255).astype("uint8"), mode="L").save(augmentations_dir / mask_before_name)
+                Image.fromarray((after_mask * 255).astype("uint8"), mode="L").save(augmentations_dir / mask_aug_name)
+                Image.fromarray(overlay_mask_contour(rgb, mask), mode="RGB").save(augmentations_dir / overlay_before_name)
+                Image.fromarray(overlay_mask_contour(aug_rgb, after_mask), mode="RGB").save(augmentations_dir / overlay_aug_name)
                 row["augmentations"].append(
                     {
                         "rgb_path": f"annotated_augmentations/{rgb_name}",
                         "mask_path": f"annotated_augmentations/{mask_aug_name}",
+                        "mask_after_path": f"annotated_augmentations/{mask_aug_name}",
                         "overlay_path": f"annotated_augmentations/{overlay_aug_name}",
+                        "overlay_after_path": f"annotated_augmentations/{overlay_aug_name}",
+                        "mask_before_path": f"annotated_augmentations/{mask_before_name}",
+                        "overlay_before_path": f"annotated_augmentations/{overlay_before_name}",
                         **metadata,
                     }
                 )
@@ -556,6 +584,8 @@ def _build_augmentation_report(tile_examples: list[dict[str, Any]], augmentation
                     "check_status": status,
                     "changed_pixels_fraction": aug.get("changed_pixels_fraction"),
                     "mask_alignment_check": aug.get("mask_alignment_check"),
+                    "mask_erased_pixels": aug.get("mask_erased_pixels"),
+                    "cutout_intersected_positive": aug.get("cutout_intersected_positive"),
                     "checks": aug.get("checks"),
                     "mask_checks": aug.get("mask_checks"),
                 }
@@ -588,7 +618,7 @@ def _build_augmentation_report(tile_examples: list[dict[str, Any]], augmentation
             "failed": int(status_counts.get("failed", 0)),
         },
         "operation_checks": operation_checks,
-        "cutout_mask_behavior": "unchanged, matching tile_preparation production behavior",
+        "cutout_mask_behavior": "erase",
     }
 
 
@@ -627,9 +657,16 @@ def _render_html(summary: dict[str, Any]) -> str:
         for item in summary["augmentation_report"]["operation_checks"]
     )
     check_rows = "\n".join(
-        f"<tr><td>{aug['operation']}</td><td>{aug.get('training_key')}</td><td>{aug.get('checks', {}).get('shape_preserved')}</td><td>{aug.get('mask_checks', {}).get('mask_shape_preserved')}</td><td>{aug.get('mask_checks', {}).get('mask_binary')}</td><td>{aug.get('checks', {}).get('range_0_255')}</td><td>{aug.get('mask_alignment_check')}</td><td>{aug.get('changed_pixels_fraction')}</td><td>{aug.get('check_status')}</td></tr>"
+        f"<tr><td>{aug['operation']}</td><td>{aug.get('training_key')}</td><td>{aug.get('checks', {}).get('shape_preserved')}</td><td>{aug.get('mask_checks', {}).get('mask_shape_preserved')}</td><td>{aug.get('mask_checks', {}).get('mask_binary')}</td><td>{aug.get('checks', {}).get('range_0_255')}</td><td>{aug.get('mask_alignment_check')}</td><td>{aug.get('changed_pixels_fraction')}</td><td>{aug.get('mask_erased_pixels')}</td><td>{aug.get('check_status')}</td></tr>"
         for tile in summary["tile_examples"]
         for aug in tile.get("augmentations", [])
+    )
+    cutout_rows = "\n".join(
+        f"<tr><td>{html.escape(tile['tile_id'])}</td><td>{html.escape(aug['operation'])}</td><td>{html.escape(json.dumps(aug.get('cutout_boxes') or aug.get('parameters', {}).get('cutout_boxes') or [], ensure_ascii=False))}</td><td><a href=\"{aug.get('mask_before_path')}\">mask before</a></td><td><a href=\"{aug.get('mask_after_path')}\">mask after</a></td><td>{aug.get('mask_erased_pixels')}</td><td>{aug.get('check_status')}</td></tr>"
+        for tile in summary["tile_examples"]
+        for aug in tile.get("augmentations", [])
+        if aug.get("operation") in {"cutout_small", "cutout_medium", "coarse_dropout"}
+        or (str(aug.get("operation", "")).startswith("training_random_all_enabled") and aug.get("cutout_applied"))
     )
     aug_gallery = "".join(
         "<figure>"
@@ -688,8 +725,11 @@ def _render_html(summary: dict[str, Any]) -> str:
   {tile_diag_html}
   <h2>Augmentation examples with masks</h2>
   <section class="gallery">{aug_gallery}</section>
+  <h2>Cutout / dropout mask behavior</h2>
+  <p>Для cutout и coarse dropout режим маски: <b>{html.escape(str(summary['config'].get('cutout_mask_mode', 'erase')))}</b>. Если чёрный вырез попадает внутрь объекта, соответствующие пиксели training mask удаляются, а красный пунктирный контур после аугментации показывает внешнюю границу объекта и внутреннюю границу вырезанной дырки.</p>
+  <table><tr><th>tile</th><th>operation</th><th>cutout boxes</th><th>mask before</th><th>mask after</th><th>erased pixels</th><th>status</th></tr>{cutout_rows}</table>
   <h2>Augmentation checks</h2>
-  <table><tr><th>operation</th><th>training_key</th><th>image shape</th><th>mask shape</th><th>mask binary</th><th>image range</th><th>mask alignment</th><th>changed pixels</th><th>status</th></tr>{check_rows}</table>
+  <table><tr><th>operation</th><th>training_key</th><th>image shape</th><th>mask shape</th><th>mask binary</th><th>image range</th><th>mask alignment</th><th>changed pixels</th><th>mask erased pixels</th><th>status</th></tr>{check_rows}</table>
   <h2>Augmentation operation summary</h2>
   <table><tr><th>operation</th><th>training_key</th><th>group</th><th>parameters</th><th>status</th><th>changed mean</th></tr>{aug_rows}</table>
   <h2>Warnings</h2>

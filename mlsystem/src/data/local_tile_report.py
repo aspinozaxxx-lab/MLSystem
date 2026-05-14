@@ -20,7 +20,7 @@ from .debug_augmentations import (
     augmentation_catalog,
     resolve_augmentation_operations,
 )
-from .virtual_tile_sampling import generate_window_grid_for_scene
+from ..tile_preparation.windows import generate_window_grid_for_scene
 
 RASTER_SUFFIXES = (".tif", ".tiff")
 STRIDE_FACTORS = (1.0, 0.5, 0.25)

@@ -179,6 +179,8 @@ if str(os.getenv("MLSYSTEM_DEBUG_DATASET_ENDPOINTS") or "").lower() in {"1", "tr
                 annotation_name=request.get("annotation"),
                 include_neighbors=bool(request.get("include_neighbors", False) or request.get("mosaic_enabled", False)),
                 mosaic_enabled=bool(request.get("mosaic_enabled", False)),
+                augmentation_level=request.get("augmentation_level"),
+                cutout_mask_mode=str(request.get("cutout_mask_mode") or "erase"),
             )
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc

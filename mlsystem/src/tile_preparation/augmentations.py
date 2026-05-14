@@ -156,8 +156,20 @@ def augmentation_spec_to_dict(spec: DebugAugmentationSpec) -> dict[str, Any]:
     }
 
 
-def apply_debug_augmentation(rgb: np.ndarray, operation: str, *, seed: int) -> tuple[np.ndarray, dict[str, Any]]:
-    augmented, _mask, metadata = apply_debug_augmentation_with_mask(rgb, operation, seed=seed, mask=None)
+def apply_debug_augmentation(
+    rgb: np.ndarray,
+    operation: str,
+    *,
+    seed: int,
+    cutout_mask_mode: str = "erase",
+) -> tuple[np.ndarray, dict[str, Any]]:
+    augmented, _mask, metadata = apply_debug_augmentation_with_mask(
+        rgb,
+        operation,
+        seed=seed,
+        mask=None,
+        cutout_mask_mode=cutout_mask_mode,
+    )
     return augmented, metadata
 
 
@@ -167,13 +179,14 @@ def apply_debug_augmentation_with_mask(
     *,
     seed: int,
     mask: np.ndarray | None = None,
+    cutout_mask_mode: str = "erase",
 ) -> tuple[np.ndarray, np.ndarray | None, dict[str, Any]]:
     if operation not in AUGMENTATION_REGISTRY:
         raise ValueError(f"Unsupported debug augmentation operation: {operation}")
     spec = AUGMENTATION_REGISTRY[operation]
     before = _ensure_rgb_uint8(rgb)
     before_mask = None if mask is None else _ensure_mask_uint8(mask)
-    augmented, after_mask, actual_parameters = _apply_operation(before, before_mask, spec, seed)
+    augmented, after_mask, actual_parameters = _apply_operation(before, before_mask, spec, seed, cutout_mask_mode=cutout_mask_mode)
     augmented = _ensure_rgb_uint8(augmented)
     if after_mask is not None:
         after_mask = _ensure_mask_uint8(after_mask)
@@ -187,13 +200,14 @@ def apply_random_training_augmentation(
     augmentations: dict[str, Any],
     *,
     seed: int,
+    cutout_mask_mode: str = "erase",
 ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
     enabled = bool(augmentations) and any(bool(value) for value in augmentations.values())
     if not enabled:
-        augmented, out_mask, metadata = apply_debug_augmentation_with_mask(rgb, "original", seed=seed, mask=mask)
+        augmented, out_mask, metadata = apply_debug_augmentation_with_mask(rgb, "original", seed=seed, mask=mask, cutout_mask_mode=cutout_mask_mode)
         return augmented, out_mask if out_mask is not None else mask, metadata
     operation = f"training_random_all_enabled_seed_{(seed % 3) + 1}"
-    augmented, out_mask, metadata = apply_debug_augmentation_with_mask(rgb, operation, seed=seed, mask=mask)
+    augmented, out_mask, metadata = apply_debug_augmentation_with_mask(rgb, operation, seed=seed, mask=mask, cutout_mask_mode=cutout_mask_mode)
     return augmented, out_mask if out_mask is not None else mask, metadata
 
 
@@ -203,6 +217,7 @@ def apply_training_augmentation(
     augmentations: dict[str, Any],
     *,
     seed: int,
+    cutout_mask_mode: str = "erase",
 ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
     if not isinstance(augmentations, dict) or not any(bool(value) for value in augmentations.values()):
         return image.copy(), _ensure_mask_uint8(mask), {"operation": "none", "seed": seed}
@@ -213,9 +228,17 @@ def apply_training_augmentation(
     if not chw:
         arr = np.transpose(arr, (2, 0, 1))
     out_mask = _ensure_mask_uint8(mask)
+    mask_positive_before_cutout = int(np.count_nonzero(out_mask))
     rng = random.Random(seed)
     np_rng = np.random.default_rng(seed)
-    metadata: dict[str, Any] = {"operation": "production_random", "seed": seed, "applied": []}
+    cutout_mask_mode = _normalize_cutout_mask_mode(cutout_mask_mode)
+    metadata: dict[str, Any] = {
+        "operation": "production_random",
+        "seed": seed,
+        "applied": [],
+        "cutout_mask_mode": cutout_mask_mode,
+        "mask_positive_pixels_before": mask_positive_before_cutout,
+    }
 
     if augmentations.get("flips"):
         h_flip = rng.random() < 0.5
@@ -270,19 +293,29 @@ def apply_training_augmentation(
         if cutout_applied:
             height = int(arr.shape[1])
             width = int(arr.shape[2])
-            cut_h = max(8, height // 8)
-            cut_w = max(8, width // 8)
-            y0 = rng.randint(0, max(0, height - cut_h))
-            x0 = rng.randint(0, max(0, width - cut_w))
-            arr[:, y0 : y0 + cut_h, x0 : x0 + cut_w] = 0.0
-            metadata["applied"].append("cutout")
-            metadata["cutout"] = {"x": x0, "y": y0, "width": cut_w, "height": cut_h, "mask_behavior": "unchanged"}
+            hole_count = 4 if augmentations.get("coarse_dropout") and not augmentations.get("cutout") else 1
+            boxes: list[dict[str, int]] = []
+            for _ in range(hole_count):
+                cut_h = max(8, height // 8)
+                cut_w = max(8, width // 8)
+                y0 = rng.randint(0, max(0, height - cut_h))
+                x0 = rng.randint(0, max(0, width - cut_w))
+                arr[:, y0 : y0 + cut_h, x0 : x0 + cut_w] = 0.0
+                boxes.append({"x": int(x0), "y": int(y0), "width": int(cut_w), "height": int(cut_h)})
+            out_mask, mask_meta = _apply_cutout_to_mask(out_mask, boxes, cutout_mask_mode)
+            metadata["applied"].append("coarse_dropout" if hole_count > 1 else "cutout")
+            metadata["cutout"] = {"boxes": boxes, **mask_meta}
         metadata["cutout_applied"] = cutout_applied
 
     arr = np.clip(arr, 0.0, 1.0).astype("float32")
     if not chw:
         arr = np.transpose(arr, (1, 2, 0)).astype("float32")
-    metadata["mask_behavior"] = "geometric transforms only; photometric/noise/blur/cutout keep mask unchanged"
+    metadata["mask_positive_pixels_after"] = int(np.count_nonzero(out_mask))
+    metadata.setdefault("cutout", {"boxes": [], "cutout_mask_mode": cutout_mask_mode, "mask_erased_pixels": 0, "cutout_intersected_positive": False})
+    metadata["mask_behavior"] = (
+        "geometric transforms image+mask; photometric/noise/blur keep mask unchanged; "
+        f"cutout/coarse_dropout mask mode={cutout_mask_mode}"
+    )
     return arr, out_mask, metadata
 
 
@@ -300,6 +333,8 @@ def _apply_operation(
     mask: np.ndarray | None,
     spec: DebugAugmentationSpec,
     seed: int,
+    *,
+    cutout_mask_mode: str = "erase",
 ) -> tuple[np.ndarray, np.ndarray | None, dict[str, Any]]:
     name = spec.name
     rng = random.Random(seed + int(spec.parameters.get("random_seed_alias", 0)))
@@ -344,16 +379,27 @@ def _apply_operation(
         return np.asarray(image), out_mask, {"radius": radius}
     if name.startswith("cutout_"):
         fraction = float(spec.parameters["fraction"])
-        return _apply_cutout(arr, rng, fraction), out_mask, {"fraction": fraction, "mask_behavior": "unchanged"}
+        augmented, boxes = _apply_cutout(arr, rng, fraction)
+        out_mask, mask_meta = _apply_cutout_to_mask(out_mask, boxes, cutout_mask_mode)
+        return augmented, out_mask, {"fraction": fraction, "cutout_boxes": boxes, **mask_meta}
     if name == "coarse_dropout":
-        return _apply_coarse_dropout(arr, rng, int(spec.parameters["holes"]), float(spec.parameters["fraction"])), out_mask, {**dict(spec.parameters), "mask_behavior": "unchanged"}
+        augmented, boxes = _apply_coarse_dropout(arr, rng, int(spec.parameters["holes"]), float(spec.parameters["fraction"]))
+        out_mask, mask_meta = _apply_cutout_to_mask(out_mask, boxes, cutout_mask_mode)
+        return augmented, out_mask, {**dict(spec.parameters), "cutout_boxes": boxes, **mask_meta}
     if name.startswith("training_random_all_enabled_seed_"):
-        out_arr, out_mask, params = _apply_training_random_all(arr, out_mask, rng, seed)
+        out_arr, out_mask, params = _apply_training_random_all(arr, out_mask, rng, seed, cutout_mask_mode=cutout_mask_mode)
         return out_arr, out_mask, {"source_seed": seed, **spec.parameters, **params}
     raise ValueError(f"Unsupported debug augmentation operation: {name}")
 
 
-def _apply_training_random_all(arr: np.ndarray, mask: np.ndarray | None, rng: random.Random, seed: int) -> tuple[np.ndarray, np.ndarray | None, dict[str, Any]]:
+def _apply_training_random_all(
+    arr: np.ndarray,
+    mask: np.ndarray | None,
+    rng: random.Random,
+    seed: int,
+    *,
+    cutout_mask_mode: str = "erase",
+) -> tuple[np.ndarray, np.ndarray | None, dict[str, Any]]:
     result = arr.copy()
     out_mask = None if mask is None else mask.copy()
     h_flip = rng.random() < 0.5
@@ -382,8 +428,11 @@ def _apply_training_random_all(arr: np.ndarray, mask: np.ndarray | None, rng: ra
     if blur_applied:
         result = np.asarray(Image.fromarray(result, mode="RGB").filter(ImageFilter.BoxBlur(radius=1)))
     cutout_applied = rng.random() < 0.35
+    cutout_boxes: list[dict[str, int]] = []
+    mask_meta = _cutout_mask_metadata(mask, mask, [], cutout_mask_mode)
     if cutout_applied:
-        result = _apply_cutout(result, rng, 0.125)
+        result, cutout_boxes = _apply_cutout(result, rng, 0.125)
+        out_mask, mask_meta = _apply_cutout_to_mask(out_mask, cutout_boxes, cutout_mask_mode)
     return result, out_mask, {
         "h_flip": h_flip,
         "v_flip": v_flip,
@@ -394,10 +443,12 @@ def _apply_training_random_all(arr: np.ndarray, mask: np.ndarray | None, rng: ra
         "noise_std": 0.02,
         "blur_applied": blur_applied,
         "cutout_applied": cutout_applied,
+        "cutout_boxes": cutout_boxes,
+        **mask_meta,
     }
 
 
-def _apply_cutout(arr: np.ndarray, rng: random.Random, fraction: float) -> np.ndarray:
+def _apply_cutout(arr: np.ndarray, rng: random.Random, fraction: float) -> tuple[np.ndarray, list[dict[str, int]]]:
     result = arr.copy()
     h, w = result.shape[:2]
     cut_h = max(1, int(h * fraction))
@@ -405,19 +456,70 @@ def _apply_cutout(arr: np.ndarray, rng: random.Random, fraction: float) -> np.nd
     x0 = rng.randint(0, max(0, w - cut_w))
     y0 = rng.randint(0, max(0, h - cut_h))
     result[y0 : y0 + cut_h, x0 : x0 + cut_w, :] = 0
-    return result
+    box = {"x": int(x0), "y": int(y0), "width": int(cut_w), "height": int(cut_h)}
+    return result, [box]
 
 
-def _apply_coarse_dropout(arr: np.ndarray, rng: random.Random, holes: int, fraction: float) -> np.ndarray:
+def _apply_coarse_dropout(arr: np.ndarray, rng: random.Random, holes: int, fraction: float) -> tuple[np.ndarray, list[dict[str, int]]]:
     result = arr.copy()
     h, w = result.shape[:2]
     cut_h = max(1, int(h * fraction))
     cut_w = max(1, int(w * fraction))
+    boxes: list[dict[str, int]] = []
     for _ in range(max(1, holes)):
         x0 = rng.randint(0, max(0, w - cut_w))
         y0 = rng.randint(0, max(0, h - cut_h))
         result[y0 : y0 + cut_h, x0 : x0 + cut_w, :] = 0
-    return result
+        boxes.append({"x": int(x0), "y": int(y0), "width": int(cut_w), "height": int(cut_h)})
+    return result, boxes
+
+
+def _normalize_cutout_mask_mode(mode: str) -> str:
+    value = str(mode or "erase").lower()
+    if value not in {"erase", "preserve", "ignore"}:
+        raise ValueError("cutout_mask_mode must be one of: erase, preserve, ignore")
+    return value
+
+
+def _apply_cutout_to_mask(
+    mask: np.ndarray | None,
+    boxes: list[dict[str, int]],
+    cutout_mask_mode: str,
+) -> tuple[np.ndarray | None, dict[str, Any]]:
+    mode = _normalize_cutout_mask_mode(cutout_mask_mode)
+    if mask is None:
+        return None, _cutout_mask_metadata(None, None, boxes, mode)
+    before = _ensure_mask_uint8(mask)
+    after = before.copy()
+    if mode == "erase":
+        for box in boxes:
+            x0 = max(0, int(box.get("x", 0)))
+            y0 = max(0, int(box.get("y", 0)))
+            x1 = min(after.shape[1], x0 + max(0, int(box.get("width", 0))))
+            y1 = min(after.shape[0], y0 + max(0, int(box.get("height", 0))))
+            if x1 > x0 and y1 > y0:
+                after[y0:y1, x0:x1] = 0
+    return after, _cutout_mask_metadata(before, after, boxes, mode)
+
+
+def _cutout_mask_metadata(
+    before: np.ndarray | None,
+    after: np.ndarray | None,
+    boxes: list[dict[str, int]],
+    cutout_mask_mode: str,
+) -> dict[str, Any]:
+    before_count = int(np.count_nonzero(before)) if before is not None else None
+    after_count = int(np.count_nonzero(after)) if after is not None else None
+    erased = max(0, int(before_count - after_count)) if before_count is not None and after_count is not None else 0
+    return {
+        "cutout_mask_mode": _normalize_cutout_mask_mode(cutout_mask_mode),
+        "mask_behavior": _normalize_cutout_mask_mode(cutout_mask_mode),
+        "mask_positive_pixels_before": before_count,
+        "mask_positive_pixels_after": after_count,
+        "mask_erased_pixels": erased,
+        "cutout_intersected_positive": bool(erased > 0),
+        "cutout_boxes": list(boxes),
+    }
 
 
 def _metadata(
@@ -438,11 +540,18 @@ def _metadata(
         "non_empty_output": bool(after.size > 0),
         "changed_when_expected": (changed_fraction > 0.0001) if spec.expects_image_change else (changed_fraction == 0.0),
     }
-    mask_checks = _mask_checks(before_mask, after_mask, spec)
+    mask_checks = _mask_checks(before_mask, after_mask, spec, actual_parameters)
+    mask_erasure_expected = _is_cutout_erasure_expected(spec, actual_parameters)
     failed = [key for key, value in image_checks.items() if not value and key not in {"changed_when_expected"}]
-    failed.extend(key for key, value in mask_checks.items() if not value and key not in {"mask_alignment_check", "mask_unchanged"})
+    failed.extend(
+        key
+        for key, value in mask_checks.items()
+        if not value
+        and key not in {"mask_alignment_check", "mask_unchanged"}
+        and not (mask_erasure_expected and key == "mask_positive_pixels_preserved")
+    )
     warnings = [key for key, value in image_checks.items() if not value and key == "changed_when_expected"]
-    warnings.extend(key for key, value in mask_checks.items() if not value and key == "mask_alignment_check")
+    warnings.extend(key for key, value in mask_checks.items() if not value and key == "mask_alignment_check" and not mask_erasure_expected)
     status = "failed" if failed else ("warning" if warnings else "pass")
     mask_before_positive = int(np.count_nonzero(before_mask)) if before_mask is not None else None
     mask_after_positive = int(np.count_nonzero(after_mask)) if after_mask is not None else None
@@ -464,6 +573,10 @@ def _metadata(
         "changed_pixels_fraction": round(changed_fraction, 6),
         "mask_positive_pixels_before": mask_before_positive,
         "mask_positive_pixels_after": mask_after_positive,
+        "mask_erased_pixels": int(actual_parameters.get("mask_erased_pixels") or 0),
+        "cutout_intersected_positive": bool(actual_parameters.get("cutout_intersected_positive", False)),
+        "cutout_mask_mode": actual_parameters.get("cutout_mask_mode"),
+        "cutout_boxes": actual_parameters.get("cutout_boxes", []),
         "mask_alignment_check": mask_checks.get("mask_alignment_check"),
         "check_status": status,
         "checks": image_checks,
@@ -471,20 +584,31 @@ def _metadata(
     }
 
 
-def _mask_checks(before_mask: np.ndarray | None, after_mask: np.ndarray | None, spec: DebugAugmentationSpec) -> dict[str, bool]:
+def _mask_checks(
+    before_mask: np.ndarray | None,
+    after_mask: np.ndarray | None,
+    spec: DebugAugmentationSpec,
+    actual_parameters: dict[str, Any] | None = None,
+) -> dict[str, bool]:
     if before_mask is None and after_mask is None:
         return {}
     if before_mask is None or after_mask is None:
         return {"mask_present": False, "mask_alignment_check": False}
     before_binary = set(np.unique(before_mask).tolist()).issubset({0, 1})
     after_binary = set(np.unique(after_mask).tolist()).issubset({0, 1})
-    positive_preserved = int(np.count_nonzero(before_mask)) == int(np.count_nonzero(after_mask))
+    before_positive = int(np.count_nonzero(before_mask))
+    after_positive = int(np.count_nonzero(after_mask))
+    positive_preserved = before_positive == after_positive
+    erasure_expected = _is_cutout_erasure_expected(spec, actual_parameters or {})
     if spec.name in GEOMETRIC_OPERATIONS:
         expected = _expected_mask_transform(before_mask, spec.name)
         alignment = bool(np.array_equal(expected, after_mask))
         unchanged = bool(np.array_equal(before_mask, after_mask))
     elif spec.name.startswith("training_random_all_enabled_seed_"):
-        alignment = positive_preserved and (int(np.count_nonzero(before_mask)) == 0 or int(np.count_nonzero(after_mask)) > 0)
+        alignment = bool(after_positive <= before_positive) if erasure_expected else positive_preserved
+        unchanged = bool(np.array_equal(before_mask, after_mask))
+    elif erasure_expected:
+        alignment = bool(after_positive <= before_positive)
         unchanged = bool(np.array_equal(before_mask, after_mask))
     else:
         alignment = bool(np.array_equal(before_mask, after_mask))
@@ -496,6 +620,14 @@ def _mask_checks(before_mask: np.ndarray | None, after_mask: np.ndarray | None, 
         "mask_unchanged": bool(unchanged),
         "mask_alignment_check": bool(alignment),
     }
+
+
+def _is_cutout_erasure_expected(spec: DebugAugmentationSpec, actual_parameters: dict[str, Any] | None) -> bool:
+    params = actual_parameters or {}
+    mode = str(params.get("cutout_mask_mode") or params.get("mask_behavior") or "").lower()
+    has_cutout = bool(params.get("cutout_boxes")) or bool(params.get("cutout_applied"))
+    is_cutout_operation = spec.name.startswith("cutout_") or spec.name == "coarse_dropout" or spec.name.startswith("training_random_all_enabled_seed_")
+    return is_cutout_operation and has_cutout and mode == "erase"
 
 
 def _expected_mask_transform(mask: np.ndarray, operation: str) -> np.ndarray:
