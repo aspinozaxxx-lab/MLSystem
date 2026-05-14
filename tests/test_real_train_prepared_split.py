@@ -16,6 +16,7 @@ from mlsystem.src.real_train import (
     _configure_dropout,
     _load_initial_checkpoint,
     _load_prepared_dataset_split,
+    _resolve_augmentation_level,
     _resolve_metric_thresholds,
     _threshold_metric_suffix,
 )
@@ -132,6 +133,13 @@ class RealTrainPreparedSplitTests(unittest.TestCase):
         job = SimpleNamespace(train={"metric_thresholds": [0.7, "0.80", 0.8]}, evaluate={}, params={})
         self.assertEqual(_resolve_metric_thresholds(job, 0.75), [0.7, 0.75, 0.8])
         self.assertEqual(_threshold_metric_suffix(0.8), "0_8")
+
+    def test_train_augmentation_level_is_honored_when_preprocess_is_unset(self) -> None:
+        job = SimpleNamespace(preprocess={"train_sampling": {"enabled": True}}, train={"augmentation_level": 1})
+        self.assertEqual(_resolve_augmentation_level(job, train_sampling_enabled=True), 1)
+
+        override = SimpleNamespace(preprocess={"augmentation_level": 3, "train_sampling": {"enabled": True}}, train={"augmentation_level": 1})
+        self.assertEqual(_resolve_augmentation_level(override, train_sampling_enabled=True), 3)
 
 
 if __name__ == "__main__":

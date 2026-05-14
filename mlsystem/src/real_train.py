@@ -733,6 +733,17 @@ def _resolve_mosaic_enabled(job: JobSpec) -> bool | None:
     return _coerce_optional_bool(text)
 
 
+def _resolve_augmentation_level(job: JobSpec, *, train_sampling_enabled: bool) -> int:
+    train_sampling = job.preprocess.get("train_sampling")
+    if isinstance(train_sampling, dict) and train_sampling.get("augmentation_level") is not None:
+        return int(train_sampling["augmentation_level"])
+    if job.preprocess.get("augmentation_level") is not None:
+        return int(job.preprocess["augmentation_level"])
+    if job.train.get("augmentation_level") is not None:
+        return int(job.train["augmentation_level"])
+    return 2 if train_sampling_enabled else 0
+
+
 def _resolve_wallclock_limit(job: JobSpec) -> int | None:
     for source in (job.train, job.params.get("debug_run") if isinstance(job.params.get("debug_run"), dict) else {}):
         if not isinstance(source, dict):
@@ -1468,13 +1479,7 @@ def run_real_train(
     annotation_geojson_path = _write_training_annotation_geojson(config, annotation_uri, experiment_dir)
     train_sampling_enabled = resolve_train_sampling_enabled(job.preprocess)
     base_stride = int(job.preprocess.get("stride") or job.preprocess.get("train_stride") or patch_size)
-    train_sampling_cfg = job.preprocess.get("train_sampling") if isinstance(job.preprocess.get("train_sampling"), dict) else {}
-    augmentation_level = int(
-        train_sampling_cfg.get(
-            "augmentation_level",
-            job.preprocess.get("augmentation_level", 2 if train_sampling_enabled else 0),
-        )
-    )
+    augmentation_level = _resolve_augmentation_level(job, train_sampling_enabled=train_sampling_enabled)
     mosaic_enabled = _resolve_mosaic_enabled(job)
     log_fn(
         job_log,
