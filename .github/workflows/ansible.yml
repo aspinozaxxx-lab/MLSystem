@@ -38,7 +38,7 @@ permissions:
 
 concurrency:
   group: mlsystem-ansible-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   syntax:
@@ -105,7 +105,7 @@ jobs:
     if: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')) || (github.event_name == 'workflow_dispatch' && inputs.mode == 'apply') }}
     concurrency:
       group: mlsystem-gpu-server-${{ github.ref }}
-      cancel-in-progress: false
+      cancel-in-progress: true
     env:
       GPU_SERVER_HOST: ${{ secrets.GPU_SERVER_HOST }}
       GPU_SERVER_USER: ${{ secrets.GPU_SERVER_USER }}
@@ -163,7 +163,7 @@ jobs:
     if: ${{ needs.apply-infra.result == 'success' }}
     concurrency:
       group: mlsystem-gpu-server-${{ github.ref }}
-      cancel-in-progress: false
+      cancel-in-progress: true
     env:
       GPU_SERVER_HOST: ${{ secrets.GPU_SERVER_HOST }}
       GPU_SERVER_USER: ${{ secrets.GPU_SERVER_USER }}
@@ -189,5 +189,5 @@ jobs:
           $SSH "$COMPOSE exec -T mlsystem-api sh -lc 'nvidia-smi || python -c \"import torch; print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else \\\"NO_CUDA\\\")\"'"
           $SSH "docker ps --format '{{.Names}}' | grep -i airflow && exit 1 || true"
           $SSH "$COMPOSE ps | grep -i airflow && exit 1 || true"
-          $SSH "cd /opt/mlsystem/repo && timeout 21600 python3 scripts/smoke_pipeline_api_no_airflow.py --api http://127.0.0.1:8088 --token-file /etc/mlsystem/gpu-platform.env --dry-run --real-train --poll-sec 30 --out /tmp/mlsystem-pipeline-smoke.json"
+          $SSH "cd /opt/mlsystem/repo && timeout 3600 python3 scripts/smoke_pipeline_api_no_airflow.py --api http://127.0.0.1:8088 --token-file /etc/mlsystem/gpu-platform.env --dry-run --real-train --poll-sec 30 --train-timeout-sec 1800 --out /tmp/mlsystem-pipeline-smoke.json"
           $SSH "cat /tmp/mlsystem-pipeline-smoke.json"

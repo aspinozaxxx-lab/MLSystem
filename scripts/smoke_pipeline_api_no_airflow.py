@@ -23,7 +23,7 @@ def main() -> int:
     parser.add_argument("--real-train", action="store_true", help="Run a short real training smoke trace.")
     parser.add_argument("--poll-sec", type=float, default=30.0)
     parser.add_argument("--dry-timeout-sec", type=float, default=300.0)
-    parser.add_argument("--train-timeout-sec", type=float, default=7200.0)
+    parser.add_argument("--train-timeout-sec", type=float, default=1800.0)
     parser.add_argument("--out", default=None, help="Optional JSON output path.")
     args = parser.parse_args()
 
@@ -156,16 +156,23 @@ def _train_trace() -> dict[str, Any]:
         "annotation_file": "auto",
         "pseudolabel": {"enabled": False},
         "preprocess": {
+            "max_dataset_scenes": 4,
+            "dataset_limit_reason": "server real train smoke cap",
             "tile_size": 512,
             "stride": 512,
+            "max_train_tiles": 4,
+            "max_val_tiles": 2,
             "train_sampling": {"enabled": True},
         },
         "train": {
             "max_epochs": 1,
             "max_train_batches": 2,
             "max_val_batches": 1,
+            "max_train_tiles": 4,
+            "max_val_tiles": 2,
             "batch_size": 2,
             "require_gpu": True,
+            "time_limit_sec": 900,
         },
         "model": {"name": "tiny_unet_4ch"},
         "mlflow": {"experiment": "mlsystem-deforest"},
