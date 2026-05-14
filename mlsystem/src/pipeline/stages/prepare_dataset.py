@@ -142,6 +142,13 @@ def run(ctx: StageContext) -> StageReport:
         errors.append("train split is empty")
     if not val_rows:
         errors.append("validation split is empty")
+    total_objects = sum(row.object_count for row in rows)
+    positive_scene_count = sum(1 for row in rows if row.object_count > 0)
+    if split_strategy == "object_balanced" and total_objects > 0 and positive_scene_count > 1:
+        if int(split_summary.get("train_objects") or 0) <= 0:
+            errors.append("object-balanced split produced no positive objects in train split")
+        if int(split_summary.get("val_objects") or 0) <= 0:
+            errors.append("object-balanced split produced no positive objects in validation split")
     split_names = {row.scene_name for row in train_rows + val_rows}
     lost = [scene for scene in scene_names if scene not in split_names]
     if lost:
@@ -458,6 +465,9 @@ def _resolve_split_strategy(config: Any, preprocess: dict[str, Any]) -> str:
     configured = preprocess.get("split_strategy")
     if configured:
         return str(configured)
+    annotations = getattr(config, "annotations", None) or {}
+    if isinstance(annotations, dict) and str(annotations.get("source") or "").strip().lower() == "mlmarkup":
+        return "object_balanced"
     schema_version = getattr(config, "schema_version", None)
     if schema_version is not None and int(schema_version) >= 2:
         return "object_balanced"

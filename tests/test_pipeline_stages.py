@@ -174,6 +174,22 @@ class PipelineStagesTests(unittest.TestCase):
                 report = run_prepare_dataset(ctx)
             self.assertEqual(report.counters["split_strategy"], "legacy_75_25")
 
+    def test_prepare_dataset_mlmarkup_defaults_to_object_balanced_split(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ctx = self._context(tmp, preprocess={"count_mode": "property"}, annotations={"source": "MLMarkup"})
+            self._write_inventory(ctx)
+            annotation = {
+                "type": "FeatureCollection",
+                "features": [self._feature("scene_a.tif"), self._feature("scene_b.tif")],
+            }
+            with patch("mlsystem.src.pipeline.stages.prepare_dataset.load_config", return_value=SimpleNamespace(storage=SimpleNamespace(heavy_backend="local", s3_bucket="b"), known_data_roots=[])), \
+                patch("mlsystem.src.pipeline.stages.prepare_dataset.read_s3_text", return_value=json.dumps(annotation)), \
+                patch("mlsystem.src.pipeline.stages.prepare_dataset.raster_path_for_s3_key", side_effect=lambda _cfg, key: str(ctx.store.run_dir / Path(key).name)):
+                report = run_prepare_dataset(ctx)
+            self.assertEqual(report.counters["split_strategy"], "object_balanced")
+            split_summary = json.loads((ctx.store.run_dir / "split_summary.json").read_text(encoding="utf-8"))
+            self.assertGreater(split_summary["val_objects"], 0)
+
     def test_inference_engine_pipeline_submits_and_polls_http(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             ctx = self._context(
@@ -250,9 +266,18 @@ class PipelineStagesTests(unittest.TestCase):
         unchanged = _shared_run_dir_for_inference_engine(Path("/tmp/unit_run"))
         self.assertEqual(unchanged, Path("/tmp/unit_run"))
 
-    def _context(self, tmp: str, *, preprocess: dict | None = None, pseudolabel: dict | None = None, smoke: bool = False) -> StageContext:
+    def _context(
+        self,
+        tmp: str,
+        *,
+        preprocess: dict | None = None,
+        pseudolabel: dict | None = None,
+        annotations: dict | None = None,
+        smoke: bool = False,
+    ) -> StageContext:
         preprocess = preprocess or {}
         pseudolabel = pseudolabel or {}
+        annotations = annotations or {}
         conf = SimpleNamespace(
             schema_version=None,
             experiment_id="unit_stage",
@@ -261,11 +286,12 @@ class PipelineStagesTests(unittest.TestCase):
             layout_uri="s3://b/layouts/",
             scenes_file="scenes.txt",
             annotation_file="auto",
+            annotations=annotations,
             preprocess=preprocess,
             pseudolabel=pseudolabel,
         )
         store = PipelineRunStore(Path(tmp), "manual__unit", {"experiment_id": "unit_stage"})
-        raw_conf = {"experiment_id": "unit_stage", "preprocess": dict(preprocess), "pseudolabel": dict(pseudolabel)}
+        raw_conf = {"experiment_id": "unit_stage", "annotations": dict(annotations), "preprocess": dict(preprocess), "pseudolabel": dict(pseudolabel)}
         return StageContext("unit_stage", "manual__unit", conf, raw_conf, Path(tmp), store, logging.getLogger("test"))
 
     def _inventory_patches(self, images: list[dict], scenes_text: str):

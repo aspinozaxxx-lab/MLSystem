@@ -102,6 +102,20 @@ class DatasetSplitTests(unittest.TestCase):
         self.assertEqual(split.summary["train_files"] + split.summary["val_files"], 3)
         self.assertEqual(split.summary["train_objects"] + split.summary["val_objects"], 3)
 
+    def test_object_balanced_split_never_leaves_validation_without_objects(self) -> None:
+        rows = [
+            SceneObjectCount("large", None, 200, "property"),
+            SceneObjectCount("medium", None, 120, "property"),
+            SceneObjectCount("small_a", None, 90, "property"),
+            SceneObjectCount("small_b", None, 80, "property"),
+            SceneObjectCount("zero_a", None, 0, "property"),
+            SceneObjectCount("zero_b", None, 0, "property"),
+        ]
+        split = split_train_val_by_object_counts(rows, target_val_fraction=0.1, seed=12)
+        self.assertGreater(split.summary["val_objects"], 0)
+        self.assertGreater(split.summary["train_objects"], 0)
+        self.assertFalse({item.scene_name for item in split.train} & {item.scene_name for item in split.val})
+
     def test_clean_scene_list_file_creates_backup_report_and_removes_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

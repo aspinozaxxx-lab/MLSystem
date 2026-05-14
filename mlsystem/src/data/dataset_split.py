@@ -584,6 +584,18 @@ def split_train_val_by_object_counts(
             val_ids.add(id(item))
             val_objects += item.object_count
 
+    if total_objects > 0 and positives and not val_ids:
+        fallback = min(
+            positives,
+            key=lambda item: (
+                abs(target_objects - item.object_count),
+                item.object_count,
+                tie_break[id(item)],
+                item.scene_name,
+            ),
+        )
+        val_ids.add(id(fallback))
+
     if include_zero_object_scenes:
         desired_zero_val = int(round(len(zeros) * target_val_fraction))
         if zeros and len(counts) > 1 and desired_zero_val == 0:
