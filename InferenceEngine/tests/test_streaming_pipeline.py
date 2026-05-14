@@ -169,6 +169,70 @@ class StreamingPipelineTests(unittest.TestCase):
             self.assertEqual(plan.crs, "EPSG:3857")
             self.assertEqual(plan.transform, tuple(float(v) for v in transform[:6]))
 
+    def test_manifest_scene_infers_epsg4326_crs(self) -> None:
+        try:
+            import numpy as np
+            import rasterio
+            from rasterio.transform import from_origin
+        except Exception as exc:  # pragma: no cover - optional raster stack in unit envs.
+            self.skipTest(f"rasterio/numpy unavailable: {exc}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            image_path = root / "scene_4326.tif"
+            transform = from_origin(46.0, 45.0, 0.00002, 0.00002)
+            with rasterio.open(
+                image_path,
+                "w",
+                driver="GTiff",
+                width=8,
+                height=6,
+                count=1,
+                dtype="uint8",
+                crs="EPSG:4326",
+                transform=transform,
+            ) as ds:
+                ds.write(np.zeros((1, 6, 8), dtype="uint8"))
+
+            manifest = root / "inference_manifest.json"
+            manifest.write_text(json.dumps({"scenes": [{"entry": "scene_4326.tif", "name": "scene_4326.tif", "path": str(image_path)}]}), encoding="utf-8")
+            request = JobRequest(experiment_id="manifest", inference_manifest=str(manifest))
+            plan = build_job_plan("job", request, root / "jobs")[0]
+
+            self.assertEqual(plan.crs, "EPSG:4326")
+            self.assertEqual(plan.transform, tuple(float(v) for v in transform[:6]))
+
+    def test_epsg4326_synthetic_scene_vectorizes_to_metric_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = JobStore(root / "jobs")
+            request = JobRequest(
+                experiment_id="epsg4326",
+                scenes=[
+                    SceneInput(
+                        scene_id="scene_4326",
+                        name="scene_4326",
+                        width=64,
+                        height=16,
+                        crs="EPSG:4326",
+                        transform=[0.00002, 0, 46.0, 0, -0.00002, 45.0],
+                        probability_rects=[[6, 2, 58, 14, 1.0]],
+                    )
+                ],
+                preprocess={"patch_size": 8, "stride": 8},
+                pseudolabel={"threshold": 0.5, "core_size_px": 16, "halo_px": 2, "local_min_area": 0, "final_min_area": 0, "merge_epsilon": 0},
+                resource={"triton_batch_size": 1, "max_preprocess_queue": 4, "max_spool_bytes": 10_000_000},
+            )
+            store.create(request.model_dump(), job_id="job")
+            settings = InferenceEngineSettings(job_root=root / "jobs", spool_root=root / "spool", artifact_root=root / "artifacts", logs_root=root / "logs")
+            final = run_job_local("job", store=store, settings=settings)
+
+            self.assertEqual(final["status"], "success")
+            accepted = Path(final["artifacts"]["accepted_geojson"])
+            payload = json.loads(accepted.read_text(encoding="utf-8"))
+            self.assertEqual(payload["crs"]["properties"]["name"], "EPSG:3857")
+            self.assertGreater(len(payload["features"]), 0)
+
     def test_s3_uri_uses_local_minio_mount_when_present(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

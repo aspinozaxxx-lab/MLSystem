@@ -7,13 +7,14 @@ from typing import Any
 
 import numpy as np
 from affine import Affine
+from rasterio.warp import transform_geom
 from shapely.geometry import box, mapping, shape
 from shapely.ops import unary_union
 
 from ..api.schemas import PseudolabelConfig
 from ..contracts import ProbabilityMap
 from ..planning.planner import BlockDescriptor, ScenePlan, TileDescriptor
-from ..postprocessing.vectorization import vectorize_probability_map
+from ..postprocessing.vectorization import METRIC_CRS, vectorize_probability_map
 from ..storage.artifacts import checksum_matches, write_checksum
 from ..storage.local_io import write_json
 from ..storage.probability_artifacts import load_probability_array
@@ -82,7 +83,7 @@ def vectorize_expanded_block(block: BlockDescriptor, plan: ScenePlan, vector_cfg
         threshold=float(vector_cfg.threshold),
         min_area_m2=float(vector_cfg.local_min_area or 0.0),
     )
-    core_box = box(*block.core_bbox)
+    core_box = _metric_core_box(block.core_bbox, plan.crs)
     features, boundary_candidates = _clip_features_to_core(vectorized.features_raw, core_box, block)
     payload = {
         "type": "FeatureCollection",
@@ -113,6 +114,14 @@ def _cleanup_block_probability_artifact(block: BlockDescriptor) -> None:
             path.unlink(missing_ok=True)
         except OSError:
             pass
+
+
+def _metric_core_box(core_bbox: tuple[float, float, float, float], source_crs: str | None) -> Any:
+    geom = mapping(box(*core_bbox))
+    if not source_crs or "3857" in str(source_crs):
+        return shape(geom)
+    transformed = transform_geom(str(source_crs), METRIC_CRS, geom, precision=-1)
+    return shape(transformed)
 
 
 def _clip_features_to_core(features: list[dict[str, Any]], core_box: Any, block: BlockDescriptor) -> tuple[list[dict[str, Any]], int]:

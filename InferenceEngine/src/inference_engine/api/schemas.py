@@ -63,7 +63,7 @@ class SceneInput(BaseModel):
     path: str | None = None
     width: int | None = None
     height: int | None = None
-    crs: str | None = "EPSG:3857"
+    crs: str | None = None
     transform: list[float] | None = None
     probability_rects: list[list[float]] | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)

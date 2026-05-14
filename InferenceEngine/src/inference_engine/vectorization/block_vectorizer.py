@@ -6,11 +6,12 @@ from pathlib import Path
 
 import numpy as np
 from affine import Affine
+from rasterio.warp import transform_geom
 from shapely.geometry import box, mapping, shape
 from shapely.ops import unary_union
 
 from ..contracts import ProbabilityMap
-from ..postprocessing.vectorization import vectorize_probability_map
+from ..postprocessing.vectorization import METRIC_CRS, vectorize_probability_map
 from ..storage.local_io import write_json
 from .contracts import BlockVectorizationJob, BlockVectorizationResult, PredictionTileInfo
 from .tile_index import load_tile_probability
@@ -25,8 +26,6 @@ def vectorize_block(job: BlockVectorizationJob) -> BlockVectorizationResult:
     warnings: list[str] = []
     try:
         tile = _single_tile_for_block(job)
-        if tile.crs and "4326" in str(tile.crs):
-            raise ValueError("block_parallel vectorization requires projected probability-map CRS; got EPSG:4326-like CRS")
         if not tile.crs:
             warnings.append("tile CRS is missing; geometry is treated as already metric/projected")
         prob, block_transform, coverage_fraction = _expanded_probability(tile, job.block.expanded_window)
@@ -46,7 +45,7 @@ def vectorize_block(job: BlockVectorizationJob) -> BlockVectorizationResult:
             threshold=float(job.threshold),
             min_area_m2=float(job.local_min_area or 0.0),
         )
-        core_box = box(*job.block.core_bbox)
+        core_box = _metric_core_box(job.block.core_bbox, tile.crs or job.block.crs)
         features, boundary_candidates = _clip_features_to_core(result.features_raw, core_box, job)
         payload = {
             "type": "FeatureCollection",
@@ -99,6 +98,14 @@ def _expanded_probability(tile: PredictionTileInfo, window: tuple[int, int, int,
     coverage_fraction = float(np.count_nonzero(np.isfinite(subset)) / subset.size) if subset.size else 0.0
     transform = Affine(*tile.transform) * Affine.translation(col_off, row_off)
     return subset, transform, coverage_fraction
+
+
+def _metric_core_box(core_bbox: tuple[float, float, float, float], source_crs: str | None) -> object:
+    geom = mapping(box(*core_bbox))
+    if not source_crs or "3857" in str(source_crs):
+        return shape(geom)
+    transformed = transform_geom(str(source_crs), METRIC_CRS, geom, precision=-1)
+    return shape(transformed)
 
 
 def _clip_features_to_core(features: list[dict], core_box: object, job: BlockVectorizationJob) -> tuple[list[dict], int]:
