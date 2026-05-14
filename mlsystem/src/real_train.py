@@ -782,15 +782,30 @@ def _load_prepared_dataset_split(
             raise RuntimeError(f"Prepared dataset split overlap: {overlap[:10]}")
     selected_ids = train_ids | val_ids
     lost = sorted(available_ids - selected_ids)
-    if lost:
+    limited_manifest = _prepared_manifest_has_input_limit(payload)
+    if lost and not limited_manifest:
         raise RuntimeError(f"Prepared dataset split lost {len(lost)} matched scenes: {lost[:10]}")
     return train_matches, val_matches, {
         "source": str(manifest_path),
         "split_strategy": payload.get("split_strategy"),
         "train_scene_count": len(train_matches),
         "val_scene_count": len(val_matches),
+        "available_scene_count": len(available_ids),
+        "selected_scene_count": len(selected_ids),
+        "excluded_scene_count": len(lost),
+        "input_limit_applied": limited_manifest,
         "split_summary": payload.get("split_summary") or {},
     }
+
+
+def _prepared_manifest_has_input_limit(payload: dict[str, Any]) -> bool:
+    lineage = payload.get("input_lineage") if isinstance(payload.get("input_lineage"), dict) else {}
+    limits = payload.get("limits") if isinstance(payload.get("limits"), dict) else {}
+    return bool(
+        lineage.get("limit_applied")
+        or lineage.get("dataset_input_limit") is not None
+        or limits.get("dataset_input_limit") is not None
+    )
 
 
 def _scene_match_identity(match: SceneMatch) -> str:

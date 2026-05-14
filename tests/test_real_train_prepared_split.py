@@ -67,6 +67,33 @@ class RealTrainPreparedSplitTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "lost 1 matched scenes"):
                 _load_prepared_dataset_split(root, matches, job)
 
+    def test_load_prepared_dataset_split_allows_explicit_input_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "dataset_manifest.json"
+            write_json(
+                manifest,
+                {
+                    "train_scenes": [{"entry": "scene_a.tif", "name": "scene_a.tif", "key": "images/scene_a.tif"}],
+                    "val_scenes": [{"entry": "scene_b.tif", "name": "scene_b.tif", "key": "images/scene_b.tif"}],
+                    "input_lineage": {"limit_applied": True, "dataset_input_limit": 2},
+                    "limits": {"dataset_input_limit": 2},
+                },
+            )
+            matches = [
+                SceneMatch(entry="scene_a.tif", name="scene_a.tif", key="images/scene_a.tif", score=1.0),
+                SceneMatch(entry="scene_b.tif", name="scene_b.tif", key="images/scene_b.tif", score=1.0),
+                SceneMatch(entry="scene_c.tif", name="scene_c.tif", key="images/scene_c.tif", score=1.0),
+            ]
+            job = SimpleNamespace(preprocess={"prepared_dataset_manifest": str(manifest)})
+            split = _load_prepared_dataset_split(root, matches, job)
+            self.assertIsNotNone(split)
+            train, val, metadata = split
+            self.assertEqual([item.name for item in train], ["scene_a.tif"])
+            self.assertEqual([item.name for item in val], ["scene_b.tif"])
+            self.assertEqual(metadata["excluded_scene_count"], 1)
+            self.assertTrue(metadata["input_limit_applied"])
+
     def test_load_initial_checkpoint_restores_model_weights(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "model.pt"
