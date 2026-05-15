@@ -107,8 +107,24 @@ class PipelineRunner:
 def _pid_running(pid: int) -> bool:
     if pid <= 0:
         return False
+    if _proc_state_for_pid(pid) == "Z":
+        return False
     try:
         os.kill(pid, 0)
         return True
     except OSError:
         return False
+
+
+def _proc_state_for_pid(pid: int) -> str | None:
+    if os.name == "nt":
+        return None
+    try:
+        status = Path(f"/proc/{pid}/status").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    for line in status.splitlines():
+        if line.startswith("State:"):
+            parts = line.split()
+            return parts[1] if len(parts) > 1 else None
+    return None
