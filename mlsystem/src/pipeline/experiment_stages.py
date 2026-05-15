@@ -1309,6 +1309,7 @@ def _run_dispatcher_stage(stage: str, conf_payload: dict[str, Any], pipeline_run
                 epochs_completed=training_result.get("epochs_completed"),
                 best_val_iou=training_result.get("best_val_iou"),
                 checkpoint_path=training_result.get("checkpoint_path"),
+                mlflow=training_result.get("mlflow") or {},
                 artifacts=_existing_artifacts(store),
             )
     elif stage == "evaluate_pixel_metrics":
