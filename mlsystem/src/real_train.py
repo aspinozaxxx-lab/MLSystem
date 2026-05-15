@@ -1816,8 +1816,11 @@ def run_real_train(
     dataloader_prefetch_factor = resolve_prefetch_factor(dataloader_workers, dataloader_prefetch_config)
     pin_memory = _coerce_optional_bool(job.train.get("pin_memory"))
     pin_memory = True if pin_memory is None else bool(pin_memory)
-    persistent_workers = _coerce_optional_bool(job.train.get("persistent_workers"))
-    persistent_workers = True if persistent_workers is None else bool(persistent_workers)
+    persistent_workers_requested = _coerce_optional_bool(job.train.get("persistent_workers"))
+    persistent_workers_requested = True if persistent_workers_requested is None else bool(persistent_workers_requested)
+    # Loaders are rebuilt every epoch after train_dataset.set_epoch(...). Keeping workers
+    # alive across discarded loader instances can leave stale processes around.
+    persistent_workers_effective = False
     epochs = int(job.train.get("epochs") or job.train.get("max_epochs") or 20)
     train_mode = str(job.train.get("mode") or job.train.get("train_mode") or "train").strip().lower()
     eval_only = train_mode in {"eval_only", "evaluate_only", "checkpoint_reeval", "reeval"}
@@ -1859,11 +1862,20 @@ def run_real_train(
             "train.dataloader_workers": dataloader_workers,
             "train.dataloader_prefetch_factor": dataloader_prefetch_factor,
             "train.pin_memory": pin_memory,
-            "train.persistent_workers": bool(persistent_workers and dataloader_workers > 0),
+            "train.persistent_workers": bool(persistent_workers_effective and dataloader_workers > 0),
+            "train.persistent_workers_requested": persistent_workers_requested,
+            "train.persistent_workers_effective": bool(persistent_workers_effective and dataloader_workers > 0),
             "train.max_train_tiles": max_train_tiles,
             "train.max_val_tiles": max_val_tiles,
             "train.max_tiles_per_scene": max_tiles_per_scene,
         }
+    )
+    log_fn(
+        job_log,
+        "real_train dataloader "
+        f"workers={dataloader_workers} prefetch_factor={dataloader_prefetch_factor} "
+        f"pin_memory={pin_memory} persistent_workers_requested={persistent_workers_requested} "
+        f"persistent_workers_effective={bool(persistent_workers_effective and dataloader_workers > 0)}",
     )
     augmentations_cfg = job.train.get("augmentations") or {}
     mlflow_run.log_params({"train.augmentations_profile": _augmentation_profile(augmentations_cfg)})
@@ -1943,7 +1955,7 @@ def run_real_train(
                 workers=dataloader_workers,
                 prefetch_factor=dataloader_prefetch_factor,
                 pin_memory=pin_memory,
-                persistent_workers=persistent_workers,
+                persistent_workers=persistent_workers_effective,
                 seed=seed + epoch,
             )
             train_iterator = iter(train_loader)
@@ -1988,7 +2000,7 @@ def run_real_train(
                     workers=dataloader_workers,
                     prefetch_factor=dataloader_prefetch_factor,
                     pin_memory=pin_memory,
-                    persistent_workers=persistent_workers,
+                    persistent_workers=persistent_workers_effective,
                     seed=seed,
                 )
                 val_iterator = iter(val_loader)
@@ -2221,7 +2233,7 @@ def run_real_train(
                 workers=dataloader_workers,
                 prefetch_factor=dataloader_prefetch_factor,
                 pin_memory=pin_memory,
-                persistent_workers=persistent_workers,
+                persistent_workers=persistent_workers_effective,
                 seed=seed,
             )
             val_iterator = iter(val_loader)

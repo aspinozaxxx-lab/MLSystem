@@ -34,6 +34,12 @@ class RealTrainDataloaderIntegrationTests(unittest.TestCase):
             self.assertIn(key, text)
         self.assertIn('payload["data/batch_wait_sec"] = payload["data/batch_wait_total_sec"]', text)
 
+    def test_real_train_disables_recreated_loader_persistent_workers(self) -> None:
+        text = Path("mlsystem/src/real_train.py").read_text(encoding="utf-8")
+        self.assertIn("persistent_workers_requested", text)
+        self.assertIn("persistent_workers_effective = False", text)
+        self.assertIn("persistent_workers=persistent_workers_effective", text)
+
 
 if __name__ == "__main__":
     unittest.main()
