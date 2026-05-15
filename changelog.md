@@ -54,3 +54,4 @@
 ## 2026-05-15 JupyterLab
 
 - Dobavleny frontend card `JupyterLab`, env `FRONTEND_JUPYTER_URL` i nginx route `/jupyter/` s frontend `auth_request`, WebSocket proxy i upstream `mlsystem-gpu-jupyter:8888`.
+- Otkluchena vnutrennyaya token/password-avtorizatsiya JupyterLab na servere: dostup ostalsya tolko cherez frontend-auth `/jupyter/`, XSRF proverka Jupyter ne otklyuchalas.
