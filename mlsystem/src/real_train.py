@@ -489,6 +489,30 @@ def _threshold_metric_suffix(threshold: float) -> str:
     return text.replace("-", "m").replace(".", "_") or "0"
 
 
+def _best_threshold_metrics_payload(best_threshold: float, metrics: dict[str, float]) -> dict[str, float]:
+    pixel_f1 = float(metrics["pixel_f1"])
+    pixel_iou = float(metrics["pixel_iou"])
+    precision = float(metrics["pixel_precision"])
+    recall = float(metrics["pixel_recall"])
+    threshold = float(best_threshold)
+    return {
+        "val/best_threshold": threshold,
+        "val/best_pixel_f1_threshold": threshold,
+        "val/best_pixel_f1": pixel_f1,
+        "val/best_pixel_iou": pixel_iou,
+        "val/best_precision": precision,
+        "val/best_recall": recall,
+        "val/pixel_f1_at_best_threshold": pixel_f1,
+        "val/pixel_iou_at_best_threshold": pixel_iou,
+        "val/precision_at_best_threshold": precision,
+        "val/recall_at_best_threshold": recall,
+        "val/pixel_f1_best_threshold": pixel_f1,
+        "val/pixel_iou_best_threshold": pixel_iou,
+        "val/precision_best_threshold": precision,
+        "val/recall_best_threshold": recall,
+    }
+
+
 def _coerce_threshold_values(value: Any) -> list[float]:
     if value is None:
         return []
@@ -1933,15 +1957,7 @@ def run_real_train(
                 "train/batches": float(train_batch_count),
                 "val/batches": float(val_batch_count),
             }
-            row.update(
-                {
-                    "val/best_threshold": float(best_threshold),
-                    "val/pixel_f1_best_threshold": float(best_threshold_metrics["pixel_f1"]),
-                    "val/pixel_iou_best_threshold": float(best_threshold_metrics["pixel_iou"]),
-                    "val/precision_best_threshold": float(best_threshold_metrics["pixel_precision"]),
-                    "val/recall_best_threshold": float(best_threshold_metrics["pixel_recall"]),
-                }
-            )
+            row.update(_best_threshold_metrics_payload(best_threshold, best_threshold_metrics))
             for threshold, metrics_payload in threshold_metrics.items():
                 suffix = _threshold_metric_suffix(threshold)
                 row.update(
@@ -2139,15 +2155,7 @@ def run_real_train(
             "val/batches": float(val_batch_count),
             "train/optimizer_steps": 0.0,
         }
-        row.update(
-            {
-                "val/best_threshold": float(best_threshold),
-                "val/pixel_f1_best_threshold": float(best_threshold_metrics["pixel_f1"]),
-                "val/pixel_iou_best_threshold": float(best_threshold_metrics["pixel_iou"]),
-                "val/precision_best_threshold": float(best_threshold_metrics["pixel_precision"]),
-                "val/recall_best_threshold": float(best_threshold_metrics["pixel_recall"]),
-            }
-        )
+        row.update(_best_threshold_metrics_payload(best_threshold, best_threshold_metrics))
         for threshold, metrics_payload in threshold_metrics.items():
             suffix = _threshold_metric_suffix(threshold)
             row.update(
@@ -2388,6 +2396,15 @@ def run_real_train(
         "simplify_tolerance_m": postprocess_metrics.get("simplify_tolerance_m_used"),
         "max_objects": job.postprocess.get("max_objects"),
     }
+    best_threshold_row = max(
+        history,
+        key=lambda row: float(row.get("val/best_pixel_f1", row.get("val/pixel_f1_best_threshold", 0.0))),
+        default={},
+    )
+    best_val_pixel_f1_at_best_threshold = float(
+        best_threshold_row.get("val/best_pixel_f1", best_threshold_row.get("val/pixel_f1_best_threshold", 0.0))
+    )
+    best_val_pixel_f1_threshold = best_threshold_row.get("val/best_pixel_f1_threshold", best_threshold_row.get("val/best_threshold"))
     return {
         "status": "done",
         "mode": "checkpoint_reeval" if eval_only else "real_train",
@@ -2412,7 +2429,9 @@ def run_real_train(
         "best_objective_metric": objective_metric,
         "best_objective_value": best_objective_value,
         "best_val_pixel_f1": max((float(row.get("val/pixel_f1", 0.0)) for row in history), default=0.0),
-        "best_val_pixel_f1_best_threshold": max((float(row.get("val/pixel_f1_best_threshold", 0.0)) for row in history), default=0.0),
+        "best_val_pixel_f1_at_best_threshold": best_val_pixel_f1_at_best_threshold,
+        "best_val_pixel_f1_threshold": best_val_pixel_f1_threshold,
+        "best_val_pixel_f1_best_threshold": best_val_pixel_f1_at_best_threshold,
         "metrics_source_of_truth": "micro_global_pixel_counts",
         "metrics_threshold": metric_threshold,
         "metrics_debug_enabled": debug_enabled,

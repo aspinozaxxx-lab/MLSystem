@@ -11,6 +11,7 @@ from mlsystem.src.io_utils import write_json
 from mlsystem.src.real_train import (
     SceneMatch,
     TinyUNet,
+    _best_threshold_metrics_payload,
     _build_optimizer,
     _build_scheduler,
     _configure_dropout,
@@ -134,6 +135,22 @@ class RealTrainPreparedSplitTests(unittest.TestCase):
         job = SimpleNamespace(train={"metric_thresholds": [0.7, "0.80", 0.8]}, evaluate={}, params={})
         self.assertEqual(_resolve_metric_thresholds(job, 0.75), [0.7, 0.75, 0.8])
         self.assertEqual(_threshold_metric_suffix(0.8), "0_8")
+
+    def test_best_threshold_metrics_payload_logs_value_and_threshold_separately(self) -> None:
+        payload = _best_threshold_metrics_payload(
+            0.8,
+            {
+                "pixel_f1": 0.67,
+                "pixel_iou": 0.5,
+                "pixel_precision": 0.57,
+                "pixel_recall": 0.83,
+            },
+        )
+        self.assertEqual(payload["val/best_threshold"], 0.8)
+        self.assertEqual(payload["val/best_pixel_f1_threshold"], 0.8)
+        self.assertEqual(payload["val/best_pixel_f1"], 0.67)
+        self.assertEqual(payload["val/pixel_f1_at_best_threshold"], 0.67)
+        self.assertEqual(payload["val/pixel_f1_best_threshold"], 0.67)
 
     def test_train_augmentation_level_is_honored_when_preprocess_is_unset(self) -> None:
         job = SimpleNamespace(preprocess={"train_sampling": {"enabled": True}}, train={"augmentation_level": 1})
