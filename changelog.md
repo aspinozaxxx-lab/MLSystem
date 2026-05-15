@@ -7,6 +7,7 @@
 - Dobavlen `scripts/benchmark_tile_preparation_dataloader.py` i tests dlya DataLoader workers, geometry index, normalization i real_train integration.
 - Utochneny DataLoader wait metrics: `data/batch_wait_sec` ostalsya alias na total, dobavleny total/mean/median/p95/max, samples/sec i batches/sec; pipeline worker stderr/stdout teper pishutsya v run logs, a `WorkerExited` poluchaet diagnostic payload.
 - `real_train.py` otklyuchaet effective `persistent_workers` dlya pere-sozdavaemyh po epoch DataLoader, chtoby ne ostavlyat stale worker processes; requested/effective znacheniya logiruyutsya otdelno.
+- `mlsystem-api` container poluchil `shm_size=${MLSYSTEM_API_SHM_SIZE:-1gb}`, chtoby DataLoader workers mogli peredavat 512px batch tensor bez `/dev/shm` OOM.
 - Zafiksirovany architecture docs dlya module boundaries, `tile_preparation`, `mlflow_adapter`, `pipeline_runner`, tile/preprocessing inventory i pipeline/orchestration inventory; dobavlen runbook zapuska experimentov bez Airflow.
 
 ## 2026-05-07

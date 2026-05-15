@@ -34,6 +34,10 @@ class FrontendGatewayConfigTests(unittest.TestCase):
         self.assertIn("${PROMETHEUS_LISTEN_HOST:-127.0.0.1}:${PROMETHEUS_PORT:-9090}:9090", services["prometheus"]["ports"])
         self.assertIn("${RABBITMQ_PROMETHEUS_LISTEN_HOST:-127.0.0.1}:${RABBITMQ_PROMETHEUS_PORT:-15692}:15692", services["rabbitmq"]["ports"])
 
+    def test_mlsystem_api_shm_size_supports_dataloader_prefetch(self) -> None:
+        compose = yaml.safe_load(Path("deploy/docker-compose.gpu.yml").read_text(encoding="utf-8"))
+        self.assertEqual(compose["services"]["mlsystem-api"].get("shm_size"), "${MLSYSTEM_API_SHM_SIZE:-1gb}")
+
     def test_inference_engine_deploy_preserves_mlsystem_runtime_config(self) -> None:
         text = Path("ansible/playbooks/deploy_inference_engine_code.yml").read_text(encoding="utf-8")
         self.assertIn("pipeline.server.yaml.j2", text)

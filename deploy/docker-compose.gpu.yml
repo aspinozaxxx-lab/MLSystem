@@ -274,6 +274,7 @@ services:
       args:
         MLSYSTEM_BASE_IMAGE: ${MLSYSTEM_BASE_IMAGE:-python:3.11-slim}
     container_name: mlsystem-gpu-api
+    shm_size: "${MLSYSTEM_API_SHM_SIZE:-1gb}"
     depends_on:
       minio:
         condition: service_healthy
