@@ -239,3 +239,34 @@ python scripts\profile_tile_training_local.py `
 Script пишет `profile_summary.json`, `profile_batches.csv`, `profile_functions.csv` и `profile_report.md`.
 Он включает `MLSYSTEM_TILE_PREP_PROFILE=1` и собирает per-sample timings через `ReadyTileSample.metadata["tile_prep_profile"]`.
 Production collate остаётся совместимым: обычный DataLoader возвращает только `indices, x, y`; metadata используется отдельным debug collate внутри profiler script.
+
+## SceneFootprint
+
+Перед построением records модуль определяет фактический footprint сцены. Это убирает старый путь, где сначала строилась прямоугольная сетка по всему TIFF, а затем каждое окно проверялось чтением valid mask.
+
+Новый internal flow:
+
+1. `build_scene_footprint(ds, config)` строит polygon покрытия сцены.
+2. `generate_windows_for_footprint(...)` создает только те окна, которые пересекают footprint.
+3. Fully-inside окна не читают valid mask.
+4. Boundary окна получают valid mask через rasterization footprint polygon.
+5. Окна полностью вне footprint не создаются вообще.
+
+Validation остается честной: fixed grid by footprint, без augmentation, jitter, virtual repeats и train-like oversampling.
+
+Public facade не расширен. Footprint является внутренней деталью `tile_preparation`.
+
+Для диагностики build records есть:
+
+```powershell
+python scripts\benchmark_tile_record_build.py `
+  --images-root D:\Projects\TestDataset `
+  --train-scene-list D:\Projects\TestDataset\train.txt `
+  --val-scene-list D:\Projects\TestDataset\val.txt `
+  --annotation D:\Projects\TestDataset\deforestation.geojson `
+  --tile-size 512 `
+  --stride 512 `
+  --augmentation-level 1 `
+  --record-workers 0,1,2,4 `
+  --output-json outputs\debug_tile_prep_profile_footprint\record_build_benchmark.json
+```

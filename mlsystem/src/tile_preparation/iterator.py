@@ -4,6 +4,9 @@ import itertools
 import math
 import os
 import random
+import time
+from concurrent.futures import ProcessPoolExecutor
+from dataclasses import dataclass
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -16,6 +19,15 @@ from shapely.geometry import box
 from .annotations import AnnotationGeometrySet, load_annotation_geometries
 from .augmentations import apply_training_augmentation
 from .config import AnnotationInput, SceneInput, TilePreparationConfig
+from .footprint import (
+    SceneFootprint,
+    build_scene_footprint,
+    footprint_record_metadata,
+    footprint_window_counters,
+    generate_windows_for_footprint,
+    rasterize_footprint_for_window,
+    window_footprint_intersection,
+)
 from .mask_rasterizer import positive_pixel_bbox, rasterize_mask_for_window
 from .mosaic import read_mosaic_window
 from .raster_reader import format_training_image, read_training_image
@@ -23,6 +35,28 @@ from .records import ReadyTileSample, TileKind, TileRecordBuildResult, TileSampl
 from .summary import summarize_tile_records
 from .validity import read_valid_data_mask_with_source
 from .windows import generate_window_grid_for_scene
+
+
+DEFAULT_RECORD_BUILD_WORKERS = min(os.cpu_count() or 1, 16)
+
+
+@dataclass
+class _SceneBuildOutput:
+    scene_index: int
+    scene_id: str
+    image_path: str
+    width: int
+    height: int
+    bands: int
+    crs: str | None
+    annotation_summary: dict[str, Any]
+    annotation_warnings: list[str]
+    records: list[TileSampleRecord]
+    skip_counts: dict[str, int]
+    footprint_metadata: dict[str, Any]
+    footprint_counters: dict[str, int]
+    build_footprint_sec: float
+    build_records_sec: float
 
 
 def build_tile_records(
@@ -37,59 +71,63 @@ def build_tile_records(
     annotation_by_scene: dict[str, dict[str, Any]] = {}
     skip_totals = {"skipped_fully_invalid_tiles": 0, "skipped_low_valid_share_tiles": 0}
     rng = random.Random(config.seed)
-    open_datasets: dict[str, Any] = {}
-    scene_ids_by_path: dict[str, str] = {}
-    try:
-        for scene in scenes:
-            image_path = _rasterio_path(scene.image_path)
-            open_datasets[image_path] = rasterio.open(image_path)
-            scene_ids_by_path[image_path] = scene.resolved_scene_id()
-
-        total_scenes = len(scenes)
-        for scene_index, scene in enumerate(scenes, start=1):
-            if bool(scene.metadata.get("mosaic_neighbor_only")):
-                continue
-            image_path = _rasterio_path(scene.image_path)
-            scene_id = scene.resolved_scene_id()
-            _log_progress(f"build_train_records scene={scene_id} index={scene_index}/{total_scenes}")
-            ds = open_datasets[image_path]
-            annotation_geoms = load_annotation_geometries(annotation, raster_crs=ds.crs)
-            annotation_summary = annotation_geoms.to_dict(annotation.geojson_path)
-            annotation_by_scene[scene_id] = dict(annotation_summary)
-            warnings.extend(annotation_geoms.warnings)
-            neighbor_datasets = _neighbor_datasets(image_path, open_datasets, scene_ids_by_path, config)
-            scene_records, scene_skip_counts = _build_scene_records(ds, scene_id, image_path, annotation_geoms, config, neighbor_datasets=neighbor_datasets)
-            _log_progress(f"built_train_records scene={scene_id} records={len(scene_records)}")
-            for key in skip_totals:
-                skip_totals[key] += int(scene_skip_counts.get(key, 0))
-            before_limit = list(scene_records)
-            scene_records, limit_warnings = limit_empty_tile_share(scene_records, config.max_empty_tile_share, seed=config.seed)
-            warnings.extend(limit_warnings)
-            if config.max_records_per_scene is not None and len(scene_records) > config.max_records_per_scene:
-                scene_records = _limit_records(scene_records, config.max_records_per_scene, rng)
-            base_records.extend(scene_records)
-            scene_summary = summarize_tile_records(scene_records)
-            scene_reports.append(
-                {
-                    "scene": scene_id,
-                    "image_path": str(image_path),
-                    "width": int(ds.width),
-                    "height": int(ds.height),
-                    "bands": int(ds.count),
-                    "crs": str(ds.crs) if ds.crs else None,
-                    "raster_crs": str(ds.crs) if ds.crs else None,
-                    "annotation_crs": annotation_summary.get("annotation_crs"),
-                    "annotation_crs_source": annotation_summary.get("annotation_crs_source"),
-                    "transformed_to_raster_crs": annotation_summary.get("transformed_to_raster_crs"),
-                    "records_before_empty_limit": len(before_limit),
-                    "records_after_empty_limit": len(scene_records),
-                    **scene_skip_counts,
-                    **scene_summary,
-                }
-            )
-    finally:
-        for ds in open_datasets.values():
-            ds.close()
+    active_scenes = [scene for scene in scenes if not bool(scene.metadata.get("mosaic_neighbor_only"))]
+    scene_outputs = _build_scene_outputs(
+        active_scenes,
+        annotation,
+        config,
+        train=True,
+    )
+    footprints_by_image_path: dict[str, dict[str, Any]] = {}
+    footprint_counter_totals: dict[str, int] = {}
+    build_footprint_total_sec = 0.0
+    build_records_total_sec = 0.0
+    for output in scene_outputs:
+        scene_id = output.scene_id
+        annotation_summary = output.annotation_summary
+        annotation_by_scene[scene_id] = dict(annotation_summary)
+        warnings.extend(output.annotation_warnings)
+        warnings.extend(output.footprint_metadata.get("warnings") or [])
+        footprints_by_image_path[output.image_path] = output.footprint_metadata
+        build_footprint_total_sec += float(output.build_footprint_sec)
+        build_records_total_sec += float(output.build_records_sec)
+        for key, value in output.footprint_counters.items():
+            footprint_counter_totals[key] = int(footprint_counter_totals.get(key, 0)) + int(value)
+        scene_records = list(output.records)
+        scene_skip_counts = dict(output.skip_counts)
+        _log_progress(f"built_train_records scene={scene_id} records={len(scene_records)}")
+        for key in skip_totals:
+            skip_totals[key] += int(scene_skip_counts.get(key, 0))
+        before_limit = list(scene_records)
+        scene_records, limit_warnings = limit_empty_tile_share(scene_records, config.max_empty_tile_share, seed=config.seed)
+        warnings.extend(limit_warnings)
+        if config.max_records_per_scene is not None and len(scene_records) > config.max_records_per_scene:
+            scene_records = _limit_records(scene_records, config.max_records_per_scene, rng)
+        base_records.extend(scene_records)
+        scene_summary = summarize_tile_records(scene_records)
+        scene_reports.append(
+            {
+                "scene": scene_id,
+                "image_path": str(output.image_path),
+                "width": int(output.width),
+                "height": int(output.height),
+                "bands": int(output.bands),
+                "crs": output.crs,
+                "raster_crs": output.crs,
+                "annotation_crs": annotation_summary.get("annotation_crs"),
+                "annotation_crs_source": annotation_summary.get("annotation_crs_source"),
+                "transformed_to_raster_crs": annotation_summary.get("transformed_to_raster_crs"),
+                "records_before_empty_limit": len(before_limit),
+                "records_after_empty_limit": len(scene_records),
+                "footprint_source": output.footprint_metadata.get("source"),
+                "footprint_valid_pixel_share_estimated": output.footprint_metadata.get("valid_pixel_share_estimated"),
+                "build_footprint_sec": output.build_footprint_sec,
+                "build_records_sec": output.build_records_sec,
+                **output.footprint_counters,
+                **scene_skip_counts,
+                **scene_summary,
+            }
+        )
 
     if config.max_records is not None and len(base_records) > config.max_records:
         base_records = _limit_records(base_records, config.max_records, rng)
@@ -116,6 +154,11 @@ def build_tile_records(
             "effective_samples_per_epoch": len(virtual_records),
             "min_valid_pixel_share": config.min_valid_pixel_share,
             "drop_fully_invalid_tiles": config.drop_fully_invalid_tiles,
+            "footprints_by_image_path": footprints_by_image_path,
+            "build_footprint_sec": build_footprint_total_sec,
+            "build_records_sec": build_records_total_sec,
+            "read_valid_mask_calls": 0,
+            **footprint_counter_totals,
             **skip_totals,
         },
     )
@@ -180,127 +223,59 @@ def build_validation_tile_records(
     annotation_summary: dict[str, Any] | None = None
     annotation_by_scene: dict[str, dict[str, Any]] = {}
     skip_totals = {"skipped_fully_invalid_tiles": 0, "skipped_low_valid_share_tiles": 0}
-    open_datasets: dict[str, Any] = {}
-    scene_ids_by_path: dict[str, str] = {}
-    try:
-        for scene in scenes:
-            image_path = _rasterio_path(scene.image_path)
-            open_datasets[image_path] = rasterio.open(image_path)
-            scene_ids_by_path[image_path] = scene.resolved_scene_id()
-        total_scenes = len(scenes)
-        for scene_index, scene in enumerate(scenes, start=1):
-            if bool(scene.metadata.get("mosaic_neighbor_only")):
-                continue
-            image_path = _rasterio_path(scene.image_path)
-            scene_id = scene.resolved_scene_id()
-            _log_progress(f"build_val_records scene={scene_id} index={scene_index}/{total_scenes}")
-            ds = open_datasets[image_path]
-            annotation_geoms = load_annotation_geometries(annotation, raster_crs=ds.crs)
-            annotation_summary = annotation_geoms.to_dict(annotation.geojson_path)
-            annotation_by_scene[scene_id] = dict(annotation_summary)
-            warnings.extend(annotation_geoms.warnings)
-            neighbor_datasets = _neighbor_datasets(image_path, open_datasets, scene_ids_by_path, config)
-            scene_records: list[TileSampleRecord] = []
-            scene_skip_counts = {"skipped_fully_invalid_tiles": 0, "skipped_low_valid_share_tiles": 0}
-            for window in generate_window_grid_for_scene(ds.width, ds.height, config.tile_size, config.stride, scene_id=scene_id):
-                valid = read_valid_data_mask_with_source(ds, window, mode=config.valid_pixel_mode)
-                valid_mask = valid.mask
-                mosaic_sources: list[str] = []
-                mosaic_filled = 0
-                mosaic_unfilled = int(valid_mask.size - np.count_nonzero(valid_mask))
-                mosaic_candidate_neighbors = 0
-                mosaic_intersecting_neighbors = 0
-                mosaic_actually_used_neighbors: list[str] = []
-                mosaic_skipped_non_intersecting_neighbors = 0
-                if config.mosaic_enabled and neighbor_datasets:
-                    mosaic = read_mosaic_window(ds, neighbor_datasets, window, config)
-                    valid_mask = mosaic.valid_mask
-                    mosaic_sources = mosaic.source_scenes
-                    mosaic_filled = mosaic.filled_pixel_count
-                    mosaic_unfilled = mosaic.unfilled_pixel_count
-                    mosaic_candidate_neighbors = mosaic.candidate_neighbors
-                    mosaic_intersecting_neighbors = mosaic.intersecting_neighbors
-                    mosaic_actually_used_neighbors = mosaic.actually_used_neighbors
-                    mosaic_skipped_non_intersecting_neighbors = mosaic.skipped_non_intersecting_neighbors
-                final_valid_share = float(np.count_nonzero(valid_mask)) / float(valid_mask.size) if valid_mask.size else 0.0
-                if config.drop_fully_invalid_tiles and final_valid_share <= 0.0:
-                    scene_skip_counts["skipped_fully_invalid_tiles"] += 1
-                    continue
-                mask_result = rasterize_mask_for_window(
-                    ds,
-                    annotation_geoms.geometries,
-                    window,
-                    all_touched=config.all_touched,
-                    valid_mask=valid_mask if config.clip_mask_to_valid_data else None,
-                )
-                kind, positive_pixels = classify_mask(mask_result.mask, config)
-                if kind == "hard_negative":
-                    kind = "negative"
-                if config.exclude_empty_valid_tiles and final_valid_share < config.min_valid_pixel_share:
-                    scene_skip_counts["skipped_low_valid_share_tiles"] += 1
-                    continue
-                scene_records.append(
-                    TileSampleRecord(
-                        scene_id=scene_id,
-                        image_path=str(image_path),
-                        x=int(window.x),
-                        y=int(window.y),
-                        width=int(window.width),
-                        height=int(window.height),
-                        tile_size=int(window.tile_size),
-                        stride=int(window.stride),
-                        kind=kind if kind in {"positive", "partial_positive"} else "negative",
-                        positive_pixels=int(positive_pixels),
-                        source="validation_grid",
-                        geometries_intersecting=int(mask_result.geom_count),
-                        valid_pixel_share=mask_result.valid_pixel_share,
-                        invalid_pixel_share=1.0 - mask_result.valid_pixel_share,
-                        mask_pixels_before_valid_clip=mask_result.raw_positive_pixels,
-                        mask_pixels_after_valid_clip=mask_result.clipped_positive_pixels,
-                        valid_data_source=valid.source,
-                        mosaic_sources=mosaic_sources,
-                        mosaic_filled_pixel_count=mosaic_filled,
-                        mosaic_unfilled_pixel_count=mosaic_unfilled,
-                        metadata={
-                            "mosaic_candidate_neighbors": mosaic_candidate_neighbors,
-                            "mosaic_intersecting_neighbors": mosaic_intersecting_neighbors,
-                            "mosaic_actually_used_neighbors": mosaic_actually_used_neighbors,
-                            "mosaic_skipped_non_intersecting_neighbors": mosaic_skipped_non_intersecting_neighbors,
-                        },
-                    )
-                )
-            for key in skip_totals:
-                skip_totals[key] += int(scene_skip_counts.get(key, 0))
-            scene_records.sort(key=lambda item: (item.y, item.x))
-            if config.max_records_per_scene is not None and len(scene_records) > config.max_records_per_scene:
-                scene_records = scene_records[: config.max_records_per_scene]
-            records.extend(scene_records)
-            _log_progress(f"built_val_records scene={scene_id} records={len(scene_records)}")
-            summary = summarize_tile_records(scene_records)
-            scene_reports.append(
-                {
-                    "scene": scene_id,
-                    "image_path": str(image_path),
-                    "width": int(ds.width),
-                    "height": int(ds.height),
-                    "bands": int(ds.count),
-                    "crs": str(ds.crs) if ds.crs else None,
-                    "raster_crs": str(ds.crs) if ds.crs else None,
-                    "annotation_crs": annotation_summary.get("annotation_crs"),
-                    "annotation_crs_source": annotation_summary.get("annotation_crs_source"),
-                    "transformed_to_raster_crs": annotation_summary.get("transformed_to_raster_crs"),
-                    "positive_scene": bool(summary["positive_tiles"] or summary["partial_positive_tiles"]),
-                    "samples": len(scene_records),
-                    **scene_skip_counts,
-                    **summary,
-                }
-            )
-            if config.max_records is not None and len(records) >= config.max_records:
-                records = records[: config.max_records]
-                break
-    finally:
-        for ds in open_datasets.values():
-            ds.close()
+    active_scenes = [scene for scene in scenes if not bool(scene.metadata.get("mosaic_neighbor_only"))]
+    scene_outputs = _build_scene_outputs(active_scenes, annotation, config, train=False)
+    footprints_by_image_path: dict[str, dict[str, Any]] = {}
+    footprint_counter_totals: dict[str, int] = {}
+    build_footprint_total_sec = 0.0
+    build_records_total_sec = 0.0
+    for output in scene_outputs:
+        scene_id = output.scene_id
+        annotation_summary = output.annotation_summary
+        annotation_by_scene[scene_id] = dict(annotation_summary)
+        warnings.extend(output.annotation_warnings)
+        warnings.extend(output.footprint_metadata.get("warnings") or [])
+        footprints_by_image_path[output.image_path] = output.footprint_metadata
+        build_footprint_total_sec += float(output.build_footprint_sec)
+        build_records_total_sec += float(output.build_records_sec)
+        for key, value in output.footprint_counters.items():
+            footprint_counter_totals[key] = int(footprint_counter_totals.get(key, 0)) + int(value)
+        scene_records = list(output.records)
+        scene_skip_counts = dict(output.skip_counts)
+        for key in skip_totals:
+            skip_totals[key] += int(scene_skip_counts.get(key, 0))
+        scene_records.sort(key=lambda item: (item.y, item.x))
+        if config.max_records_per_scene is not None and len(scene_records) > config.max_records_per_scene:
+            scene_records = scene_records[: config.max_records_per_scene]
+        records.extend(scene_records)
+        _log_progress(f"built_val_records scene={scene_id} records={len(scene_records)}")
+        summary = summarize_tile_records(scene_records)
+        scene_reports.append(
+            {
+                "scene": scene_id,
+                "image_path": str(output.image_path),
+                "width": int(output.width),
+                "height": int(output.height),
+                "bands": int(output.bands),
+                "crs": output.crs,
+                "raster_crs": output.crs,
+                "annotation_crs": annotation_summary.get("annotation_crs"),
+                "annotation_crs_source": annotation_summary.get("annotation_crs_source"),
+                "transformed_to_raster_crs": annotation_summary.get("transformed_to_raster_crs"),
+                "positive_scene": bool(summary["positive_tiles"] or summary["partial_positive_tiles"]),
+                "samples": len(scene_records),
+                "footprint_source": output.footprint_metadata.get("source"),
+                "footprint_valid_pixel_share_estimated": output.footprint_metadata.get("valid_pixel_share_estimated"),
+                "build_footprint_sec": output.build_footprint_sec,
+                "build_records_sec": output.build_records_sec,
+                **output.footprint_counters,
+                **scene_skip_counts,
+                **summary,
+            }
+        )
+        if config.max_records is not None and len(records) >= config.max_records:
+            records = records[: config.max_records]
+            break
     return TileRecordBuildResult(
         records=records,
         base_records=records,
@@ -317,6 +292,11 @@ def build_validation_tile_records(
             "effective_samples_per_epoch": len(records),
             "min_valid_pixel_share": config.min_valid_pixel_share,
             "drop_fully_invalid_tiles": config.drop_fully_invalid_tiles,
+            "footprints_by_image_path": footprints_by_image_path,
+            "build_footprint_sec": build_footprint_total_sec,
+            "build_records_sec": build_records_total_sec,
+            "read_valid_mask_calls": 0,
+            **footprint_counter_totals,
             **skip_totals,
         },
     )
@@ -489,6 +469,74 @@ def limit_empty_tile_share(
     ]
 
 
+def _build_scene_outputs(
+    scenes: list[SceneInput],
+    annotation: AnnotationInput,
+    config: TilePreparationConfig,
+    *,
+    train: bool,
+) -> list[_SceneBuildOutput]:
+    total = len(scenes)
+    payloads = [(index, total, scene, annotation, config, train) for index, scene in enumerate(scenes, start=1)]
+    workers = _resolve_record_build_workers(total)
+    if workers > 1 and total > 1:
+        try:
+            with ProcessPoolExecutor(max_workers=workers) as executor:
+                outputs = list(executor.map(_build_scene_output_from_payload, payloads))
+            return sorted(outputs, key=lambda item: item.scene_index)
+        except Exception as exc:  # noqa: BLE001
+            _log_progress(f"parallel_record_build fallback_to_sequential error={type(exc).__name__}: {exc}")
+    return [_build_scene_output_from_payload(payload) for payload in payloads]
+
+
+def _build_scene_output_from_payload(payload: tuple[int, int, SceneInput, AnnotationInput, TilePreparationConfig, bool]) -> _SceneBuildOutput:
+    scene_index, total_scenes, scene, annotation, config, train = payload
+    image_path = _rasterio_path(scene.image_path)
+    scene_id = scene.resolved_scene_id()
+    _log_progress(f"build_{'train' if train else 'val'}_records scene={scene_id} index={scene_index}/{total_scenes}")
+    build_started = time.perf_counter()
+    with rasterio.open(image_path) as ds:
+        annotation_geoms = load_annotation_geometries(annotation, raster_crs=ds.crs)
+        annotation_summary = annotation_geoms.to_dict(annotation.geojson_path)
+        footprint = build_scene_footprint(ds, config, scene_id=scene_id, image_path=image_path)
+        records, skip_counts, counters = _build_scene_records(
+            ds,
+            scene_id,
+            image_path,
+            annotation_geoms,
+            config,
+            footprint=footprint,
+            train=train,
+        )
+        build_records_sec = time.perf_counter() - build_started
+        return _SceneBuildOutput(
+            scene_index=scene_index,
+            scene_id=scene_id,
+            image_path=str(image_path),
+            width=int(ds.width),
+            height=int(ds.height),
+            bands=int(ds.count),
+            crs=str(ds.crs) if ds.crs else None,
+            annotation_summary=annotation_summary,
+            annotation_warnings=list(annotation_geoms.warnings),
+            records=records,
+            skip_counts=skip_counts,
+            footprint_metadata=footprint.to_metadata(),
+            footprint_counters=counters,
+            build_footprint_sec=float(footprint.build_sec),
+            build_records_sec=float(build_records_sec),
+        )
+
+
+def _resolve_record_build_workers(scene_count: int) -> int:
+    raw = os.getenv("MLSYSTEM_TILE_RECORD_WORKERS")
+    if raw is not None and str(raw).strip() != "":
+        return max(0, int(raw))
+    if os.name == "nt":
+        return 0
+    return max(0, min(DEFAULT_RECORD_BUILD_WORKERS, max(0, int(scene_count))))
+
+
 def _build_scene_records(
     ds: Any,
     scene_id: str,
@@ -496,48 +544,57 @@ def _build_scene_records(
     annotation_geoms: AnnotationGeometrySet,
     config: TilePreparationConfig,
     *,
-    neighbor_datasets: list[tuple[str, Any]] | None = None,
-) -> tuple[list[TileSampleRecord], dict[str, int]]:
+    footprint: SceneFootprint,
+    train: bool,
+) -> tuple[list[TileSampleRecord], dict[str, int], dict[str, int]]:
     skip_counts = {"skipped_fully_invalid_tiles": 0, "skipped_low_valid_share_tiles": 0}
     candidates: dict[tuple[int, int, int, int], tuple[TileWindow, set[str]]] = {}
-    for source, stride in (
-        ("positive_dense", config.positive_stride),
-        ("hard_negative_dense", config.hard_negative_stride),
-        ("negative_grid", config.negative_stride),
-    ):
-        for window in generate_window_grid_for_scene(ds.width, ds.height, config.tile_size, stride, scene_id=scene_id):
+    footprint_infos: dict[tuple[int, int, int, int], Any] = {}
+    counter_totals = {
+        "candidate_windows_rectangular": 0,
+        "windows_intersecting_footprint": 0,
+        "skipped_outside_footprint": 0,
+        "fully_inside_footprint_windows": 0,
+        "boundary_footprint_windows": 0,
+    }
+    stride_specs = (
+        (
+            ("positive_dense", config.positive_stride),
+            ("hard_negative_dense", config.hard_negative_stride),
+            ("negative_grid", config.negative_stride),
+        )
+        if train
+        else (("validation_grid", config.stride),)
+    )
+    for source, stride in stride_specs:
+        counters = footprint_window_counters(ds.width, ds.height, config.tile_size, stride, footprint, scene_id)
+        for key, value in counters.items():
+            counter_totals[key] = int(counter_totals.get(key, 0)) + int(value)
+        for window in generate_windows_for_footprint(ds.width, ds.height, config.tile_size, stride, footprint, scene_id):
             key = (window.x, window.y, window.width, window.height)
             existing = candidates.get(key)
             if existing is None:
                 candidates[key] = (window, {source})
+                footprint_infos[key] = window_footprint_intersection(window, footprint)
             else:
                 existing[1].add(source)
+    skip_counts["skipped_fully_invalid_tiles"] += int(counter_totals.get("skipped_outside_footprint", 0))
 
     classified: dict[tuple[int, int, int, int], dict[str, Any]] = {}
     positive_bboxes: list[tuple[int, int, int, int]] = []
     for key, (window, sources) in candidates.items():
-        valid = read_valid_data_mask_with_source(ds, window, mode=config.valid_pixel_mode)
-        valid_mask = valid.mask
+        footprint_info = footprint_infos[key]
+        valid_mask = None if footprint_info.fully_inside else rasterize_footprint_for_window(footprint, window)
         mosaic_sources: list[str] = []
         filled_pixel_count = 0
-        unfilled_pixel_count = int(valid_mask.size - np.count_nonzero(valid_mask))
-        valid_before_mosaic = valid.valid_pixel_share
+        valid_pixel_count = int(window.width * window.height) if valid_mask is None else int(np.count_nonzero(valid_mask))
+        unfilled_pixel_count = int(window.width * window.height) - valid_pixel_count
+        valid_before_mosaic = 1.0 if valid_mask is None else (float(valid_pixel_count) / float(max(1, int(window.width * window.height))))
         mosaic_candidate_neighbors = 0
         mosaic_intersecting_neighbors = 0
         mosaic_actually_used_neighbors: list[str] = []
         mosaic_skipped_non_intersecting_neighbors = 0
-        if config.mosaic_enabled and neighbor_datasets:
-            mosaic = read_mosaic_window(ds, neighbor_datasets, window, config)
-            valid_mask = mosaic.valid_mask
-            mosaic_sources = mosaic.source_scenes
-            filled_pixel_count = mosaic.filled_pixel_count
-            unfilled_pixel_count = mosaic.unfilled_pixel_count
-            valid_before_mosaic = mosaic.anchor_valid_pixel_share
-            mosaic_candidate_neighbors = mosaic.candidate_neighbors
-            mosaic_intersecting_neighbors = mosaic.intersecting_neighbors
-            mosaic_actually_used_neighbors = mosaic.actually_used_neighbors
-            mosaic_skipped_non_intersecting_neighbors = mosaic.skipped_non_intersecting_neighbors
-        final_valid_share = float(np.count_nonzero(valid_mask)) / float(valid_mask.size) if valid_mask.size else 0.0
+        final_valid_share = valid_before_mosaic
         if config.drop_fully_invalid_tiles and final_valid_share <= 0.0:
             skip_counts["skipped_fully_invalid_tiles"] += 1
             continue
@@ -566,7 +623,7 @@ def _build_scene_records(
             "valid_pixel_share_before_mosaic": valid_before_mosaic,
             "mask_pixels_before_valid_clip": mask_result.raw_positive_pixels,
             "mask_pixels_after_valid_clip": mask_result.clipped_positive_pixels,
-            "valid_data_source": valid.source,
+            "valid_data_source": footprint.source,
             "mosaic_sources": mosaic_sources,
             "mosaic_filled_pixel_count": filled_pixel_count,
             "mosaic_unfilled_pixel_count": unfilled_pixel_count,
@@ -574,6 +631,7 @@ def _build_scene_records(
             "mosaic_intersecting_neighbors": mosaic_intersecting_neighbors,
             "mosaic_actually_used_neighbors": mosaic_actually_used_neighbors,
             "mosaic_skipped_non_intersecting_neighbors": mosaic_skipped_non_intersecting_neighbors,
+            "footprint_info": footprint_info,
         }
 
     records: list[TileSampleRecord] = []
@@ -582,19 +640,24 @@ def _build_scene_records(
         window = item["window"]
         sources = item["sources"]
         kind: TileKind = item["kind"]
-        source = "negative_grid"
+        source = "negative_grid" if train else "validation_grid"
         if kind in {"positive", "partial_positive"}:
-            if "positive_dense" not in sources and "negative_grid" not in sources:
-                continue
-            source = "positive_dense" if "positive_dense" in sources else "negative_grid"
+            if train:
+                if "positive_dense" not in sources and "negative_grid" not in sources:
+                    continue
+                source = "positive_dense" if "positive_dense" in sources else "negative_grid"
+            else:
+                source = "validation_grid"
         else:
-            if _is_hard_negative((window.x, window.y, window.x + window.width, window.y + window.height), positive_bboxes, context_px):
+            if train and _is_hard_negative((window.x, window.y, window.x + window.width, window.y + window.height), positive_bboxes, context_px):
                 kind = "hard_negative"
                 if "hard_negative_dense" not in sources and "negative_grid" not in sources:
                     continue
                 source = "hard_negative_dense" if "hard_negative_dense" in sources else "negative_grid"
-            elif "negative_grid" not in sources:
+            elif train and "negative_grid" not in sources:
                 continue
+            elif not train:
+                kind = "negative"
         records.append(
             TileSampleRecord(
                 scene_id=scene_id,
@@ -624,11 +687,12 @@ def _build_scene_records(
                     "mosaic_intersecting_neighbors": item["mosaic_intersecting_neighbors"],
                     "mosaic_actually_used_neighbors": item["mosaic_actually_used_neighbors"],
                     "mosaic_skipped_non_intersecting_neighbors": item["mosaic_skipped_non_intersecting_neighbors"],
+                    **footprint_record_metadata(footprint, item["footprint_info"]),
                 },
             )
         )
     records.sort(key=lambda item: (_kind_priority(item.kind), item.y, item.x, item.stride))
-    return records, skip_counts
+    return records, skip_counts, counter_totals
 
 
 def classify_mask(mask: np.ndarray, config: TilePreparationConfig) -> tuple[TileKind, int]:

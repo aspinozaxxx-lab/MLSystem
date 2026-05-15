@@ -99,3 +99,38 @@ val_loader = TilePreparationFacade.val_dataloader(bundle, batch_size=4, workers=
 
 Per-sample timings живут в `ReadyTileSample.metadata["tile_prep_profile"]` только при `MLSYSTEM_TILE_PREP_PROFILE=1`.
 Основные поля: `read_valid_mask_sec`, `read_image_sec`, `normalize_sec`, `geometry_index_query_sec`, `rasterize_sec`, `augmentation_sec`, `mosaic_sec`, `total_getitem_sec`.
+
+## SceneFootprint и grid по покрытию
+
+`tile_preparation` строит internal `SceneFootprint` один раз на сцену. Footprint описывает фактическое покрытие raster в pixel coordinates и raster CRS.
+
+Источники footprint:
+
+- `dataset_mask`;
+- alpha band;
+- nodata/read masks;
+- fallback `nonzero_any` для снимков с черным фоном.
+
+Если mask source не дает полезный контур, модуль переходит к `nonzero_any`. Для больших raster footprint читается как downsample/overview и затем переводится обратно в pixel coordinates.
+
+Window grid остается регулярным, но records создаются только для окон, которые пересекают `SceneFootprint.polygon_pixel`.
+Окна полностью вне footprint не создаются и не доходят до `TrainingTileDataset`.
+
+Boundary tile сохраняется, если пересекает footprint. Для такого окна valid mask строится rasterization footprint polygon в grid окна. Raster pixels для valid mask не читаются.
+Fully-inside tile считается полностью валидным и не читает valid mask.
+
+Per-window `read_valid_data_mask_with_source` в build records является только fallback для старых records без footprint metadata.
+
+Scene reports и metadata содержат:
+
+- `candidate_windows_rectangular`;
+- `windows_intersecting_footprint`;
+- `skipped_outside_footprint`;
+- `fully_inside_footprint_windows`;
+- `boundary_footprint_windows`;
+- `build_footprint_sec`;
+- `build_records_sec`;
+- `read_valid_mask_calls`.
+
+Параллельный build scene records включается внутри модуля через `MLSYSTEM_TILE_RECORD_WORKERS`.
+На Windows default последовательный; на Linux default ограничен количеством сцен и CPU, максимум 16.

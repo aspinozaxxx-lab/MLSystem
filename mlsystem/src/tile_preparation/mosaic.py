@@ -10,6 +10,7 @@ from rasterio.warp import transform_bounds
 from rasterio.windows import Window
 
 from .config import TilePreparationConfig
+from .footprint import SceneFootprint, rasterize_footprint_for_window
 from .records import TileSampleRecord, TileWindow
 from .validity import read_valid_data_mask_with_source
 
@@ -37,11 +38,20 @@ def read_mosaic_window(
     neighbor_datasets: list[tuple[str, Any]],
     record: TileWindow | TileSampleRecord,
     config: TilePreparationConfig,
+    *,
+    anchor_footprint: SceneFootprint | None = None,
 ) -> MosaicReadResult:
     raster_window = Window(int(record.x), int(record.y), int(record.width), int(record.height))
     image = anchor_ds.read(_bands(anchor_ds, config), window=raster_window, boundless=True, fill_value=0)
-    anchor_valid = read_valid_data_mask_with_source(anchor_ds, raster_window, mode=config.valid_pixel_mode)
-    valid = anchor_valid.mask.astype("uint8", copy=True)
+    if anchor_footprint is not None:
+        valid = rasterize_footprint_for_window(anchor_footprint, record).astype("uint8", copy=True)
+        anchor_valid_share = float(np.count_nonzero(valid)) / int(valid.size) if valid.size else 0.0
+        anchor_valid_source = anchor_footprint.source
+    else:
+        anchor_valid = read_valid_data_mask_with_source(anchor_ds, raster_window, mode=config.valid_pixel_mode)
+        valid = anchor_valid.mask.astype("uint8", copy=True)
+        anchor_valid_share = anchor_valid.valid_pixel_share
+        anchor_valid_source = anchor_valid.source
     source_map = np.zeros(valid.shape, dtype="uint16")
     source_map[valid > 0] = 1
     source_scenes = [str(getattr(record, "scene_id", "") or "anchor")]
@@ -61,9 +71,9 @@ def read_mosaic_window(
             filled_pixel_count=0,
             unfilled_pixel_count=int(valid.size - np.count_nonzero(valid)),
             warnings=warnings,
-            anchor_valid_pixel_share=anchor_valid.valid_pixel_share,
-            final_valid_pixel_share=anchor_valid.valid_pixel_share,
-            valid_data_source=anchor_valid.source,
+            anchor_valid_pixel_share=anchor_valid_share,
+            final_valid_pixel_share=anchor_valid_share,
+            valid_data_source=anchor_valid_source,
             candidate_neighbors=candidate_neighbors,
             intersecting_neighbors=0,
             actually_used_neighbors=[],
@@ -120,9 +130,9 @@ def read_mosaic_window(
         filled_pixel_count=filled,
         unfilled_pixel_count=int(valid.size - np.count_nonzero(valid)),
         warnings=warnings,
-        anchor_valid_pixel_share=anchor_valid.valid_pixel_share,
+        anchor_valid_pixel_share=anchor_valid_share,
         final_valid_pixel_share=final_share,
-        valid_data_source=anchor_valid.source,
+        valid_data_source=anchor_valid_source,
         candidate_neighbors=candidate_neighbors,
         intersecting_neighbors=intersecting_neighbors,
         actually_used_neighbors=actually_used_neighbors,

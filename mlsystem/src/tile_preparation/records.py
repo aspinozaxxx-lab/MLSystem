@@ -82,6 +82,10 @@ class TileSampleRecord:
             "source": self.source,
             "base_record_id": self.base_record_id,
             "repeat_index": self.repeat_index,
+            "footprint_fully_inside": bool(metadata.get("footprint_fully_inside", False)),
+            "footprint_valid_share_estimated": float(metadata.get("footprint_valid_share_estimated", self.valid_pixel_share) or 0.0),
+            "footprint_source": metadata.get("footprint_source"),
+            "footprint_boundary": bool(metadata.get("footprint_boundary", False)),
             "metadata": metadata,
         }
 

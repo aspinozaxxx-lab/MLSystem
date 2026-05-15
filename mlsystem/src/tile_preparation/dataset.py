@@ -12,6 +12,7 @@ import torch
 from .annotations import load_annotation_geometries
 from .augmentations import apply_training_augmentation
 from .config import AnnotationInput, SceneInput, TilePreparationConfig
+from .footprint import SceneFootprint, rasterize_footprint_for_window
 from .geometry_index import GeometryWindowIndex
 from .iterator import build_tile_records, build_validation_tile_records
 from .mask_rasterizer import rasterize_mask_for_window
@@ -49,6 +50,7 @@ class TrainingTileDataset(torch.utils.data.Dataset):
         self._annotation_cache: dict[str, Any] = {}
         self._geometry_index_cache: dict[str, GeometryWindowIndex] = {}
         self._scene_stats_cache: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+        self._footprint_cache: dict[str, SceneFootprint] = {}
         self._profile = TilePrepProfiler()
         self._scene_id_by_path = {str(scene.image_path): scene.resolved_scene_id() for scene in scenes}
         self._epoch = 0
@@ -71,7 +73,13 @@ class TrainingTileDataset(torch.utils.data.Dataset):
         mosaic_metadata: dict[str, Any] = {}
         if self.config.mosaic_enabled:
             with self._profile.time_sample("mosaic_sec", sample_profile):
-                mosaic = read_mosaic_window(ds, self._neighbor_datasets(record.image_path), record, self.config)
+                mosaic = read_mosaic_window(
+                    ds,
+                    self._neighbor_datasets(record.image_path),
+                    record,
+                    self.config,
+                    anchor_footprint=self._footprint(record.image_path),
+                )
             valid_mask = mosaic.valid_mask
             with self._profile.time_sample("normalize_sec", sample_profile):
                 image = format_training_image(mosaic.image, self.config, scene_stats=self._scene_stats(record.image_path, ds))
@@ -89,14 +97,11 @@ class TrainingTileDataset(torch.utils.data.Dataset):
             }
             valid_source = mosaic.valid_data_source
         else:
-            with self._profile.time_sample("read_valid_mask_sec", sample_profile):
-                valid = read_valid_data_mask_with_source(ds, record, mode=self.config.valid_pixel_mode)
-            valid_mask = valid.mask
+            valid_mask, valid_source = self._valid_mask_for_record(ds, record, sample_profile)
             with self._profile.time_sample("read_image_sec", sample_profile):
                 arr = read_band_window(ds, record, bands=self.config.input_bands)
             with self._profile.time_sample("normalize_sec", sample_profile):
                 image = format_training_image(arr, self.config, scene_stats=self._scene_stats(record.image_path, ds))
-            valid_source = valid.source
         with self._profile.time_sample("rasterize_sec", sample_profile):
             mask_result = rasterize_mask_for_window(
                 ds,
@@ -148,6 +153,7 @@ class TrainingTileDataset(torch.utils.data.Dataset):
         state["_annotation_cache"] = {}
         state["_geometry_index_cache"] = {}
         state["_scene_stats_cache"] = {}
+        state["_footprint_cache"] = {}
         state["_profile"] = TilePrepProfiler()
         return state
 
@@ -169,6 +175,7 @@ class TrainingTileDataset(torch.utils.data.Dataset):
         self._annotation_cache.clear()
         self._geometry_index_cache.clear()
         self._scene_stats_cache.clear()
+        self._footprint_cache.clear()
 
     def profile_summary(self, *, reset: bool = False) -> dict[str, float]:
         return self._profile.summary(reset=reset)
@@ -215,6 +222,29 @@ class TrainingTileDataset(torch.utils.data.Dataset):
             cached = compute_scene_percentile_stats(ds, bands=self.config.input_bands)
             self._scene_stats_cache[image_path] = cached
         return cached
+
+    def _valid_mask_for_record(self, ds: Any, record: TileSampleRecord, sample_profile: dict[str, float]) -> tuple[np.ndarray | None, str]:
+        mode = str(record.metadata.get("footprint_valid_mask_mode") or "")
+        if mode == "full":
+            return None, str(record.metadata.get("footprint_source") or "footprint")
+        if mode == "footprint_boundary":
+            footprint = self._footprint(record.image_path or "")
+            if footprint is not None:
+                return rasterize_footprint_for_window(footprint, record), str(record.metadata.get("footprint_source") or footprint.source)
+        with self._profile.time_sample("read_valid_mask_sec", sample_profile):
+            valid = read_valid_data_mask_with_source(ds, record, mode=self.config.valid_pixel_mode)
+        return valid.mask, f"{valid.source}:fallback"
+
+    def _footprint(self, image_path: str) -> SceneFootprint | None:
+        cached = self._footprint_cache.get(image_path)
+        if cached is not None:
+            return cached
+        payload = (self.metadata.get("footprints_by_image_path") or {}).get(image_path)
+        if not isinstance(payload, dict):
+            return None
+        footprint = SceneFootprint.from_metadata(payload)
+        self._footprint_cache[image_path] = footprint
+        return footprint
 
 
 def iter_dataset_batches(
