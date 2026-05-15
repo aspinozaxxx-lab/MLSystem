@@ -61,6 +61,7 @@ class TrainingTileDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, index: int) -> ReadyTileSample:
         item_started = time.perf_counter()
+        sample_profile: dict[str, float] = {}
         index = int(index)
         record = self.records[index]
         if not record.image_path:
@@ -69,10 +70,10 @@ class TrainingTileDataset(torch.utils.data.Dataset):
         annotation_geoms = self._annotation_geometries(record.image_path, ds)
         mosaic_metadata: dict[str, Any] = {}
         if self.config.mosaic_enabled:
-            with self._profile.time("mosaic_sec"):
+            with self._profile.time_sample("mosaic_sec", sample_profile):
                 mosaic = read_mosaic_window(ds, self._neighbor_datasets(record.image_path), record, self.config)
             valid_mask = mosaic.valid_mask
-            with self._profile.time("normalize_sec"):
+            with self._profile.time_sample("normalize_sec", sample_profile):
                 image = format_training_image(mosaic.image, self.config, scene_stats=self._scene_stats(record.image_path, ds))
             mosaic_metadata = {
                 "mosaic_sources": mosaic.source_scenes,
@@ -88,15 +89,15 @@ class TrainingTileDataset(torch.utils.data.Dataset):
             }
             valid_source = mosaic.valid_data_source
         else:
-            with self._profile.time("read_valid_mask_sec"):
+            with self._profile.time_sample("read_valid_mask_sec", sample_profile):
                 valid = read_valid_data_mask_with_source(ds, record, mode=self.config.valid_pixel_mode)
             valid_mask = valid.mask
-            with self._profile.time("read_image_sec"):
+            with self._profile.time_sample("read_image_sec", sample_profile):
                 arr = read_band_window(ds, record, bands=self.config.input_bands)
-            with self._profile.time("normalize_sec"):
+            with self._profile.time_sample("normalize_sec", sample_profile):
                 image = format_training_image(arr, self.config, scene_stats=self._scene_stats(record.image_path, ds))
             valid_source = valid.source
-        with self._profile.time("rasterize_sec"):
+        with self._profile.time_sample("rasterize_sec", sample_profile):
             mask_result = rasterize_mask_for_window(
                 ds,
                 annotation_geoms.geometries,
@@ -104,6 +105,7 @@ class TrainingTileDataset(torch.utils.data.Dataset):
                 all_touched=self.config.all_touched,
                 valid_mask=valid_mask if self.config.clip_mask_to_valid_data else None,
                 geometry_index=self._geometry_index(record.image_path, annotation_geoms.geometries),
+                profile=sample_profile if self._profile.enabled else None,
             )
         mask = mask_result.mask
         metadata: dict[str, Any] = {
@@ -116,7 +118,7 @@ class TrainingTileDataset(torch.utils.data.Dataset):
             **mosaic_metadata,
         }
         if self.train and self.config.apply_random_augmentations and any(bool(value) for value in (self.config.augmentations or {}).values()):
-            with self._profile.time("augmentation_sec"):
+            with self._profile.time_sample("augmentation_sec", sample_profile):
                 image, mask, augmentation_metadata = apply_training_augmentation(
                     image,
                     mask,
@@ -133,7 +135,11 @@ class TrainingTileDataset(torch.utils.data.Dataset):
         else:
             raise ValueError(f"unexpected image shape for {record.record_id}: {image.shape}")
         out_mask = mask.astype("float32")[None, :, :]
-        self._profile.add("total_getitem_sec", time.perf_counter() - item_started)
+        total_getitem_sec = time.perf_counter() - item_started
+        self._profile.add("total_getitem_sec", total_getitem_sec)
+        if self._profile.enabled:
+            sample_profile["total_getitem_sec"] = float(total_getitem_sec)
+            metadata["tile_prep_profile"] = dict(sample_profile)
         return ReadyTileSample(image=out_image, mask=out_mask, record=record, metadata=metadata)
 
     def __getstate__(self) -> dict[str, Any]:

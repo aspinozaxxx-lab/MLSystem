@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import platform
 import random
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
@@ -38,6 +39,12 @@ def tile_collate_fn(samples: list[ReadyTileSample]) -> tuple[list[int], torch.Te
     return indices, x, y
 
 
+def tile_collate_with_metadata_fn(samples: list[ReadyTileSample]) -> tuple[list[int], torch.Tensor, torch.Tensor, list[dict[str, Any]]]:
+    indices, x, y = tile_collate_fn(samples)
+    metadata = [dict(sample.metadata) for sample in samples]
+    return indices, x, y, metadata
+
+
 def tile_worker_init_fn(worker_id: int) -> None:
     seed = (torch.initial_seed() + int(worker_id)) % (2**32)
     random.seed(seed)
@@ -57,6 +64,7 @@ def make_tile_dataloader(
     prefetch_factor: int | None = None,
     pin_memory: bool = True,
     persistent_workers: bool = True,
+    collate_fn: Callable[[list[ReadyTileSample]], Any] = tile_collate_fn,
 ) -> torch.utils.data.DataLoader:
     resolved_workers = resolve_worker_count(workers)
     resolved_prefetch = resolve_prefetch_factor(resolved_workers, prefetch_factor)
@@ -66,7 +74,7 @@ def make_tile_dataloader(
         "batch_size": max(1, int(batch_size)),
         "shuffle": bool(shuffle),
         "num_workers": resolved_workers,
-        "collate_fn": tile_collate_fn,
+        "collate_fn": collate_fn,
         "pin_memory": bool(pin_memory),
         "generator": generator,
     }

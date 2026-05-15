@@ -213,3 +213,29 @@ The returned batch format stays compatible with the old iterator: `indices: list
 - `scene_percentile` - approximate per-scene percentile stats cached per worker.
 
 Default is `uint8_255`.
+
+## Локальное профилирование
+
+Короткий profiler-run для разложения времени подготовки batch и GPU step:
+
+```powershell
+python scripts\profile_tile_training_local.py `
+  --images-root D:\Projects\TestDataset `
+  --train-scene-list D:\Projects\TestDataset\train.txt `
+  --val-scene-list D:\Projects\TestDataset\val.txt `
+  --annotation D:\Projects\TestDataset\deforestation.geojson `
+  --tile-size 512 `
+  --stride 512 `
+  --augmentation-level 1 `
+  --batch-size 2 `
+  --workers 0,2 `
+  --prefetch-factor 2 `
+  --max-runtime-sec 45 `
+  --max-batches 30 `
+  --device cuda `
+  --output-dir outputs\debug_tile_prep_profile
+```
+
+Script пишет `profile_summary.json`, `profile_batches.csv`, `profile_functions.csv` и `profile_report.md`.
+Он включает `MLSYSTEM_TILE_PREP_PROFILE=1` и собирает per-sample timings через `ReadyTileSample.metadata["tile_prep_profile"]`.
+Production collate остаётся совместимым: обычный DataLoader возвращает только `indices, x, y`; metadata используется отдельным debug collate внутри profiler script.

@@ -91,3 +91,11 @@ bundle = TilePreparationFacade.build_datasets(...)
 train_loader = TilePreparationFacade.train_dataloader(bundle, batch_size=4, workers=4)
 val_loader = TilePreparationFacade.val_dataloader(bundle, batch_size=4, workers=4)
 ```
+
+## Локальный profiler
+
+`scripts/profile_tile_training_local.py` использует тот же `TrainingTileDataset`, но включает debug collate с metadata, чтобы увидеть внутренние тайминги даже при `workers > 0`.
+Это не расширяет публичный фасад: production DataLoader по-прежнему возвращает `indices, x, y`.
+
+Per-sample timings живут в `ReadyTileSample.metadata["tile_prep_profile"]` только при `MLSYSTEM_TILE_PREP_PROFILE=1`.
+Основные поля: `read_valid_mask_sec`, `read_image_sec`, `normalize_sec`, `geometry_index_query_sec`, `rasterize_sec`, `augmentation_sec`, `mosaic_sec`, `total_getitem_sec`.

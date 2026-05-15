@@ -36,6 +36,19 @@ class TilePrepProfiler:
         finally:
             self.add(name, time.perf_counter() - started)
 
+    @contextmanager
+    def time_sample(self, name: str, sample_values: dict[str, float]) -> Iterator[None]:
+        if not self.enabled:
+            yield
+            return
+        started = time.perf_counter()
+        try:
+            yield
+        finally:
+            seconds = time.perf_counter() - started
+            self.add(name, seconds)
+            sample_values[str(name)] = float(sample_values.get(str(name), 0.0)) + float(seconds)
+
     def summary(self, *, reset: bool = False) -> dict[str, float]:
         if not self.enabled:
             return {}
