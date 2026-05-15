@@ -8,6 +8,8 @@ from rasterio.enums import Resampling
 from rasterio.vrt import WarpedVRT
 from rasterio.warp import transform_bounds
 from rasterio.windows import Window
+from shapely.geometry import box
+from shapely.ops import transform as shapely_transform
 
 from .config import TilePreparationConfig
 from .footprint import SceneFootprint, rasterize_footprint_for_window
@@ -40,6 +42,7 @@ def read_mosaic_window(
     config: TilePreparationConfig,
     *,
     anchor_footprint: SceneFootprint | None = None,
+    neighbor_footprints: dict[str, SceneFootprint] | None = None,
 ) -> MosaicReadResult:
     raster_window = Window(int(record.x), int(record.y), int(record.width), int(record.height))
     image = anchor_ds.read(_bands(anchor_ds, config), window=raster_window, boundless=True, fill_value=0)
@@ -86,12 +89,7 @@ def read_mosaic_window(
         if config.mosaic_require_same_crs and neighbor_ds.crs != anchor_ds.crs:
             warnings.append(f"mosaic skipped {scene_id}: CRS differs from anchor")
             continue
-        try:
-            neighbor_bounds = _neighbor_bounds_in_anchor_crs(neighbor_ds, anchor_ds.crs)
-        except Exception as exc:  # noqa: BLE001
-            warnings.append(f"mosaic skipped {scene_id}: bounds transform failed: {type(exc).__name__}: {exc}")
-            continue
-        if not _bounds_intersect(target_bounds, neighbor_bounds):
+        if not _neighbor_intersects_target(scene_id, neighbor_ds, anchor_ds, target_bounds, neighbor_footprints):
             skipped_non_intersecting_neighbors += 1
             continue
         intersecting_neighbors += 1
@@ -174,6 +172,37 @@ def _neighbor_bounds_in_anchor_crs(neighbor_ds: Any, anchor_crs: Any) -> tuple[f
             )
         )
     return (float(bounds.left), float(bounds.bottom), float(bounds.right), float(bounds.top))
+
+
+def _neighbor_intersects_target(
+    scene_id: str,
+    neighbor_ds: Any,
+    anchor_ds: Any,
+    target_bounds: tuple[float, float, float, float],
+    neighbor_footprints: dict[str, SceneFootprint] | None,
+) -> bool:
+    footprint = (neighbor_footprints or {}).get(str(scene_id))
+    target = box(*target_bounds)
+    if footprint is not None and footprint.polygon_raster_crs is not None:
+        polygon = footprint.polygon_raster_crs
+        if neighbor_ds.crs and anchor_ds.crs and neighbor_ds.crs != anchor_ds.crs:
+            try:
+                from pyproj import Transformer
+
+                transformer = Transformer.from_crs(neighbor_ds.crs, anchor_ds.crs, always_xy=True)
+                polygon = shapely_transform(transformer.transform, polygon)
+            except Exception:  # noqa: BLE001
+                polygon = None
+        if polygon is not None:
+            try:
+                return bool(polygon.intersects(target))
+            except Exception:  # noqa: BLE001
+                pass
+    try:
+        neighbor_bounds = _neighbor_bounds_in_anchor_crs(neighbor_ds, anchor_ds.crs)
+    except Exception:  # noqa: BLE001
+        return False
+    return _bounds_intersect(target_bounds, neighbor_bounds)
 
 
 def _bounds_intersect(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> bool:

@@ -50,6 +50,7 @@ class SceneFootprint:
             "raster_height": int(self.raster_height),
             "raster_crs": self.raster_crs,
             "source": self.source,
+            "polygon_raster_crs_wkt": self.polygon_raster_crs.wkt if self.polygon_raster_crs is not None else None,
             "polygon_pixel_wkt": self.polygon_pixel.wkt,
             "bounds_pixel": list(self.bounds_pixel),
             "area_pixels_estimated": float(self.area_pixels_estimated),
@@ -61,6 +62,7 @@ class SceneFootprint:
     @classmethod
     def from_metadata(cls, payload: dict[str, Any]) -> "SceneFootprint":
         polygon_pixel = wkt.loads(str(payload["polygon_pixel_wkt"]))
+        polygon_raster_text = payload.get("polygon_raster_crs_wkt")
         return cls(
             scene_id=str(payload.get("scene_id") or ""),
             image_path=str(payload.get("image_path") or ""),
@@ -68,7 +70,7 @@ class SceneFootprint:
             raster_height=int(payload.get("raster_height") or 0),
             raster_crs=payload.get("raster_crs"),
             source=str(payload.get("source") or "metadata"),
-            polygon_raster_crs=None,
+            polygon_raster_crs=wkt.loads(str(polygon_raster_text)) if polygon_raster_text else None,
             polygon_pixel=polygon_pixel,
             bounds_pixel=tuple(int(value) for value in payload.get("bounds_pixel", (0, 0, 0, 0))),
             area_pixels_estimated=float(payload.get("area_pixels_estimated") or 0.0),

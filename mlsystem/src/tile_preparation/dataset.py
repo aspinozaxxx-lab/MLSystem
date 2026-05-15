@@ -79,6 +79,7 @@ class TrainingTileDataset(torch.utils.data.Dataset):
                     record,
                     self.config,
                     anchor_footprint=self._footprint(record.image_path),
+                    neighbor_footprints=self._neighbor_footprints(record.image_path),
                 )
             valid_mask = mosaic.valid_mask
             with self._profile.time_sample("normalize_sec", sample_profile):
@@ -199,6 +200,19 @@ class TrainingTileDataset(torch.utils.data.Dataset):
                 continue
             neighbors.append((scene.resolved_scene_id(), self._dataset(path)))
         return neighbors
+
+    def _neighbor_footprints(self, image_path: str) -> dict[str, SceneFootprint]:
+        if not self.config.mosaic_enabled:
+            return {}
+        footprints: dict[str, SceneFootprint] = {}
+        for scene in self.scenes:
+            path = str(scene.image_path)
+            if path == image_path:
+                continue
+            footprint = self._footprint(path)
+            if footprint is not None:
+                footprints[scene.resolved_scene_id()] = footprint
+        return footprints
 
     def _annotation_geometries(self, image_path: str, ds: Any) -> Any:
         cached = self._annotation_cache.get(image_path)
