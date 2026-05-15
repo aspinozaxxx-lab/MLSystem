@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import os
 from dataclasses import dataclass
@@ -39,6 +39,7 @@ class FrontendConfig:
     )
     grafana_url: str = os.getenv("FRONTEND_GRAFANA_URL", "/grafana/")
     prometheus_url: str = os.getenv("FRONTEND_PROMETHEUS_URL", "/prometheus/")
+    jupyter_url: str = os.getenv("FRONTEND_JUPYTER_URL", "/jupyter/")
     grafana_main_dashboard_url: str = os.getenv(
         "FRONTEND_GRAFANA_MAIN_DASHBOARD_URL",
         "/grafana/d/mlsystem-overview/mlsystem-overview?orgId=1&kiosk",

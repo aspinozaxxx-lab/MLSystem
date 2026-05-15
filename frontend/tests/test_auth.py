@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import tempfile
@@ -69,6 +69,8 @@ class FrontendAuthTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertNotIn("Airflow", response.text)
             self.assertIn("MLflow", response.text)
+            self.assertIn("JupyterLab", response.text)
+            self.assertIn("Запуск ноутбуков и Python-кода на GPU-сервере", response.text)
             self.assertIn("MinIO artifacts", response.text)
             self.assertIn("Очереди RabbitMQ", response.text)
             self.assertIn("Мониторинг MLSystem", response.text)
@@ -78,6 +80,7 @@ class FrontendAuthTests(unittest.TestCase):
             self.assertIn("Prometheus", response.text)
             self.assertNotIn('/airflow/"', response.text)
             self.assertIn('/mlflow/"', response.text)
+            self.assertIn('/jupyter/"', response.text)
             self.assertIn('/minio-browser/"', response.text)
             self.assertIn('/rabbitmq/"', response.text)
             self.assertIn('/grafana/"', response.text)

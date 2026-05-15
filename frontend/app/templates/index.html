@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+﻿{% extends "base.html" %}
 {% block title %}MLSystem{% endblock %}
 {% block content %}
 <section class="hero">
@@ -58,6 +58,11 @@
   <a class="card active" href="{{ mlflow_ui_url }}">
     <h2>MLflow</h2>
     <p>Эксперименты, runs, метрики и артефакты моделей.</p>
+  </a>
+
+  <a class="card active" href="{{ jupyter_url }}">
+    <h2>JupyterLab</h2>
+    <p>Запуск ноутбуков и Python-кода на GPU-сервере</p>
   </a>
 
   <a class="card active" href="{{ minio_ui_url }}">

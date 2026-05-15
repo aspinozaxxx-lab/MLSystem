@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import logging
@@ -115,6 +115,7 @@ def create_app(config: FrontendConfig | None = None) -> FastAPI:
                 "rabbitmq_management_url": config.rabbitmq_management_url,
                 "grafana_url": config.grafana_url,
                 "prometheus_url": config.prometheus_url,
+                "jupyter_url": config.jupyter_url,
                 "grafana_main_dashboard_url": config.grafana_main_dashboard_url,
             },
         )

@@ -1,4 +1,4 @@
-# Changelog
+﻿# Changelog
 
 ## 2026-05-15
 
@@ -50,3 +50,7 @@
 - V `finalize_mlflow_run` dobavlena avtomaticheskaya ochistka runtime intermediates posle logirovaniya finalnyh artifacts; ee mozhno otklyuchit cherez `pseudolabel.cleanup_intermediates=false`.
 - Dobavlen Airflow maintenance DAG `mlsystem_maintenance_cleanup`: ezhednevno chistit starye runtime intermediates, lokalnyy S3 cache i starye Airflow logs bez udaleniya MinIO/MLflow/finalnyh artifacts.
 - Provereny lokalnye komandy `compileall` i `unittest`.
+
+## 2026-05-15 JupyterLab
+
+- Dobavleny frontend card `JupyterLab`, env `FRONTEND_JUPYTER_URL` i nginx route `/jupyter/` s frontend `auth_request`, WebSocket proxy i upstream `mlsystem-gpu-jupyter:8888`.

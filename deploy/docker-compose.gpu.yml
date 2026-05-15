@@ -1,4 +1,4 @@
-services:
+﻿services:
   minio:
     image: ${MINIO_IMAGE:-minio/minio:RELEASE.2024-01-11T07-46-16Z}
     container_name: mlsystem-gpu-minio
@@ -567,6 +567,7 @@ services:
       MLSYSTEM_MLMARKUP_REPO_PATH: /data/MLMarkup
       FRONTEND_GRAFANA_URL: ${FRONTEND_GRAFANA_URL:-/grafana/}
       FRONTEND_PROMETHEUS_URL: ${FRONTEND_PROMETHEUS_URL:-/prometheus/}
+      FRONTEND_JUPYTER_URL: ${FRONTEND_JUPYTER_URL:-/jupyter/}
       FRONTEND_GRAFANA_MAIN_DASHBOARD_URL: ${FRONTEND_GRAFANA_MAIN_DASHBOARD_URL:-/grafana/d/mlsystem-overview/mlsystem-overview?orgId=1&kiosk}
       MLSYSTEM_RUN_ROOT: /data/mlsystem/runs
     command:
