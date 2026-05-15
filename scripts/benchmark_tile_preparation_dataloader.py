@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import statistics
 import sys
 import time
@@ -109,6 +110,7 @@ def _benchmark_workers(bundle: Any, *, batch_size: int, workers: int, prefetch_f
     batch_times: list[float] = []
     sample_count = 0
     batch_count = 0
+    resources_before = _resource_snapshot()
     started = time.perf_counter()
     iterator = iter(loader)
     while batch_count < max(1, int(batches)):
@@ -121,6 +123,7 @@ def _benchmark_workers(bundle: Any, *, batch_size: int, workers: int, prefetch_f
         sample_count += int(y.shape[0])
         batch_count += 1
     wall_sec = time.perf_counter() - started
+    resources_after = _resource_snapshot()
     ordered = sorted(batch_times)
     return {
         "workers": int(workers),
@@ -133,6 +136,15 @@ def _benchmark_workers(bundle: Any, *, batch_size: int, workers: int, prefetch_f
         "first_batch_sec": batch_times[0] if batch_times else 0.0,
         "median_batch_sec": statistics.median(ordered) if ordered else 0.0,
         "p95_batch_sec": _percentile(ordered, 0.95) if ordered else 0.0,
+        "max_batch_sec": max(ordered) if ordered else 0.0,
+        "cpu_load1_before": resources_before.get("cpu_load1"),
+        "cpu_load1_after": resources_after.get("cpu_load1"),
+        "cpu_load1_pct_of_cores_before": resources_before.get("cpu_load1_pct_of_cores"),
+        "cpu_load1_pct_of_cores_after": resources_after.get("cpu_load1_pct_of_cores"),
+        "ram_used_pct_before": resources_before.get("ram_used_pct"),
+        "ram_used_pct_after": resources_after.get("ram_used_pct"),
+        "resources_before": resources_before,
+        "resources_after": resources_after,
         "train_records": len(bundle.train_dataset),
         **_record_counts(bundle.train_dataset.records),
         "skipped_fully_invalid_tiles": int(bundle.train_dataset.metadata.get("skipped_fully_invalid_tiles", 0)),
@@ -187,6 +199,44 @@ def _percentile(ordered: list[float], q: float) -> float:
     upper = min(len(ordered) - 1, lower + 1)
     fraction = position - lower
     return ordered[lower] * (1.0 - fraction) + ordered[upper] * fraction
+
+
+def _resource_snapshot() -> dict[str, Any]:
+    cpu_count = os.cpu_count() or 1
+    try:
+        load1, load5, load15 = os.getloadavg()
+    except (AttributeError, OSError):
+        load1 = load5 = load15 = 0.0
+    memory = _memory_snapshot()
+    return {
+        "cpu_count": int(cpu_count),
+        "cpu_load1": round(float(load1), 3),
+        "cpu_load5": round(float(load5), 3),
+        "cpu_load15": round(float(load15), 3),
+        "cpu_load1_pct_of_cores": round(float(load1) / max(1, cpu_count) * 100.0, 2),
+        **memory,
+    }
+
+
+def _memory_snapshot() -> dict[str, Any]:
+    meminfo = Path("/proc/meminfo")
+    if not meminfo.exists():
+        return {"ram_total_mb": None, "ram_available_mb": None, "ram_used_pct": None}
+    values: dict[str, float] = {}
+    for line in meminfo.read_text(encoding="utf-8", errors="replace").splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0].rstrip(":") in {"MemTotal", "MemAvailable"}:
+            values[parts[0].rstrip(":")] = float(parts[1]) / 1024.0
+    total = values.get("MemTotal")
+    available = values.get("MemAvailable")
+    used_pct = None
+    if total and available is not None:
+        used_pct = round((1.0 - available / total) * 100.0, 2)
+    return {
+        "ram_total_mb": round(total, 1) if total is not None else None,
+        "ram_available_mb": round(available, 1) if available is not None else None,
+        "ram_used_pct": used_pct,
+    }
 
 
 if __name__ == "__main__":

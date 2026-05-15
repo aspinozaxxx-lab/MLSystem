@@ -52,6 +52,9 @@ class PipelineRunner:
         created = self.store.create_run(parsed)
         run_id = str(created["run_id"])
         self.store.update_run(run_id, source=source)
+        bound_store = self.store.bind(run_id, parsed)
+        worker_stdout_path = bound_store.log_dir / "worker_stdout.log"
+        worker_stderr_path = bound_store.log_dir / "worker_stderr.log"
         cmd = [
             sys.executable,
             "-m",
@@ -62,15 +65,20 @@ class PipelineRunner:
             str(self.store.root),
         ]
         creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+        env = os.environ.copy()
+        env.setdefault("PYTHONFAULTHANDLER", "1")
+        env.setdefault("PYTHONUNBUFFERED", "1")
         try:
-            process = subprocess.Popen(  # noqa: S603
-                cmd,
-                cwd=os.getenv("MLSYSTEM_API_WORKDIR") or None,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                creationflags=creationflags,
-            )
+            with worker_stdout_path.open("ab") as stdout_fp, worker_stderr_path.open("ab") as stderr_fp:
+                process = subprocess.Popen(  # noqa: S603
+                    cmd,
+                    cwd=os.getenv("MLSYSTEM_API_WORKDIR") or None,
+                    stdin=subprocess.DEVNULL,
+                    stdout=stdout_fp,
+                    stderr=stderr_fp,
+                    creationflags=creationflags,
+                    env=env,
+                )
         except Exception as exc:  # noqa: BLE001
             failed = self.store.update_run(
                 run_id,
@@ -86,12 +94,25 @@ class PipelineRunner:
         if payload.get("state") in {"queued", "running"} and payload.get("pid") and not _pid_running(int(payload["pid"])):
             latest = self.store.read_run(run_id)
             if latest.get("state") in {"queued", "running"}:
+                diagnostic = _worker_exit_diagnostic(self.store, run_id, latest)
+                message = "Pipeline worker exited before writing a terminal state."
+                self.store.append_log(run_id, f"\n[pipeline_runner] {message} diagnostic={diagnostic}\n")
                 payload = self.store.update_run(
                     run_id,
                     state="failed",
                     finished_at=utc_now(),
-                    error={"type": "WorkerExited", "message": "Pipeline worker exited before writing a terminal state."},
+                    error={"type": "WorkerExited", "message": message, **diagnostic},
                 )
+                try:
+                    summary = self.store.bind(run_id).read_summary()
+                    summary["worker_exit_diagnostic"] = diagnostic
+                    summary["errors"] = (summary.get("errors") or []) + [{"type": "WorkerExited", "message": message}]
+                    self.store.bind(run_id).update_summary(
+                        worker_exit_diagnostic=diagnostic,
+                        errors=summary["errors"],
+                    )
+                except Exception:
+                    pass
             else:
                 payload = latest
         return PipelineRun.model_validate(payload)
@@ -128,3 +149,44 @@ def _proc_state_for_pid(pid: int) -> str | None:
             parts = line.split()
             return parts[1] if len(parts) > 1 else None
     return None
+
+
+def _worker_exit_diagnostic(store: PipelineRunStore, run_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    bound = store.bind(run_id)
+    current_stage = str(payload.get("current_stage") or "")
+    stage_log = bound.log_dir / f"{current_stage}.log" if current_stage else None
+    worker_stderr = bound.log_dir / "worker_stderr.log"
+    worker_stdout = bound.log_dir / "worker_stdout.log"
+    pipeline_log = bound.log_dir / "pipeline.log"
+    text_for_hints = "\n".join(
+        tail
+        for tail in (
+            _tail_text(worker_stderr, 4000),
+            _tail_text(stage_log, 4000) if stage_log else "",
+            _tail_text(pipeline_log, 4000),
+        )
+        if tail
+    )
+    lower = text_for_hints.lower()
+    oom_suspected = any(marker in lower for marker in ("out of memory", "oom", "killed"))
+    return {
+        "pid": payload.get("pid"),
+        "last_stage": current_stage or None,
+        "exit_code": None,
+        "signal": None,
+        "exit_code_available": False,
+        "reason": "worker process is no longer running; exit code is unavailable because status was refreshed after the child process was detached",
+        "oom_suspected_from_logs": oom_suspected,
+        "worker_stderr_tail": mask_text(_tail_text(worker_stderr, 2000)),
+        "worker_stdout_tail": mask_text(_tail_text(worker_stdout, 2000)),
+        "stage_log_tail": mask_text(_tail_text(stage_log, 2000)) if stage_log else "",
+    }
+
+
+def _tail_text(path: Path | None, max_chars: int = 2000) -> str:
+    if path is None or not path.exists():
+        return ""
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")[-max_chars:]
+    except OSError:
+        return ""

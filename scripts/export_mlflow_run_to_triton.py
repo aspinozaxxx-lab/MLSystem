@@ -6,6 +6,11 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+try:
+    from mlsystem.src.mlflow_adapter import download_run_artifacts, get_run, list_artifact_paths, search_child_runs
+except ImportError:
+    from src.mlflow_adapter import download_run_artifacts, get_run, list_artifact_paths, search_child_runs
+
 
 DEFAULT_RUN_ID = "a7838f91528a47e1931b685c2ea06686"
 
@@ -22,15 +27,9 @@ def export_mlflow_run_to_triton(
     instance_count: int = 1,
     backend: str = "auto",
 ) -> Path:
-    import mlflow
-
-    tracking_uri = os.getenv("MLFLOW_TRACKING_URI")
-    if tracking_uri:
-        mlflow.set_tracking_uri(tracking_uri)
-    client = mlflow.tracking.MlflowClient()
-    checkpoint = _find_checkpoint_for_run(client, run_id=run_id, model_name=model_name)
+    checkpoint = _find_checkpoint_for_run(run_id=run_id, model_name=model_name)
     if checkpoint is None:
-        artifacts = [item.path for item in client.list_artifacts(run_id)]
+        artifacts = list_artifact_paths(None, run_id)
         raise RuntimeError(f"No checkpoint artifact found for MLflow run {run_id}. Top-level artifacts: {artifacts}")
     if backend in {"auto", "onnx"}:
         try:
@@ -150,35 +149,28 @@ def _find_checkpoint(root: Path) -> Path | None:
     return sorted(preferred or candidates, key=lambda item: (len(item.parts), str(item).lower()))[0]
 
 
-def _find_checkpoint_for_run(client: Any, *, run_id: str, model_name: str) -> Path | None:
-    import mlflow
-
+def _find_checkpoint_for_run(*, run_id: str, model_name: str) -> Path | None:
     checked_dirs: list[Path] = []
     try:
-        checked_dirs.append(Path(mlflow.artifacts.download_artifacts(run_id=run_id)))
+        checked_dirs.append(download_run_artifacts(None, run_id))
     except Exception:
         pass
     for directory in checked_dirs:
         checkpoint = _find_checkpoint(directory)
         if checkpoint is not None:
             return checkpoint
-    run = client.get_run(run_id)
+    run = get_run(None, run_id)
     for value in _checkpoint_hints(run.data.params, run.data.tags):
         checkpoint = _checkpoint_from_hint(value)
         if checkpoint is not None:
             return checkpoint
     try:
-        children = client.search_runs(
-            [run.info.experiment_id],
-            filter_string=f"tags.mlflow.parentRunId = '{run_id}'",
-            max_results=200,
-            order_by=["attributes.start_time DESC"],
-        )
+        children = search_child_runs(None, run.info.experiment_id, run_id, max_results=200)
     except Exception:
         children = []
     for child in children:
         try:
-            checkpoint = _find_checkpoint(Path(mlflow.artifacts.download_artifacts(run_id=child.info.run_id)))
+            checkpoint = _find_checkpoint(download_run_artifacts(None, child.info.run_id))
             if checkpoint is not None:
                 return checkpoint
         except Exception:

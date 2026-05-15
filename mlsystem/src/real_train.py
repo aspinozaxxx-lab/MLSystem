@@ -696,6 +696,47 @@ def _write_history(experiment_dir: Path, history: list[dict[str, float]]) -> lis
     return [json_path, csv_path]
 
 
+def _percentile(values: list[float], q: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(float(value) for value in values)
+    if len(ordered) == 1:
+        return ordered[0]
+    position = (len(ordered) - 1) * max(0.0, min(100.0, q)) / 100.0
+    lower = int(math.floor(position))
+    upper = int(math.ceil(position))
+    if lower == upper:
+        return ordered[lower]
+    weight = position - lower
+    return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
+
+
+def _batch_wait_metric_payload(
+    wait_values: list[float],
+    *,
+    train_wait_values: list[float] | None = None,
+    val_wait_values: list[float] | None = None,
+) -> dict[str, float]:
+    total = float(sum(wait_values))
+    count = len(wait_values)
+    train_total = float(sum(train_wait_values or []))
+    val_total = float(sum(val_wait_values or []))
+    payload = {
+        "data/batch_wait_total_sec": round(total, 6),
+        "data/batch_wait_mean_sec": round(total / count, 6) if count else 0.0,
+        "data/batch_wait_median_sec": round(_percentile(wait_values, 50.0), 6),
+        "data/batch_wait_p95_sec": round(_percentile(wait_values, 95.0), 6),
+        "data/batch_wait_max_sec": round(max(wait_values), 6) if wait_values else 0.0,
+        "data/batch_prepare_or_wait_samples": float(count),
+        "data/train_batch_wait_total_sec": round(train_total, 6),
+        "data/val_batch_wait_total_sec": round(val_total, 6),
+    }
+    payload["data/batch_wait_sec"] = payload["data/batch_wait_total_sec"]
+    payload["data/train_batch_wait_sec"] = payload["data/train_batch_wait_total_sec"]
+    payload["data/val_batch_wait_sec"] = payload["data/val_batch_wait_total_sec"]
+    return payload
+
+
 def _default_tile_limits(job: JobSpec) -> tuple[int, int, int]:
     use_all_scenes = bool(job.preprocess.get("use_all_matched_scenes"))
     default_train_tiles = 512 if use_all_scenes else 24
@@ -1895,7 +1936,7 @@ def run_real_train(
             train_dataset.set_epoch(epoch)
             train_batch_count = 0
             train_sample_count = 0
-            train_batch_wait_sec = 0.0
+            train_batch_wait_values: list[float] = []
             train_loader = TilePreparationFacade.train_dataloader(
                 tile_bundle,
                 batch_size,
@@ -1907,14 +1948,14 @@ def run_real_train(
             )
             train_iterator = iter(train_loader)
             while True:
+                if max_train_batches is not None and train_batch_count >= max_train_batches:
+                    break
                 batch_wait_started = time.perf_counter()
                 try:
                     _batch_indices, x_cpu, y_cpu = next(train_iterator)
                 except StopIteration:
                     break
-                train_batch_wait_sec += time.perf_counter() - batch_wait_started
-                if max_train_batches is not None and train_batch_count >= max_train_batches:
-                    break
+                train_batch_wait_values.append(time.perf_counter() - batch_wait_started)
                 train_batch_count += 1
                 train_sample_count += int(y_cpu.shape[0])
                 x = x_cpu.to(device, non_blocking=True)
@@ -1938,7 +1979,7 @@ def run_real_train(
             val_sample_payloads: list[dict[str, Any]] = []
             val_batch_count = 0
             val_sample_count = 0
-            val_batch_wait_sec = 0.0
+            val_batch_wait_values: list[float] = []
             with torch.no_grad():
                 val_dataset.set_epoch(0)
                 val_loader = TilePreparationFacade.val_dataloader(
@@ -1952,14 +1993,14 @@ def run_real_train(
                 )
                 val_iterator = iter(val_loader)
                 while True:
+                    if max_val_batches is not None and val_batch_count >= max_val_batches:
+                        break
                     batch_wait_started = time.perf_counter()
                     try:
                         batch_indices, x_cpu, y_cpu = next(val_iterator)
                     except StopIteration:
                         break
-                    val_batch_wait_sec += time.perf_counter() - batch_wait_started
-                    if max_val_batches is not None and val_batch_count >= max_val_batches:
-                        break
+                    val_batch_wait_values.append(time.perf_counter() - batch_wait_started)
                     val_batch_count += 1
                     val_sample_count += int(y_cpu.shape[0])
                     x = x_cpu.to(device, non_blocking=True)
@@ -1998,7 +2039,12 @@ def run_real_train(
             epoch_duration_sec = round(time.time() - epoch_started, 4)
             total_batch_count = train_batch_count + val_batch_count
             total_sample_count = train_sample_count + val_sample_count
-            total_batch_wait_sec = train_batch_wait_sec + val_batch_wait_sec
+            batch_wait_values = train_batch_wait_values + val_batch_wait_values
+            batch_wait_metrics = _batch_wait_metric_payload(
+                batch_wait_values,
+                train_wait_values=train_batch_wait_values,
+                val_wait_values=val_batch_wait_values,
+            )
             tile_profile_metrics = _merge_tile_profile_summaries(
                 train_dataset.profile_summary(reset=True),
                 val_dataset.profile_summary(reset=True),
@@ -2052,12 +2098,10 @@ def run_real_train(
                 "train/epoch_duration_sec": epoch_duration_sec,
                 "train/batches": float(train_batch_count),
                 "val/batches": float(val_batch_count),
-                "data/batch_wait_sec": round(float(total_batch_wait_sec), 6),
-                "data/train_batch_wait_sec": round(float(train_batch_wait_sec), 6),
-                "data/val_batch_wait_sec": round(float(val_batch_wait_sec), 6),
                 "data/batches_per_sec": float(total_batch_count) / max(1e-9, float(epoch_duration_sec)),
                 "data/samples_per_sec": float(total_sample_count) / max(1e-9, float(epoch_duration_sec)),
             }
+            row.update(batch_wait_metrics)
             row.update(tile_profile_metrics)
             row.update(_best_threshold_metrics_payload(best_threshold, best_threshold_metrics))
             for threshold, metrics_payload in threshold_metrics.items():
@@ -2168,7 +2212,7 @@ def run_real_train(
         val_sample_payloads: list[dict[str, Any]] = []
         val_batch_count = 0
         val_sample_count = 0
-        val_batch_wait_sec = 0.0
+        val_batch_wait_values: list[float] = []
         with torch.no_grad():
             val_dataset.set_epoch(0)
             val_loader = TilePreparationFacade.val_dataloader(
@@ -2187,7 +2231,7 @@ def run_real_train(
                     batch_indices, x_cpu, y_cpu = next(val_iterator)
                 except StopIteration:
                     break
-                val_batch_wait_sec += time.perf_counter() - batch_wait_started
+                val_batch_wait_values.append(time.perf_counter() - batch_wait_started)
                 val_batch_count += 1
                 val_sample_count += int(y_cpu.shape[0])
                 x = x_cpu.to(device, non_blocking=True)
@@ -2222,6 +2266,11 @@ def run_real_train(
             torch.cuda.synchronize()
         eval_duration_sec = round(time.time() - eval_started, 4)
         tile_profile_metrics = val_dataset.profile_summary(reset=True)
+        batch_wait_metrics = _batch_wait_metric_payload(
+            val_batch_wait_values,
+            train_wait_values=[],
+            val_wait_values=val_batch_wait_values,
+        )
         row = {
             "epoch": 0.0,
             "train/loss": 0.0,
@@ -2271,12 +2320,10 @@ def run_real_train(
             "train/batches": 0.0,
             "val/batches": float(val_batch_count),
             "train/optimizer_steps": 0.0,
-            "data/batch_wait_sec": round(float(val_batch_wait_sec), 6),
-            "data/train_batch_wait_sec": 0.0,
-            "data/val_batch_wait_sec": round(float(val_batch_wait_sec), 6),
             "data/batches_per_sec": float(val_batch_count) / max(1e-9, float(eval_duration_sec)),
             "data/samples_per_sec": float(val_sample_count) / max(1e-9, float(eval_duration_sec)),
         }
+        row.update(batch_wait_metrics)
         row.update(tile_profile_metrics)
         row.update(_best_threshold_metrics_payload(best_threshold, best_threshold_metrics))
         for threshold, metrics_payload in threshold_metrics.items():

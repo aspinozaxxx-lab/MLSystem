@@ -483,21 +483,20 @@ if [ -f /opt/mlsystem-scripts/export_mlflow_run_to_triton.py ]; then
   python /opt/mlsystem-scripts/export_mlflow_run_to_triton.py --run-id {DEFAULT_RUN_ID} --repository /data/mlsystem/triton/model_repository --triton-model-name {model} --model-name {model} --input-bands 4 --tile-size 1024 --max-batch-size 8 --backend onnx
 else
   python - <<'PY'
-import mlflow
 import subprocess
 from pathlib import Path
+from src.mlflow_adapter import download_run_artifacts, get_run, list_artifact_paths, search_child_runs
 from src.inference.triton_export import export_segmentation_checkpoint_to_onnx
 
 run_id = "{DEFAULT_RUN_ID}"
-local_dir = Path(mlflow.artifacts.download_artifacts(run_id=run_id))
+local_dir = download_run_artifacts(None, run_id)
 candidates = []
 for suffix in ("*.pt", "*.pth", "*.ckpt"):
     candidates.extend(local_dir.rglob(suffix))
 if not candidates:
-    client = mlflow.tracking.MlflowClient()
-    run = client.get_run(run_id)
-    for child in client.search_runs([run.info.experiment_id], filter_string=f"tags.mlflow.parentRunId = '{{run_id}}'", max_results=200):
-        child_dir = Path(mlflow.artifacts.download_artifacts(run_id=child.info.run_id))
+    run = get_run(None, run_id)
+    for child in search_child_runs(None, run.info.experiment_id, run_id, max_results=200):
+        child_dir = download_run_artifacts(None, child.info.run_id)
         for suffix in ("*.pt", "*.pth", "*.ckpt"):
             candidates.extend(child_dir.rglob(suffix))
     if not candidates:
@@ -511,7 +510,7 @@ if not candidates:
                 continue
             candidates.extend(Path(line.strip()) for line in output.splitlines() if line.strip())
     if not candidates:
-        raise RuntimeError(f"No checkpoint artifact found for MLflow run {{run_id}}. Top-level artifacts: {{[item.path for item in client.list_artifacts(run_id)]}}")
+        raise RuntimeError(f"No checkpoint artifact found for MLflow run {{run_id}}. Top-level artifacts: {{list_artifact_paths(None, run_id)}}")
 preferred = [path for path in candidates if "best" in path.name.lower() or "checkpoint" in path.name.lower()]
 checkpoint = sorted(preferred or candidates, key=lambda item: ((100 if run_id[:12].lower() in str(item).lower() else 0) + (30 if "b2" in str(item).lower() or "segformer" in str(item).lower() else 0), item.stat().st_mtime if item.exists() else 0), reverse=True)[0]
 print(export_segmentation_checkpoint_to_onnx(

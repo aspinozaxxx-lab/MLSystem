@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
-from typing import Any
 
 from .config import PipelineRunConfig
 from .run_store import PipelineRunStore
+from ..mlflow_adapter import log_artifacts_to_run, log_params_to_run, set_run_tags
+from ..pipeline_config import load_config
 
 
 def log_pipeline_metadata(config: PipelineRunConfig, store: PipelineRunStore, run_id: str) -> list[str]:
@@ -19,28 +19,23 @@ def log_pipeline_metadata(config: PipelineRunConfig, store: PipelineRunStore, ru
     if not mlflow_run_id or str(mlflow_run_id).startswith("smoke-"):
         return warnings
     try:
-        import mlflow
-
-        from ..pipeline_config import load_config
-
         pipeline_config = load_config()
-        mlflow.set_tracking_uri(pipeline_config.mlflow_tracking_uri_internal)
-        with mlflow.start_run(run_id=mlflow_run_id):
-            mlflow.set_tags({"pipeline.run_id": run_id, "pipeline.final_status": bound.read_run().get("state")})
-            mlflow.log_param("pipeline.stages", ",".join(config.pipeline.stages)[:500])
-            mlflow.log_param("pipeline.trace", json.dumps(config.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)[:500])
-            for stage_report in sorted((bound.stage_dir).glob("*.json")):
-                _log_artifact_if_reasonable(mlflow, stage_report)
-            _log_artifact_if_reasonable(mlflow, bound.summary_path)
-            _log_artifact_if_reasonable(mlflow, bound.log_dir / "pipeline.log")
+        set_run_tags(pipeline_config, str(mlflow_run_id), {"pipeline.run_id": run_id, "pipeline.final_status": bound.read_run().get("state")})
+        log_params_to_run(
+            pipeline_config,
+            str(mlflow_run_id),
+            {
+                "pipeline.stages": ",".join(config.pipeline.stages)[:500],
+                "pipeline.trace": json.dumps(config.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)[:500],
+            },
+        )
+        artifacts = [
+            path
+            for path in [*sorted((bound.stage_dir).glob("*.json")), bound.summary_path, bound.log_dir / "pipeline.log"]
+            if path.exists() and path.is_file() and path.stat().st_size <= 20 * 1024 * 1024
+        ]
+        artifact_errors = log_artifacts_to_run(pipeline_config, str(mlflow_run_id), artifacts)
+        warnings.extend(f"MLflow artifact logging skipped: {item}" for item in artifact_errors)
     except Exception as exc:  # noqa: BLE001
         warnings.append(f"MLflow pipeline metadata logging skipped: {type(exc).__name__}: {exc}")
     return warnings
-
-
-def _log_artifact_if_reasonable(mlflow: Any, path: Path, *, max_bytes: int = 20 * 1024 * 1024) -> None:
-    if not path.exists() or not path.is_file():
-        return
-    if path.stat().st_size > max_bytes:
-        return
-    mlflow.log_artifact(str(path))

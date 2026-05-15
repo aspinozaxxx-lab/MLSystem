@@ -4,6 +4,7 @@ import os
 import platform
 import socket
 import sys
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -176,6 +177,15 @@ def build_run_note(
 def _run_url(base_uri: str, experiment_id: str, run_id: str) -> str:
     return f"{base_uri.rstrip('/')}/#/experiments/{experiment_id}/runs/{run_id}"
 
+
+def mlflow_url_fields(config: PipelineConfig, experiment_id: str | None, run_id: str | None) -> dict[str, Any]:
+    if not experiment_id or not run_id:
+        return {}
+    return {
+        "url_mlflow_run": _run_url(config.mlflow_tracking_uri_external, str(experiment_id), str(run_id)),
+        "url_mlflow_experiment": f"{config.mlflow_tracking_uri_external.rstrip('/')}/#/experiments/{experiment_id}",
+    }
+
 def _stringify_param(value: Any) -> str | int | float | bool:
     if isinstance(value, (str, int, float, bool)):
         return value
@@ -216,6 +226,225 @@ def check_mlflow(config: PipelineConfig) -> dict[str, Any]:
             "tracking_uri_external": config.mlflow_tracking_uri_external,
             "error": f"{type(exc).__name__}: {exc}",
         }
+
+
+def get_or_create_experiment_id(config: PipelineConfig, experiment_name: str, *, attempts: int = 5) -> str:
+    import mlflow
+    from mlflow.tracking import MlflowClient
+
+    mlflow.set_tracking_uri(config.mlflow_tracking_uri_internal)
+    client = MlflowClient()
+    for attempt in range(max(1, attempts)):
+        experiment = client.get_experiment_by_name(experiment_name)
+        if experiment is not None:
+            return str(experiment.experiment_id)
+        try:
+            return str(client.create_experiment(experiment_name))
+        except Exception as exc:
+            message = f"{type(exc).__name__}: {exc}".lower()
+            duplicate = "resource_already_exists" in message or ("already exists" in message and "experiment" in message)
+            if not duplicate or attempt == attempts - 1:
+                raise
+            time.sleep(0.2 * (attempt + 1))
+    raise RuntimeError(f"MLflow experiment was not created: {experiment_name}")
+
+
+def set_experiment_tags(config: PipelineConfig, experiment_id: str, tags: dict[str, Any]) -> list[str]:
+    import mlflow
+    from mlflow.tracking import MlflowClient
+
+    mlflow.set_tracking_uri(config.mlflow_tracking_uri_internal)
+    client = MlflowClient()
+    warnings: list[str] = []
+    for key, value in tags.items():
+        try:
+            client.set_experiment_tag(experiment_id, str(key), "" if value is None else str(value))
+        except Exception as exc:
+            message = f"{type(exc).__name__}: {exc}"
+            lowered = message.lower()
+            if "experiment_tag_pk" in lowered or ("duplicate key" in lowered and "experiment_tags" in lowered):
+                warnings.append(f"Skipped concurrent MLflow experiment tag write: {key}")
+            else:
+                raise
+    return warnings
+
+
+def create_run(
+    config: PipelineConfig,
+    *,
+    experiment_name: str,
+    run_name: str,
+    params: dict[str, Any] | None = None,
+    tags: dict[str, Any] | None = None,
+    experiment_tags: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    import mlflow
+
+    mlflow.set_tracking_uri(config.mlflow_tracking_uri_internal)
+    experiment_id = get_or_create_experiment_id(config, experiment_name)
+    tag_warnings = set_experiment_tags(config, experiment_id, experiment_tags or {}) if experiment_tags else []
+    with mlflow.start_run(experiment_id=experiment_id, run_name=run_name) as run:
+        mlflow.set_tags({key: "" if value is None else str(value) for key, value in (tags or {}).items()})
+        clean_params = flatten_params(params or {})
+        if clean_params:
+            mlflow.log_params(clean_params)
+        run_id = run.info.run_id
+        artifact_uri = run.info.artifact_uri
+    return {
+        "ok": True,
+        "experiment_name": experiment_name,
+        "experiment_id": experiment_id,
+        "run_id": run_id,
+        "run_name": run_name,
+        "artifact_uri": artifact_uri,
+        "tracking_uri": config.mlflow_tracking_uri_internal,
+        "tracking_uri_internal": config.mlflow_tracking_uri_internal,
+        "tracking_uri_external": config.mlflow_tracking_uri_external,
+        "warnings": tag_warnings,
+        **mlflow_url_fields(config, experiment_id, run_id),
+    }
+
+
+def log_metrics_to_run(config: PipelineConfig, run_id: str, metrics: dict[str, Any], *, step: int | None = None) -> None:
+    import mlflow
+
+    mlflow.set_tracking_uri(config.mlflow_tracking_uri_internal)
+    clean = {
+        key: float(value)
+        for key, value in metrics.items()
+        if value is not None and _is_number(value) and not _is_excluded_metric_key(str(key))
+    }
+    if not clean:
+        return
+    with mlflow.start_run(run_id=run_id):
+        mlflow.log_metrics(clean, step=step)
+
+
+def log_params_to_run(config: PipelineConfig, run_id: str, params: dict[str, Any]) -> None:
+    import mlflow
+
+    mlflow.set_tracking_uri(config.mlflow_tracking_uri_internal)
+    clean = flatten_params(params)
+    if not clean:
+        return
+    with mlflow.start_run(run_id=run_id):
+        for key, value in clean.items():
+            try:
+                mlflow.log_param(key, value)
+            except Exception:
+                continue
+
+
+def log_artifacts_to_run(config: PipelineConfig, run_id: str, artifacts: list[str | Path]) -> list[str]:
+    import mlflow
+
+    mlflow.set_tracking_uri(config.mlflow_tracking_uri_internal)
+    errors: list[str] = []
+    with mlflow.start_run(run_id=run_id):
+        for artifact in artifacts:
+            path = Path(artifact)
+            try:
+                if path.exists() and path.is_file() and path.name not in MLFLOW_EXCLUDED_ARTIFACT_NAMES:
+                    mlflow.log_artifact(str(path))
+            except Exception as exc:
+                errors.append(f"{path.name}: {type(exc).__name__}: {exc}")
+    return errors
+
+
+def set_run_tags(config: PipelineConfig, run_id: str, tags: dict[str, Any]) -> None:
+    import mlflow
+
+    mlflow.set_tracking_uri(config.mlflow_tracking_uri_internal)
+    with mlflow.start_run(run_id=run_id):
+        mlflow.set_tags({key: "" if value is None else str(value) for key, value in tags.items()})
+
+
+def download_run_artifacts(config: PipelineConfig | None, run_id: str) -> Path:
+    import mlflow
+
+    if config is not None:
+        mlflow.set_tracking_uri(config.mlflow_tracking_uri_internal)
+    return Path(mlflow.artifacts.download_artifacts(run_id=run_id))
+
+
+def get_run(config: PipelineConfig | None, run_id: str) -> Any:
+    import mlflow
+
+    if config is not None:
+        mlflow.set_tracking_uri(config.mlflow_tracking_uri_internal)
+    return mlflow.tracking.MlflowClient().get_run(run_id)
+
+
+def list_artifact_paths(config: PipelineConfig | None, run_id: str) -> list[str]:
+    import mlflow
+
+    if config is not None:
+        mlflow.set_tracking_uri(config.mlflow_tracking_uri_internal)
+    return [item.path for item in mlflow.tracking.MlflowClient().list_artifacts(run_id)]
+
+
+def search_child_runs(config: PipelineConfig | None, experiment_id: str, parent_run_id: str, *, max_results: int = 200) -> list[Any]:
+    import mlflow
+
+    if config is not None:
+        mlflow.set_tracking_uri(config.mlflow_tracking_uri_internal)
+    client = mlflow.tracking.MlflowClient()
+    return list(
+        client.search_runs(
+            [experiment_id],
+            filter_string=f"tags.mlflow.parentRunId = '{parent_run_id}'",
+            max_results=max_results,
+            order_by=["attributes.start_time DESC"],
+        )
+    )
+
+
+def search_runs(
+    config: PipelineConfig,
+    *,
+    experiment_name: str,
+    filter_string: str = "",
+    max_results: int = 1000,
+    order_by: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    import mlflow
+
+    mlflow.set_tracking_uri(config.mlflow_tracking_uri_internal)
+    client = mlflow.tracking.MlflowClient()
+    experiment = client.get_experiment_by_name(experiment_name)
+    if experiment is None:
+        return []
+    runs = client.search_runs(
+        [experiment.experiment_id],
+        filter_string=filter_string,
+        max_results=max_results,
+        order_by=order_by or ["attributes.start_time DESC"],
+    )
+    result: list[dict[str, Any]] = []
+    for run in runs:
+        result.append(
+            {
+                "run_id": run.info.run_id,
+                "experiment_id": run.info.experiment_id,
+                "status": run.info.status,
+                "start_time": run.info.start_time,
+                "end_time": run.info.end_time,
+                "artifact_uri": run.info.artifact_uri,
+                "metrics": dict(run.data.metrics),
+                "params": dict(run.data.params),
+                "tags": dict(run.data.tags),
+                **mlflow_url_fields(config, run.info.experiment_id, run.info.run_id),
+            }
+        )
+    return result
+
+
+def _is_number(value: Any) -> bool:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return False
+    return number == number and number not in {float("inf"), float("-inf")}
 
 def setup_deforest_experiment(config: PipelineConfig, experiment_name: str = "mlsystem-deforest") -> dict[str, Any]:
     import mlflow
@@ -434,12 +663,6 @@ def start_job_run(
 def _is_excluded_metric_key(key: str) -> bool:
     lowered = key.lower()
     return any(lowered.startswith(prefix) for prefix in MLFLOW_EXCLUDED_METRIC_PREFIXES)
-
-def set_run_tags(config: PipelineConfig, run_id: str, tags: dict[str, Any]) -> None:
-    import mlflow
-    mlflow.set_tracking_uri(config.mlflow_tracking_uri_internal)
-    with mlflow.start_run(run_id=run_id):
-        mlflow.set_tags({key: "" if value is None else str(value) for key, value in tags.items()})
 
 def log_lightweight_run(
     config: PipelineConfig,

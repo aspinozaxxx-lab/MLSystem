@@ -17,7 +17,15 @@ from typing import Any
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from ..job_schema import JobSpec
-from ..mlflow_adapter import MLFLOW_EXCLUDED_ARTIFACT_NAMES, MLflowJobRun
+from ..mlflow_adapter import (
+    MLFLOW_EXCLUDED_ARTIFACT_NAMES,
+    MLflowJobRun,
+    create_run as mlflow_create_run,
+    log_artifacts_to_run as mlflow_log_artifacts_to_run,
+    log_metrics_to_run as mlflow_log_metrics_to_run,
+    mlflow_url_fields,
+    set_run_tags as mlflow_set_run_tags,
+)
 from ..pipeline_config import load_config
 from ..storage.local_io import read_json, write_json
 from .training_pipeline import TrainingPipeline
@@ -962,18 +970,12 @@ def _log_mlflow_metrics_if_available(store: ExperimentStageStore, metrics: dict[
         return []
     warnings: list[str] = []
     try:
-        import mlflow
-
-        mlflow.set_tracking_uri(load_config().mlflow_tracking_uri_internal)
-        with mlflow.start_run(run_id=run_id):
-            for key, value in metrics.items():
-                number = _finite_float(value)
-                if number is not None:
-                    mlflow.log_metric(key, number)
-            for key, value in (counters or {}).items():
-                number = _finite_float(value)
-                if number is not None:
-                    mlflow.log_metric(key, number)
+        payload = {
+            key: number
+            for key, value in {**metrics, **(counters or {})}.items()
+            if (number := _finite_float(value)) is not None
+        }
+        mlflow_log_metrics_to_run(load_config(), str(run_id), payload)
     except Exception as exc:  # noqa: BLE001 - report warning without hiding stage metrics.
         warnings.append(f"Failed to log F1 metrics to MLflow: {type(exc).__name__}: {exc}")
     return warnings
@@ -1059,54 +1061,56 @@ def _mlflow_tuning_metadata(params: dict[str, Any] | None) -> tuple[dict[str, st
 
 def _create_mlflow_run(conf: ExperimentStageConfig, store: ExperimentStageStore) -> dict[str, Any]:
     try:
-        import mlflow
-
         pipeline_config = load_config()
-        mlflow.set_tracking_uri(pipeline_config.mlflow_tracking_uri_internal)
         experiment_name = conf.mlflow.get("experiment") or pipeline_config.mlflow_default_experiment
-        client = mlflow.tracking.MlflowClient()
-        experiment_id = _get_or_create_mlflow_experiment_id(client, experiment_name)
         extra_tags, extra_params = _mlflow_tuning_metadata(conf.params)
-        tag_warnings: list[str] = []
+        experiment_tags = {}
         if conf.class_name:
-            for key, value in (
-                ("class_name", conf.class_name),
-                ("mlsystem.class_name", conf.class_name),
-                ("task", conf.task),
-            ):
-                warning = _safe_set_mlflow_experiment_tag(client, experiment_id, key, str(value))
-                if warning:
-                    tag_warnings.append(warning)
-        with mlflow.start_run(experiment_id=experiment_id, run_name=conf.experiment_id) as run:
-            mlflow.set_tags(
-                {
-                    "job_id": conf.experiment_id,
-                    "pipeline_run_id": store.pipeline_run_id,
-                    "orchestrator": "pipeline",
-                    "job_status": "running",
-                    "execution_path": "pipeline_api",
-                    "task": conf.task,
-                    "class_name": conf.class_name or "",
-                    "mlsystem.class_name": conf.class_name or "",
-                    **extra_tags,
-                }
-            )
-            mlflow.log_params(
-                {
-                    "experiment_id": conf.experiment_id,
-                    "task": conf.task,
-                    "images_uri": conf.images_uri,
-                    "layout_uri": conf.layout_uri,
-                    "model.name": conf.model.get("name"),
-                    "preprocess.tile_size": conf.preprocess.get("tile_size"),
-                    "preprocess.stride": conf.preprocess.get("stride"),
-                    "smoke": conf.smoke,
-                    **extra_params,
-                }
-            )
-            run_id = run.info.run_id
-            artifact_uri = run.info.artifact_uri
-        url_fields, url_warnings = _mlflow_url_fields(pipeline_config, experiment_id, run_id)
+            experiment_tags = {
+                "class_name": conf.class_name,
+                "mlsystem.class_name": conf.class_name,
+                "task": conf.task,
+            }
+        created = mlflow_create_run(
+            pipeline_config,
+            experiment_name=experiment_name,
+            run_name=conf.experiment_id,
+            tags={
+                "job_id": conf.experiment_id,
+                "pipeline_run_id": store.pipeline_run_id,
+                "orchestrator": "pipeline",
+                "job_status": "running",
+                "execution_path": "pipeline_api",
+                "task": conf.task,
+                "class_name": conf.class_name or "",
+                "mlsystem.class_name": conf.class_name or "",
+                **extra_tags,
+            },
+            params={
+                "experiment_id": conf.experiment_id,
+                "task": conf.task,
+                "images_uri": conf.images_uri,
+                "layout_uri": conf.layout_uri,
+                "model.name": conf.model.get("name"),
+                "preprocess.tile_size": conf.preprocess.get("tile_size"),
+                "preprocess.stride": conf.preprocess.get("stride"),
+                "smoke": conf.smoke,
+                **extra_params,
+            },
+            experiment_tags=experiment_tags,
+        )
+        experiment_id = str(created["experiment_id"])
+        run_id = str(created["run_id"])
+        artifact_uri = str(created.get("artifact_uri") or "")
+        url_fields = {
+            key: value
+            for key, value in {
+                "url_mlflow_run": created.get("url_mlflow_run"),
+                "url_mlflow_experiment": created.get("url_mlflow_experiment"),
+            }.items()
+            if value
+        }
+        url_warnings: list[str] = []
         run_url = url_fields.get("url_mlflow_run")
         experiment_url = url_fields.get("url_mlflow_experiment")
         store.update_summary(
@@ -1128,7 +1132,7 @@ def _create_mlflow_run(conf: ExperimentStageConfig, store: ExperimentStageStore)
             mlflow_experiment_name=experiment_name,
             artifact_uri=artifact_uri,
             counters={"mlflow_experiment_id": experiment_id, "mlflow_run_id": run_id},
-            warnings=[*url_warnings, *tag_warnings],
+            warnings=[*url_warnings, *list(created.get("warnings") or [])],
             details={
                 "mlflow": {
                     "experiment_name": experiment_name,
@@ -1183,15 +1187,17 @@ def _finalize_mlflow_run(conf: ExperimentStageConfig, store: ExperimentStageStor
             details={"cleanup": cleanup, "failed_stages": failed_stages},
         )
     try:
-        import mlflow
-
         pipeline_config = load_config()
-        mlflow.set_tracking_uri(pipeline_config.mlflow_tracking_uri_internal)
         url_fields, url_warnings = _mlflow_url_fields(pipeline_config, mlflow_info.get("experiment_id"), run_id)
         store.update_summary(status="success", finished_at=utc_now(), runtime_cleanup=cleanup)
-        with mlflow.start_run(run_id=run_id):
-            mlflow.set_tags({"job_status": "success", "pipeline_status": "success"})
-            mlflow.log_artifact(str(store.summary_path))
+        mlflow_set_run_tags(pipeline_config, str(run_id), {"job_status": "success", "pipeline_status": "success"})
+        artifact_errors = mlflow_log_artifacts_to_run(pipeline_config, str(run_id), [store.summary_path])
+        if artifact_errors:
+            return _stage_result(
+                "failed",
+                error="; ".join(artifact_errors),
+                counters={**final_counters, "mlflow_run_id": run_id, "mlflow_final_status": "failed"},
+            )
         return _stage_result(
             "success",
             summary=f"MLflow run finalized: {run_id}",
@@ -1603,17 +1609,9 @@ def _run_dispatcher_stage(stage: str, conf_payload: dict[str, Any], pipeline_run
         artifact_errors: list[str] = []
         logged_paths = [str(run_summary_path), str(codex_summary_path)]
         if run_id and not str(run_id).startswith("smoke-"):
-            import mlflow
-
             pipeline_config = load_config()
-            mlflow.set_tracking_uri(pipeline_config.mlflow_tracking_uri_internal)
-            with mlflow.start_run(run_id=run_id):
-                for artifact_path in logged_paths:
-                    try:
-                        mlflow.log_artifact(artifact_path)
-                    except Exception as exc:  # noqa: BLE001 - keep logging stage report explicit.
-                        artifacts_failed += 1
-                        artifact_errors.append(f"{Path(artifact_path).name}: {type(exc).__name__}: {exc}")
+            artifact_errors = mlflow_log_artifacts_to_run(pipeline_config, str(run_id), logged_paths)
+            artifacts_failed = len(artifact_errors)
         pipeline_config = load_config()
         url_fields, url_warnings = _mlflow_url_fields(pipeline_config, mlflow_info.get("experiment_id"), run_id)
         result = _stage_result(
