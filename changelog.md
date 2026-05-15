@@ -1,4 +1,10 @@
-﻿# Changelog
+# Changelog
+
+## 2026-05-15
+
+- Optimizirovan `tile_preparation`: dobavlen facade DataLoader path s workers/prefetch/pin_memory/persistent_workers, STRtree geometry index, `uint8_255` normalization fast path i profiling data-wait/tile-prep metrik.
+- `real_train.py` pereveden na `TilePreparationFacade.train_dataloader` / `val_dataloader`; CUDA transfer ispolzuet `non_blocking=True`, validation ostaetsya bez augmentation/repeats.
+- Dobavlen `scripts/benchmark_tile_preparation_dataloader.py` i tests dlya DataLoader workers, geometry index, normalization i real_train integration.
 
 ## 2026-05-07
 

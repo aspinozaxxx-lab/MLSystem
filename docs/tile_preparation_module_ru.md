@@ -198,3 +198,18 @@ Debug outputs и реальные GeoTIFF/GeoJSON не коммитятся.
 - Низкоуровневые функции можно тестировать напрямую, но не продвигать как публичный API.
 - Training и validation должны использовать один source of truth для window grid, rasterization, valid clipping, mosaic fill и augmentation semantics.
 - FastAPI endpoint не должен возвращать raster/mask arrays.
+# DataLoader and normalization update
+
+Recommended training entrypoint is `TilePreparationFacade.train_dataloader(...)` / `val_dataloader(...)`.
+These methods return `torch.utils.data.DataLoader` and accept `workers`, `prefetch_factor`, `pin_memory`, `persistent_workers`.
+On Windows the default `workers=None` resolves to `0`. On Linux it resolves to `min(8, os.cpu_count() // 2)`.
+The returned batch format stays compatible with the old iterator: `indices: list[int]`, `x: torch.Tensor [B,C,H,W]`, `y: torch.Tensor [B,1,H,W]`.
+`iter_dataset_batches()` remains as a compatibility fallback, but production training should use the facade DataLoader path.
+
+`TilePreparationConfig.normalization_mode` controls image normalization:
+
+- `uint8_255` - fast path, `float32(arr) / 255.0`;
+- `tile_percentile` - legacy per-tile percentile normalization;
+- `scene_percentile` - approximate per-scene percentile stats cached per worker.
+
+Default is `uint8_255`.

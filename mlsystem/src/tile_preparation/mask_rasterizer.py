@@ -8,6 +8,7 @@ from rasterio.features import rasterize
 from rasterio.windows import Window
 from shapely.geometry import box
 
+from .geometry_index import filter_geometries_linear
 from .records import TileSampleRecord, TileWindow
 
 
@@ -32,10 +33,14 @@ def rasterize_mask_for_window(
     *,
     all_touched: bool = False,
     valid_mask: np.ndarray | None = None,
+    geometry_index: Any | None = None,
 ) -> MaskRasterizationResult:
     raster_window = Window(int(window.x), int(window.y), int(window.width), int(window.height))
     window_bounds = box(*ds.window_bounds(raster_window))
-    selected = [geom for geom in geometries if geom.is_valid and not geom.is_empty and geom.intersects(window_bounds)]
+    if geometry_index is not None:
+        selected = geometry_index.query(window_bounds)
+    else:
+        selected = filter_geometries_linear(geometries, window_bounds)
     if not selected:
         raw_mask = np.zeros((int(window.height), int(window.width)), dtype="uint8")
     else:

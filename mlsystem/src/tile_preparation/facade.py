@@ -5,6 +5,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .config import AnnotationInput, SceneInput, TilePreparationConfig
+from .dataloader import make_tile_dataloader
 from .dataset import TrainingTileDataset, iter_dataset_batches
 from .report import generate_annotated_tile_report
 from .summary import summarize_tile_records
@@ -122,6 +123,7 @@ class TilePreparationFacade:
         stride: int,
         augmentation_level: int = 2,
         mosaic_enabled: bool | None = None,
+        normalization_mode: str = "uint8_255",
     ) -> TilePreparationBundle:
         annotation = AnnotationInput(
             geojson_path=Path(annotation_path),
@@ -133,6 +135,10 @@ class TilePreparationFacade:
             stride=stride,
             augmentation_level=augmentation_level,
         )
+        normalization_mode = str(normalization_mode or "uint8_255").lower()
+        if normalization_mode not in {"uint8_255", "tile_percentile", "scene_percentile"}:
+            raise ValueError("normalization_mode must be one of: uint8_255, tile_percentile, scene_percentile")
+        train_config.normalization_mode = normalization_mode
         mosaic_active = DEFAULT_MOSAIC_MODE == "auto" if mosaic_enabled is None else bool(mosaic_enabled)
         train_config.mosaic_enabled = mosaic_active and len(train_scenes) > 1
 
@@ -171,11 +177,55 @@ class TilePreparationFacade:
         )
 
     @staticmethod
-    def train_dataloader(bundle: TilePreparationBundle, batch_size: int):
+    def train_dataloader(
+        bundle: TilePreparationBundle,
+        batch_size: int,
+        workers: int | None = None,
+        prefetch_factor: int | None = None,
+        pin_memory: bool = True,
+        persistent_workers: bool = True,
+        *,
+        seed: int | None = None,
+    ):
+        return make_tile_dataloader(
+            bundle.train_dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            seed=bundle.config.seed if seed is None else int(seed),
+            workers=workers,
+            prefetch_factor=prefetch_factor,
+            pin_memory=pin_memory,
+            persistent_workers=persistent_workers,
+        )
+
+    @staticmethod
+    def val_dataloader(
+        bundle: TilePreparationBundle,
+        batch_size: int,
+        workers: int | None = None,
+        prefetch_factor: int | None = None,
+        pin_memory: bool = True,
+        persistent_workers: bool = True,
+        *,
+        seed: int | None = None,
+    ):
+        return make_tile_dataloader(
+            bundle.val_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            seed=bundle.config.seed if seed is None else int(seed),
+            workers=workers,
+            prefetch_factor=prefetch_factor,
+            pin_memory=pin_memory,
+            persistent_workers=persistent_workers,
+        )
+
+    @staticmethod
+    def train_batch_iterator(bundle: TilePreparationBundle, batch_size: int):
         return iter_dataset_batches(bundle.train_dataset, batch_size, shuffle=True, seed=bundle.config.seed)
 
     @staticmethod
-    def val_dataloader(bundle: TilePreparationBundle, batch_size: int):
+    def val_batch_iterator(bundle: TilePreparationBundle, batch_size: int):
         return iter_dataset_batches(bundle.val_dataset, batch_size, shuffle=False, seed=bundle.config.seed)
 
     @staticmethod
@@ -214,6 +264,7 @@ def _dataset_summary(dataset: TrainingTileDataset, config: TilePreparationConfig
         "augmentation_level": augmentation_level,
         "mosaic_enabled": config.mosaic_enabled,
         "cutout_mask_mode": config.cutout_mask_mode,
+        "normalization_mode": config.normalization_mode,
     }
 
 
@@ -238,6 +289,7 @@ def bundle_to_jsonable(bundle: TilePreparationBundle) -> dict:
             "min_valid_pixel_share": bundle.config.min_valid_pixel_share,
             "augmentation_level": bundle.config.augmentation_level,
             "augmentations": bundle.config.augmentations,
+            "normalization_mode": bundle.config.normalization_mode,
         },
     }
 

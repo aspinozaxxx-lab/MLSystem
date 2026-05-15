@@ -25,7 +25,7 @@ from .tile_preparation import (
     TrainingTileDataset,
 )
 from .tile_preparation.config import train_sampling_enabled as resolve_train_sampling_enabled
-from .tile_preparation.dataset import iter_dataset_batches
+from .tile_preparation.dataloader import resolve_prefetch_factor, resolve_worker_count
 from .tile_preparation.summary import summarize_tile_records
 from .mlflow_adapter import MLflowJobRun, trace_stage
 from .metrics.debug_dump import (
@@ -740,6 +740,42 @@ def _coerce_optional_bool(value: Any) -> bool | None:
     if text in {"0", "false", "no", "n", "off", "disabled", "disable"}:
         return False
     return None
+
+
+def _coerce_optional_int(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    return int(value)
+
+
+def _merge_tile_profile_summaries(*summaries: dict[str, float]) -> dict[str, float]:
+    buckets: dict[str, dict[str, float]] = {}
+    for summary in summaries:
+        for key, value in summary.items():
+            if not key.startswith("tile_prep/") or "_" not in key:
+                continue
+            base, suffix = key.rsplit("_", 1)
+            bucket = buckets.setdefault(base, {})
+            if suffix in {"count", "total"}:
+                bucket[suffix] = bucket.get(suffix, 0.0) + float(value)
+            elif suffix in {"p50", "p95"}:
+                bucket[suffix] = max(bucket.get(suffix, 0.0), float(value))
+            elif suffix == "mean":
+                bucket.setdefault(suffix, float(value))
+    merged: dict[str, float] = {}
+    for base, bucket in buckets.items():
+        count = float(bucket.get("count", 0.0))
+        total = float(bucket.get("total", 0.0))
+        if count > 0.0:
+            merged[f"{base}_count"] = count
+            merged[f"{base}_total"] = total
+            merged[f"{base}_mean"] = total / count
+        elif "mean" in bucket:
+            merged[f"{base}_mean"] = bucket["mean"]
+        for suffix in ("p50", "p95"):
+            if suffix in bucket:
+                merged[f"{base}_{suffix}"] = bucket[suffix]
+    return merged
 
 
 def _resolve_mosaic_enabled(job: JobSpec) -> bool | None:
@@ -1514,10 +1550,18 @@ def run_real_train(
     base_stride = int(job.preprocess.get("stride") or job.preprocess.get("train_stride") or patch_size)
     augmentation_level = _resolve_augmentation_level(job, train_sampling_enabled=train_sampling_enabled)
     mosaic_enabled = _resolve_mosaic_enabled(job)
+    train_sampling_cfg = job.preprocess.get("train_sampling") if isinstance(job.preprocess.get("train_sampling"), dict) else {}
+    normalization_mode = str(
+        job.train.get("normalization_mode")
+        or train_sampling_cfg.get("normalization_mode")
+        or job.preprocess.get("normalization_mode")
+        or "uint8_255"
+    )
     log_fn(
         job_log,
         "real_train tile_preparation_config "
-        f"tile_size={patch_size} stride={base_stride} augmentation_level={augmentation_level} mosaic_enabled={mosaic_enabled if mosaic_enabled is not None else 'auto'}",
+        f"tile_size={patch_size} stride={base_stride} augmentation_level={augmentation_level} "
+        f"mosaic_enabled={mosaic_enabled if mosaic_enabled is not None else 'auto'} normalization_mode={normalization_mode}",
     )
     train_scenes = _scene_inputs_for_matches(config, train_matches)
     val_scenes = _scene_inputs_for_matches(config, val_matches)
@@ -1529,6 +1573,7 @@ def run_real_train(
         stride=base_stride,
         augmentation_level=augmentation_level,
         mosaic_enabled=mosaic_enabled,
+        normalization_mode=normalization_mode,
     )
     train_dataset = tile_bundle.train_dataset
     val_dataset = tile_bundle.val_dataset
@@ -1539,10 +1584,13 @@ def run_real_train(
         fallback_records = list(train_dataset.base_records[-fallback_count:])
         val_dataset.close()
         val_dataset = TrainingTileDataset(train_scenes, train_dataset.annotation, val_tile_config, records=fallback_records, train=False, build_result=train_dataset.build_result)
+        tile_bundle.val_dataset = val_dataset
         val_dataset.warnings.append("validation fallback used base train tile records; use a real val scene split for final runs")
     if len(train_dataset) == 0 or len(val_dataset) == 0:
         raise RuntimeError(f"Not enough samples: train={len(train_dataset)} val={len(val_dataset)}")
     dataset_input_channels = int(train_dataset[0].image.shape[0])
+    train_dataset.close()
+    train_dataset.profile_summary(reset=True)
     input_bands = list(range(1, dataset_input_channels + 1))
 
     train_report = train_dataset.scene_reports
@@ -1640,6 +1688,7 @@ def run_real_train(
             "tile_preparation.mosaic_enabled_requested": mosaic_param_value,
             "tile_preparation.train_mosaic_enabled": train_tile_config.mosaic_enabled,
             "tile_preparation.val_mosaic_enabled": val_tile_config.mosaic_enabled,
+            "tile_preparation.normalization_mode": train_tile_config.normalization_mode,
             "base_train_tile_count": dataset_report["base_train_tile_count"],
             "virtual_train_tile_count": dataset_report["virtual_train_tile_count"],
             "effective_train_samples_per_epoch": dataset_report["effective_train_samples_per_epoch"],
@@ -1720,6 +1769,14 @@ def run_real_train(
     if batch_size == "auto":
         batch_size = _auto_batch_size(model_name, patch_size, device)
     batch_size = max(1, int(batch_size))
+    dataloader_workers_config = _coerce_optional_int(job.train.get("dataloader_workers", job.train.get("num_workers")))
+    dataloader_workers = resolve_worker_count(dataloader_workers_config)
+    dataloader_prefetch_config = _coerce_optional_int(job.train.get("dataloader_prefetch_factor", job.train.get("prefetch_factor")))
+    dataloader_prefetch_factor = resolve_prefetch_factor(dataloader_workers, dataloader_prefetch_config)
+    pin_memory = _coerce_optional_bool(job.train.get("pin_memory"))
+    pin_memory = True if pin_memory is None else bool(pin_memory)
+    persistent_workers = _coerce_optional_bool(job.train.get("persistent_workers"))
+    persistent_workers = True if persistent_workers is None else bool(persistent_workers)
     epochs = int(job.train.get("epochs") or job.train.get("max_epochs") or 20)
     train_mode = str(job.train.get("mode") or job.train.get("train_mode") or "train").strip().lower()
     eval_only = train_mode in {"eval_only", "evaluate_only", "checkpoint_reeval", "reeval"}
@@ -1758,6 +1815,10 @@ def run_real_train(
             "train.objective_metric": objective_metric,
             "train.objective_maximize": maximize_objective,
             "train.batch_size_resolved": batch_size,
+            "train.dataloader_workers": dataloader_workers,
+            "train.dataloader_prefetch_factor": dataloader_prefetch_factor,
+            "train.pin_memory": pin_memory,
+            "train.persistent_workers": bool(persistent_workers and dataloader_workers > 0),
             "train.max_train_tiles": max_train_tiles,
             "train.max_val_tiles": max_val_tiles,
             "train.max_tiles_per_scene": max_tiles_per_scene,
@@ -1833,17 +1894,31 @@ def run_real_train(
             train_metric_acc = PixelMetricAccumulator(threshold=metric_threshold)
             train_dataset.set_epoch(epoch)
             train_batch_count = 0
-            for _batch_indices, x_cpu, y_cpu in iter_dataset_batches(
-                train_dataset,
+            train_sample_count = 0
+            train_batch_wait_sec = 0.0
+            train_loader = TilePreparationFacade.train_dataloader(
+                tile_bundle,
                 batch_size,
-                shuffle=True,
+                workers=dataloader_workers,
+                prefetch_factor=dataloader_prefetch_factor,
+                pin_memory=pin_memory,
+                persistent_workers=persistent_workers,
                 seed=seed + epoch,
-            ):
+            )
+            train_iterator = iter(train_loader)
+            while True:
+                batch_wait_started = time.perf_counter()
+                try:
+                    _batch_indices, x_cpu, y_cpu = next(train_iterator)
+                except StopIteration:
+                    break
+                train_batch_wait_sec += time.perf_counter() - batch_wait_started
                 if max_train_batches is not None and train_batch_count >= max_train_batches:
                     break
                 train_batch_count += 1
-                x = x_cpu.to(device)
-                y = y_cpu.to(device)
+                train_sample_count += int(y_cpu.shape[0])
+                x = x_cpu.to(device, non_blocking=True)
+                y = y_cpu.to(device, non_blocking=True)
                 optimizer.zero_grad(set_to_none=True)
                 logits = model(x)
                 components = _loss_components(logits, y, loss_cfg)
@@ -1862,19 +1937,33 @@ def run_real_train(
             val_sample_rows: list[dict[str, Any]] = []
             val_sample_payloads: list[dict[str, Any]] = []
             val_batch_count = 0
+            val_sample_count = 0
+            val_batch_wait_sec = 0.0
             with torch.no_grad():
                 val_dataset.set_epoch(0)
-                for batch_indices, x_cpu, y_cpu in iter_dataset_batches(
-                    val_dataset,
+                val_loader = TilePreparationFacade.val_dataloader(
+                    tile_bundle,
                     batch_size,
-                    shuffle=False,
+                    workers=dataloader_workers,
+                    prefetch_factor=dataloader_prefetch_factor,
+                    pin_memory=pin_memory,
+                    persistent_workers=persistent_workers,
                     seed=seed,
-                ):
+                )
+                val_iterator = iter(val_loader)
+                while True:
+                    batch_wait_started = time.perf_counter()
+                    try:
+                        batch_indices, x_cpu, y_cpu = next(val_iterator)
+                    except StopIteration:
+                        break
+                    val_batch_wait_sec += time.perf_counter() - batch_wait_started
                     if max_val_batches is not None and val_batch_count >= max_val_batches:
                         break
                     val_batch_count += 1
-                    x = x_cpu.to(device)
-                    y = y_cpu.to(device)
+                    val_sample_count += int(y_cpu.shape[0])
+                    x = x_cpu.to(device, non_blocking=True)
+                    y = y_cpu.to(device, non_blocking=True)
                     logits = model(x)
                     components = _loss_components(logits, y, loss_cfg)
                     val_loss_acc.update({name: float(value.detach().item()) for name, value in components.items()}, weight=int(y.shape[0]))
@@ -1907,6 +1996,13 @@ def run_real_train(
             if device.type == "cuda":
                 torch.cuda.synchronize()
             epoch_duration_sec = round(time.time() - epoch_started, 4)
+            total_batch_count = train_batch_count + val_batch_count
+            total_sample_count = train_sample_count + val_sample_count
+            total_batch_wait_sec = train_batch_wait_sec + val_batch_wait_sec
+            tile_profile_metrics = _merge_tile_profile_summaries(
+                train_dataset.profile_summary(reset=True),
+                val_dataset.profile_summary(reset=True),
+            )
 
             row = {
                 "epoch": float(epoch),
@@ -1956,7 +2052,13 @@ def run_real_train(
                 "train/epoch_duration_sec": epoch_duration_sec,
                 "train/batches": float(train_batch_count),
                 "val/batches": float(val_batch_count),
+                "data/batch_wait_sec": round(float(total_batch_wait_sec), 6),
+                "data/train_batch_wait_sec": round(float(train_batch_wait_sec), 6),
+                "data/val_batch_wait_sec": round(float(val_batch_wait_sec), 6),
+                "data/batches_per_sec": float(total_batch_count) / max(1e-9, float(epoch_duration_sec)),
+                "data/samples_per_sec": float(total_sample_count) / max(1e-9, float(epoch_duration_sec)),
             }
+            row.update(tile_profile_metrics)
             row.update(_best_threshold_metrics_payload(best_threshold, best_threshold_metrics))
             for threshold, metrics_payload in threshold_metrics.items():
                 suffix = _threshold_metric_suffix(threshold)
@@ -2065,17 +2167,31 @@ def run_real_train(
         val_sample_rows: list[dict[str, Any]] = []
         val_sample_payloads: list[dict[str, Any]] = []
         val_batch_count = 0
+        val_sample_count = 0
+        val_batch_wait_sec = 0.0
         with torch.no_grad():
             val_dataset.set_epoch(0)
-            for batch_indices, x_cpu, y_cpu in iter_dataset_batches(
-                val_dataset,
+            val_loader = TilePreparationFacade.val_dataloader(
+                tile_bundle,
                 batch_size,
-                shuffle=False,
+                workers=dataloader_workers,
+                prefetch_factor=dataloader_prefetch_factor,
+                pin_memory=pin_memory,
+                persistent_workers=persistent_workers,
                 seed=seed,
-            ):
+            )
+            val_iterator = iter(val_loader)
+            while True:
+                batch_wait_started = time.perf_counter()
+                try:
+                    batch_indices, x_cpu, y_cpu = next(val_iterator)
+                except StopIteration:
+                    break
+                val_batch_wait_sec += time.perf_counter() - batch_wait_started
                 val_batch_count += 1
-                x = x_cpu.to(device)
-                y = y_cpu.to(device)
+                val_sample_count += int(y_cpu.shape[0])
+                x = x_cpu.to(device, non_blocking=True)
+                y = y_cpu.to(device, non_blocking=True)
                 logits = model(x)
                 components = _loss_components(logits, y, loss_cfg)
                 val_loss_acc.update({name: float(value.detach().item()) for name, value in components.items()}, weight=int(y.shape[0]))
@@ -2105,6 +2221,7 @@ def run_real_train(
         if device.type == "cuda":
             torch.cuda.synchronize()
         eval_duration_sec = round(time.time() - eval_started, 4)
+        tile_profile_metrics = val_dataset.profile_summary(reset=True)
         row = {
             "epoch": 0.0,
             "train/loss": 0.0,
@@ -2154,7 +2271,13 @@ def run_real_train(
             "train/batches": 0.0,
             "val/batches": float(val_batch_count),
             "train/optimizer_steps": 0.0,
+            "data/batch_wait_sec": round(float(val_batch_wait_sec), 6),
+            "data/train_batch_wait_sec": 0.0,
+            "data/val_batch_wait_sec": round(float(val_batch_wait_sec), 6),
+            "data/batches_per_sec": float(val_batch_count) / max(1e-9, float(eval_duration_sec)),
+            "data/samples_per_sec": float(val_sample_count) / max(1e-9, float(eval_duration_sec)),
         }
+        row.update(tile_profile_metrics)
         row.update(_best_threshold_metrics_payload(best_threshold, best_threshold_metrics))
         for threshold, metrics_payload in threshold_metrics.items():
             suffix = _threshold_metric_suffix(threshold)

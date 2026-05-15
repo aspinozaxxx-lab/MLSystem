@@ -44,6 +44,7 @@ class TilePreparationConfig:
     all_touched: bool = False
     output_format: str = "chw_float32"
     normalize: bool = True
+    normalization_mode: Literal["uint8_255", "tile_percentile", "scene_percentile"] = "uint8_255"
     input_bands: list[int] | None = None
     valid_pixel_mode: str = "auto"
     min_valid_pixel_share: float = 0.0
@@ -86,6 +87,9 @@ class TilePreparationConfig:
         if self.max_records_per_scene is not None:
             self.max_records_per_scene = max(0, int(self.max_records_per_scene))
         self.valid_pixel_mode = str(self.valid_pixel_mode or "auto")
+        self.normalization_mode = str(self.normalization_mode or "uint8_255").lower()
+        if self.normalization_mode not in {"uint8_255", "tile_percentile", "scene_percentile"}:
+            raise ValueError("normalization_mode must be one of: uint8_255, tile_percentile, scene_percentile")
         self.min_valid_pixel_share = max(0.0, min(1.0, float(self.min_valid_pixel_share)))
         self.mosaic_resampling = str(self.mosaic_resampling or "bilinear")
         self.cutout_mask_mode = str(self.cutout_mask_mode or "erase").lower()
@@ -152,6 +156,7 @@ def resolve_tile_preparation_config(
                 mosaic_require_same_crs=bool(raw.get("mosaic_require_same_crs", preprocess.get("mosaic_require_same_crs", False))),
                 mosaic_resampling=str(raw.get("mosaic_resampling", preprocess.get("mosaic_resampling", "bilinear")) or "bilinear"),
                 cutout_mask_mode=str(raw.get("cutout_mask_mode", preprocess.get("cutout_mask_mode", "erase")) or "erase"),
+                normalization_mode=str(raw.get("normalization_mode", train.get("normalization_mode", preprocess.get("normalization_mode", "uint8_255"))) or "uint8_255"),
                 input_bands=input_bands,
             apply_random_augmentations=False,
             max_records=max_records,
@@ -178,6 +183,7 @@ def resolve_tile_preparation_config(
         mosaic_require_same_crs=bool(raw.get("mosaic_require_same_crs", preprocess.get("mosaic_require_same_crs", False))),
         mosaic_resampling=str(raw.get("mosaic_resampling", preprocess.get("mosaic_resampling", "bilinear")) or "bilinear"),
         cutout_mask_mode=str(raw.get("cutout_mask_mode", preprocess.get("cutout_mask_mode", "erase")) or "erase"),
+        normalization_mode=str(raw.get("normalization_mode", train.get("normalization_mode", preprocess.get("normalization_mode", "uint8_255"))) or "uint8_255"),
         max_empty_tile_share=None if max_empty_tile_share is None else max(0.0, min(1.0, float(max_empty_tile_share))),
         hard_negative_context_px=None if raw.get("hard_negative_context_px") is None else max(0, int(raw.get("hard_negative_context_px") or 0)),
         virtual_epoch_multiplier=max(1, int(raw.get("virtual_epoch_multiplier", 1) or 1)) if enabled else 1,

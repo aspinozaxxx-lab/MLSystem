@@ -197,3 +197,9 @@ Batch 8 improved the best fine-tune result and used more VRAM, but average GPU u
 - Do not promote any fine-tuned checkpoint yet.
 - If tuning resumes, start from ckpt1 and address the loader/IO bottleneck before longer runs; otherwise the GPU spends too much time waiting between batches.
 - The next scientifically useful run would be a controlled confirmation of ckpt1 without fine-tune drift, or a longer ckpt1 batch-8 fine-tune only after fixing resource utilization and keeping the early-best guard active.
+
+### 2026-05-15 tile preparation bottleneck follow-up
+
+- Action item opened from the suspicious fine-tune runs above: replace synchronous tile batch preparation with a facade DataLoader path, worker prefetch, pinned memory, STRtree geometry filtering, and `uint8_255` normalization fast path.
+- Validation constraints remain unchanged: no augmentation, no random jitter, no virtual repeats, fixed validation grid.
+- Benchmark target after deploy: compare old sync path, DataLoader workers 0/2/4/8, then run a short training smoke and record epoch duration, GPU utilization, data wait metrics, samples/sec, and MLflow run.
