@@ -10,7 +10,14 @@ from shapely.geometry import Polygon, box, mapping
 from shapely.ops import unary_union
 
 from mlsystem.src.tile_preparation.config import TilePreparationConfig
-from mlsystem.src.tile_preparation.footprint import build_scene_footprint, generate_windows_for_footprint, window_footprint_intersection
+from mlsystem.src.tile_preparation.footprint import (
+    SceneFootprint,
+    build_scene_footprint,
+    generate_windows_for_footprint,
+    rasterize_footprint_for_window,
+    window_footprint_intersection,
+)
+from mlsystem.src.tile_preparation.records import TileWindow
 
 try:
     import rasterio
@@ -42,11 +49,63 @@ class TilePreparationFootprintTests(unittest.TestCase):
             covered = unary_union([box(w.x, w.y, w.x + w.width, w.y + w.height) for w in windows])
             self.assertAlmostEqual(float(footprint.polygon_pixel.difference(covered).area), 0.0)
 
+    def test_irregular_diagonal_footprint_keeps_all_intersecting_windows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            raster_path = Path(tmp) / "diagonal.tif"
+            _write_diagonal_valid_raster(raster_path)
+
+            with rasterio.open(raster_path) as ds:
+                config = TilePreparationConfig(tile_size=64, stride=64, valid_pixel_mode="nonzero_any")
+                footprint = build_scene_footprint(ds, config, scene_id="diagonal", image_path=str(raster_path))
+                kept = generate_windows_for_footprint(ds.width, ds.height, 64, 64, footprint, "diagonal")
+                rectangular = [
+                    TileWindow("diagonal", x, y, 64, 64, 64, 64)
+                    for y in (0, 64, 128, 192)
+                    for x in (0, 64, 128, 192)
+                ]
+
+            expected = [window for window in rectangular if window_footprint_intersection(window, footprint).intersects]
+            self.assertEqual([(w.x, w.y) for w in kept], [(w.x, w.y) for w in expected])
+            covered = unary_union([box(w.x, w.y, w.x + w.width, w.y + w.height) for w in kept])
+            self.assertAlmostEqual(float(footprint.polygon_pixel.difference(covered).area), 0.0)
+
+    def test_rasterize_footprint_for_offset_window_uses_window_origin(self) -> None:
+        footprint = SceneFootprint(
+            scene_id="scene",
+            image_path="scene.tif",
+            raster_width=256,
+            raster_height=256,
+            raster_crs="EPSG:3857",
+            source="test",
+            polygon_raster_crs=box(80, 80, 140, 140),
+            polygon_pixel=box(80, 80, 140, 140),
+            bounds_pixel=(80, 80, 140, 140),
+            area_pixels_estimated=60 * 60,
+            valid_pixel_share_estimated=(60 * 60) / (256 * 256),
+            warnings=[],
+        )
+        window = TileWindow("scene", 64, 64, 64, 64, 64, 64)
+        mask = rasterize_footprint_for_window(footprint, window)
+
+        self.assertEqual(mask.shape, (64, 64))
+        self.assertEqual(int(mask[:16, :].sum()), 0)
+        self.assertEqual(int(mask[:, :16].sum()), 0)
+        self.assertGreater(int(mask[16:, 16:].sum()), 0)
+
 
 def _write_raster_with_valid_box(path: Path, *, valid_box: tuple[int, int, int, int]) -> None:
     data = np.zeros((3, 256, 256), dtype="uint8")
     x0, y0, x1, y1 = valid_box
     data[:, y0:y1, x0:x1] = 100
+    with rasterio.open(path, "w", driver="GTiff", width=256, height=256, count=3, dtype="uint8", crs="EPSG:3857", transform=from_origin(0, 256, 1, 1)) as ds:
+        ds.write(data)
+
+
+def _write_diagonal_valid_raster(path: Path) -> None:
+    data = np.zeros((3, 256, 256), dtype="uint8")
+    y, x = np.mgrid[0:256, 0:256]
+    valid = (x > y - 20) & (x < y + 110)
+    data[:, valid] = 100
     with rasterio.open(path, "w", driver="GTiff", width=256, height=256, count=3, dtype="uint8", crs="EPSG:3857", transform=from_origin(0, 256, 1, 1)) as ds:
         ds.write(data)
 

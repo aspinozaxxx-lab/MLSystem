@@ -97,11 +97,24 @@ def _result_row(workers: int, total_sec: float, bundle: Any) -> dict[str, Any]:
     counts = _record_counts(bundle.train_dataset.records)
     return {
         "record_workers": int(workers),
+        "workers": int(workers),
         "scenes": int(len(bundle.train_dataset.scenes) + len(bundle.val_dataset.scenes)),
+        "scenes_count": int(len(bundle.train_dataset.scenes) + len(bundle.val_dataset.scenes)),
+        "train_scene_count": int(len(bundle.train_dataset.scenes)),
+        "val_scene_count": int(len(bundle.val_dataset.scenes)),
         "train_records": int(train_records),
         "val_records": int(val_records),
         "total_sec": float(total_sec),
+        "train_build_sec": float(train_meta.get("build_records_sec", 0.0) or 0.0),
+        "val_build_sec": float(val_meta.get("build_records_sec", 0.0) or 0.0),
+        "train_build_footprint_sec": float(train_meta.get("build_footprint_sec", 0.0) or 0.0),
+        "val_build_footprint_sec": float(val_meta.get("build_footprint_sec", 0.0) or 0.0),
         "build_footprint_sec": float(train_meta.get("build_footprint_sec", 0.0) or 0.0) + float(val_meta.get("build_footprint_sec", 0.0) or 0.0),
+        "footprint_build_sec_total": float(train_meta.get("build_footprint_sec", 0.0) or 0.0) + float(val_meta.get("build_footprint_sec", 0.0) or 0.0),
+        "footprint_build_sec_mean": (
+            (float(train_meta.get("build_footprint_sec", 0.0) or 0.0) + float(val_meta.get("build_footprint_sec", 0.0) or 0.0))
+            / max(1, int(len(bundle.train_dataset.scenes) + len(bundle.val_dataset.scenes)))
+        ),
         "build_records_sec": float(train_meta.get("build_records_sec", 0.0) or 0.0) + float(val_meta.get("build_records_sec", 0.0) or 0.0),
         "records_per_sec": float(train_records + val_records) / max(1e-9, float(total_sec)),
         "candidate_windows_rectangular": _meta_sum(train_meta, val_meta, "candidate_windows_rectangular"),
