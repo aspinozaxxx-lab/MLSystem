@@ -17,6 +17,7 @@ from rasterio.windows import Window
 from shapely.geometry import box
 
 from .annotations import AnnotationGeometrySet, load_annotation_geometries
+from .adjacency import build_scene_adjacency_index
 from .augmentations import apply_training_augmentation
 from .config import AnnotationInput, SceneInput, TilePreparationConfig
 from .footprint import (
@@ -30,6 +31,7 @@ from .footprint import (
 )
 from .mask_rasterizer import positive_pixel_bbox, rasterize_mask_for_window
 from .mosaic import read_mosaic_window
+from .mosaic_plan import apply_mosaic_plans, mosaic_plan_counters
 from .raster_reader import format_training_image, read_training_image
 from .records import ReadyTileSample, TileKind, TileRecordBuildResult, TileSampleRecord, TileWindow
 from .summary import summarize_tile_records
@@ -78,8 +80,11 @@ def build_tile_records(
         config,
         train=True,
     )
-    footprints_by_image_path: dict[str, dict[str, Any]] = {}
+    footprints_by_image_path: dict[str, dict[str, Any]] = {output.image_path: output.footprint_metadata for output in scene_outputs}
+    footprints_by_scene_id = {output.scene_id: SceneFootprint.from_metadata(output.footprint_metadata) for output in scene_outputs}
+    adjacency_index = build_scene_adjacency_index(footprints_by_scene_id) if config.mosaic_enabled else build_scene_adjacency_index({})
     footprint_counter_totals: dict[str, int] = {}
+    mosaic_counter_totals: dict[str, int] = {}
     build_footprint_total_sec = 0.0
     build_records_total_sec = 0.0
     for output in scene_outputs:
@@ -88,12 +93,12 @@ def build_tile_records(
         annotation_by_scene[scene_id] = dict(annotation_summary)
         warnings.extend(output.annotation_warnings)
         warnings.extend(output.footprint_metadata.get("warnings") or [])
-        footprints_by_image_path[output.image_path] = output.footprint_metadata
         build_footprint_total_sec += float(output.build_footprint_sec)
         build_records_total_sec += float(output.build_records_sec)
         for key, value in output.footprint_counters.items():
             footprint_counter_totals[key] = int(footprint_counter_totals.get(key, 0)) + int(value)
         scene_records = list(output.records)
+        scene_mosaic_counters = apply_mosaic_plans(scene_records, footprints_by_scene_id, adjacency_index) if config.mosaic_enabled else mosaic_plan_counters(scene_records)
         scene_skip_counts = dict(output.skip_counts)
         _log_progress(f"built_train_records scene={scene_id} records={len(scene_records)}")
         for key in skip_totals:
@@ -101,9 +106,13 @@ def build_tile_records(
         before_limit = list(scene_records)
         scene_records, limit_warnings = limit_empty_tile_share(scene_records, config.max_empty_tile_share, seed=config.seed)
         warnings.extend(limit_warnings)
+        scene_mosaic_counters = mosaic_plan_counters(scene_records)
         if config.max_records_per_scene is not None and len(scene_records) > config.max_records_per_scene:
             scene_records = _limit_records(scene_records, config.max_records_per_scene, rng)
+            scene_mosaic_counters = mosaic_plan_counters(scene_records)
         base_records.extend(scene_records)
+        for key, value in scene_mosaic_counters.items():
+            mosaic_counter_totals[key] = int(mosaic_counter_totals.get(key, 0)) + int(value)
         scene_summary = summarize_tile_records(scene_records)
         scene_reports.append(
             {
@@ -124,6 +133,7 @@ def build_tile_records(
                 "build_footprint_sec": output.build_footprint_sec,
                 "build_records_sec": output.build_records_sec,
                 **output.footprint_counters,
+                **scene_mosaic_counters,
                 **scene_skip_counts,
                 **scene_summary,
             }
@@ -131,6 +141,7 @@ def build_tile_records(
 
     if config.max_records is not None and len(base_records) > config.max_records:
         base_records = _limit_records(base_records, config.max_records, rng)
+        mosaic_counter_totals = mosaic_plan_counters(base_records)
     if config.shuffle:
         rng.shuffle(base_records)
     virtual_records = apply_virtual_repeats(base_records, config)
@@ -159,6 +170,7 @@ def build_tile_records(
             "build_records_sec": build_records_total_sec,
             "read_valid_mask_calls": 0,
             **footprint_counter_totals,
+            **mosaic_counter_totals,
             **skip_totals,
         },
     )
@@ -225,8 +237,11 @@ def build_validation_tile_records(
     skip_totals = {"skipped_fully_invalid_tiles": 0, "skipped_low_valid_share_tiles": 0}
     active_scenes = [scene for scene in scenes if not bool(scene.metadata.get("mosaic_neighbor_only"))]
     scene_outputs = _build_scene_outputs(active_scenes, annotation, config, train=False)
-    footprints_by_image_path: dict[str, dict[str, Any]] = {}
+    footprints_by_image_path: dict[str, dict[str, Any]] = {output.image_path: output.footprint_metadata for output in scene_outputs}
+    footprints_by_scene_id = {output.scene_id: SceneFootprint.from_metadata(output.footprint_metadata) for output in scene_outputs}
+    adjacency_index = build_scene_adjacency_index(footprints_by_scene_id) if config.mosaic_enabled else build_scene_adjacency_index({})
     footprint_counter_totals: dict[str, int] = {}
+    mosaic_counter_totals: dict[str, int] = {}
     build_footprint_total_sec = 0.0
     build_records_total_sec = 0.0
     for output in scene_outputs:
@@ -235,19 +250,22 @@ def build_validation_tile_records(
         annotation_by_scene[scene_id] = dict(annotation_summary)
         warnings.extend(output.annotation_warnings)
         warnings.extend(output.footprint_metadata.get("warnings") or [])
-        footprints_by_image_path[output.image_path] = output.footprint_metadata
         build_footprint_total_sec += float(output.build_footprint_sec)
         build_records_total_sec += float(output.build_records_sec)
         for key, value in output.footprint_counters.items():
             footprint_counter_totals[key] = int(footprint_counter_totals.get(key, 0)) + int(value)
         scene_records = list(output.records)
+        scene_mosaic_counters = apply_mosaic_plans(scene_records, footprints_by_scene_id, adjacency_index) if config.mosaic_enabled else mosaic_plan_counters(scene_records)
         scene_skip_counts = dict(output.skip_counts)
         for key in skip_totals:
             skip_totals[key] += int(scene_skip_counts.get(key, 0))
         scene_records.sort(key=lambda item: (item.y, item.x))
         if config.max_records_per_scene is not None and len(scene_records) > config.max_records_per_scene:
             scene_records = scene_records[: config.max_records_per_scene]
+            scene_mosaic_counters = mosaic_plan_counters(scene_records)
         records.extend(scene_records)
+        for key, value in scene_mosaic_counters.items():
+            mosaic_counter_totals[key] = int(mosaic_counter_totals.get(key, 0)) + int(value)
         _log_progress(f"built_val_records scene={scene_id} records={len(scene_records)}")
         summary = summarize_tile_records(scene_records)
         scene_reports.append(
@@ -269,12 +287,14 @@ def build_validation_tile_records(
                 "build_footprint_sec": output.build_footprint_sec,
                 "build_records_sec": output.build_records_sec,
                 **output.footprint_counters,
+                **scene_mosaic_counters,
                 **scene_skip_counts,
                 **summary,
             }
         )
         if config.max_records is not None and len(records) >= config.max_records:
             records = records[: config.max_records]
+            mosaic_counter_totals = mosaic_plan_counters(records)
             break
     return TileRecordBuildResult(
         records=records,
@@ -297,6 +317,7 @@ def build_validation_tile_records(
             "build_records_sec": build_records_total_sec,
             "read_valid_mask_calls": 0,
             **footprint_counter_totals,
+            **mosaic_counter_totals,
             **skip_totals,
         },
     )
@@ -314,6 +335,13 @@ def iter_training_tiles(
     open_datasets: dict[str, Any] = {}
     annotation_cache: dict[str, AnnotationGeometrySet] = {}
     scene_ids_by_path = {_rasterio_path(scene.image_path): scene.resolved_scene_id() for scene in scenes}
+    footprints_by_image_path: dict[str, SceneFootprint] = {}
+    for path, payload in (result.metadata.get("footprints_by_image_path") or {}).items():
+        if isinstance(payload, dict):
+            try:
+                footprints_by_image_path[str(path)] = SceneFootprint.from_metadata(payload)
+            except Exception:  # noqa: BLE001
+                continue
     try:
         if config.mosaic_enabled:
             for scene in scenes:
@@ -332,10 +360,19 @@ def iter_training_tiles(
             if annotation_geoms is None:
                 annotation_geoms = load_annotation_geometries(annotation, raster_crs=ds.crs)
                 annotation_cache[record.image_path] = annotation_geoms
-            valid = read_valid_data_mask_with_source(ds, record, mode=config.valid_pixel_mode)
             mosaic_metadata: dict[str, Any] = {}
-            if config.mosaic_enabled:
-                mosaic = read_mosaic_window(ds, _neighbor_datasets(record.image_path, open_datasets, scene_ids_by_path, config), record, config)
+            footprint = footprints_by_image_path.get(record.image_path)
+            use_mosaic = config.mosaic_enabled and bool(record.metadata.get("mosaic_needed", False))
+            if use_mosaic:
+                candidate_scene_ids = [str(item) for item in record.metadata.get("mosaic_candidate_scene_ids") or []]
+                mosaic = read_mosaic_window(
+                    ds,
+                    _neighbor_datasets(record.image_path, open_datasets, scene_ids_by_path, config, candidate_scene_ids=candidate_scene_ids),
+                    record,
+                    config,
+                    anchor_footprint=footprint,
+                    neighbor_footprints=_neighbor_footprints(record.image_path, footprints_by_image_path, scene_ids_by_path, candidate_scene_ids),
+                )
                 valid_mask = mosaic.valid_mask
                 image = format_training_image(mosaic.image, config)
                 valid_source = mosaic.valid_data_source
@@ -349,12 +386,52 @@ def iter_training_tiles(
                     "mosaic_intersecting_neighbors": mosaic.intersecting_neighbors,
                     "mosaic_actually_used_neighbors": mosaic.actually_used_neighbors,
                     "mosaic_skipped_non_intersecting_neighbors": mosaic.skipped_non_intersecting_neighbors,
+                    "mosaic_attempted": mosaic.attempted,
+                    "mosaic_skipped_no_candidates": mosaic.skipped_no_candidates,
+                    "mosaic_skipped_no_gap": mosaic.skipped_no_gap,
+                    "mosaic_warped_vrt_calls": mosaic.warped_vrt_calls,
+                    "mosaic_used_neighbors": len(mosaic.actually_used_neighbors),
+                    "mosaic_zero_fill_attempts": mosaic.zero_fill_attempts,
+                    "mosaic_neighbor_valid_from_footprint": mosaic.neighbor_valid_from_footprint,
+                    "mosaic_neighbor_valid_from_pixels_fallback": mosaic.neighbor_valid_from_pixels_fallback,
                     "mosaic_warnings": mosaic.warnings,
                 }
             else:
-                valid_mask = valid.mask
+                mode = str(record.metadata.get("footprint_valid_mask_mode") or "")
+                if mode == "full":
+                    valid_mask = None
+                    valid_source = str(record.metadata.get("footprint_source") or "footprint")
+                elif mode == "footprint_boundary" and footprint is not None:
+                    valid_mask = rasterize_footprint_for_window(footprint, record)
+                    valid_source = str(record.metadata.get("footprint_source") or footprint.source)
+                else:
+                    valid = read_valid_data_mask_with_source(ds, record, mode=config.valid_pixel_mode)
+                    valid_mask = valid.mask
+                    valid_source = f"{valid.source}:fallback"
                 image = read_training_image(ds, record, config)
-                valid_source = valid.source
+                candidates = list(record.metadata.get("mosaic_candidate_scene_ids") or [])
+                reason = str(record.metadata.get("mosaic_reason") or ("mosaic_disabled" if not config.mosaic_enabled else "not_needed"))
+                mosaic_metadata = {
+                    "mosaic_sources": [record.scene_id],
+                    "mosaic_filled_pixel_count": 0,
+                    "mosaic_unfilled_pixel_count": int(record.width * record.height * max(0.0, float(record.invalid_pixel_share))),
+                    "valid_pixel_share_before_mosaic": float(record.metadata.get("valid_pixel_share_before_mosaic", record.valid_pixel_share) or record.valid_pixel_share),
+                    "valid_pixel_share_after_mosaic": float(record.valid_pixel_share),
+                    "mosaic_candidate_neighbors": int(len(candidates)),
+                    "mosaic_intersecting_neighbors": 0,
+                    "mosaic_actually_used_neighbors": [],
+                    "mosaic_skipped_non_intersecting_neighbors": int(len(candidates)),
+                    "mosaic_attempted": False,
+                    "mosaic_skipped_fully_inside": reason == "fully_inside_footprint",
+                    "mosaic_skipped_no_candidates": reason in {"no_neighbor_for_gap", "no_raster_transform", "missing_anchor_footprint"},
+                    "mosaic_skipped_no_gap": reason == "no_gap",
+                    "mosaic_warped_vrt_calls": 0,
+                    "mosaic_used_neighbors": 0,
+                    "mosaic_zero_fill_attempts": 0,
+                    "mosaic_neighbor_valid_from_footprint": 0,
+                    "mosaic_neighbor_valid_from_pixels_fallback": 0,
+                    "mosaic_warnings": [],
+                }
             mask_result = rasterize_mask_for_window(
                 ds,
                 annotation_geoms.geometries,
@@ -369,6 +446,13 @@ def iter_training_tiles(
                 "mask_pixels_before_valid_clip": mask_result.raw_positive_pixels,
                 "mask_pixels_after_valid_clip": mask_result.clipped_positive_pixels,
                 "valid_data_source": valid_source,
+                "mosaic_needed": bool(record.metadata.get("mosaic_needed", False)),
+                "mosaic_reason": record.metadata.get("mosaic_reason"),
+                "mosaic_side": record.metadata.get("mosaic_side"),
+                "mosaic_candidate_scene_ids": list(record.metadata.get("mosaic_candidate_scene_ids") or []),
+                "mosaic_estimated_gap_share": float(record.metadata.get("mosaic_estimated_gap_share", 0.0) or 0.0),
+                "mosaic_estimated_neighbor_cover_share": float(record.metadata.get("mosaic_estimated_neighbor_cover_share", 0.0) or 0.0),
+                "mosaic_overlap_record": bool(record.metadata.get("mosaic_overlap_record", False)),
                 **mosaic_metadata,
             }
             if config.apply_random_augmentations and any(bool(value) for value in (config.augmentations or {}).values()):
@@ -763,14 +847,35 @@ def _neighbor_datasets(
     datasets: dict[str, Any],
     scene_ids_by_path: dict[str, str],
     config: TilePreparationConfig,
+    *,
+    candidate_scene_ids: list[str] | None = None,
 ) -> list[tuple[str, Any]]:
     if not config.mosaic_enabled:
         return []
+    candidate_set = {str(item) for item in candidate_scene_ids or []}
     return [
         (scene_ids_by_path.get(path, path), ds)
         for path, ds in datasets.items()
-        if path != image_path
+        if path != image_path and (not candidate_set or scene_ids_by_path.get(path, path) in candidate_set)
     ]
+
+
+def _neighbor_footprints(
+    image_path: str,
+    footprints_by_image_path: dict[str, SceneFootprint],
+    scene_ids_by_path: dict[str, str],
+    candidate_scene_ids: list[str] | None,
+) -> dict[str, SceneFootprint]:
+    candidate_set = {str(item) for item in candidate_scene_ids or []}
+    footprints: dict[str, SceneFootprint] = {}
+    for path, footprint in footprints_by_image_path.items():
+        if path == image_path:
+            continue
+        scene_id = scene_ids_by_path.get(path, str(footprint.scene_id or path))
+        if candidate_set and scene_id not in candidate_set:
+            continue
+        footprints[scene_id] = footprint
+    return footprints
 
 
 def _rasterio_path(value: str | Path | None) -> str:

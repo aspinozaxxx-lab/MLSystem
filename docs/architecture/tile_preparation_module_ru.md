@@ -134,3 +134,41 @@ Scene reports и metadata содержат:
 
 Параллельный build scene records включается внутри модуля через `MLSYSTEM_TILE_RECORD_WORKERS`.
 На Windows default последовательный; на Linux default ограничен количеством сцен и CPU, максимум 16.
+
+## SceneAdjacency и TileMosaicPlan
+
+`tile_preparation` заранее строит internal `SceneAdjacencyIndex` по `SceneFootprint` всех сцен. Индекс описывает только геометрически полезных соседей:
+
+- `overlap` - footprint соседней сцены пересекает anchor footprint;
+- `touch` - footprint касается anchor в пределах допуска;
+- `near` - зарезервировано для малого расстояния, если оно включено;
+- `disjoint` наружу не попадает и не становится candidate для mosaic.
+
+Для каждого record создается internal `TileMosaicPlan`. Он не расширяет публичный фасад, а записывает служебные поля в `TileSampleRecord.metadata`:
+
+- `mosaic_needed`;
+- `mosaic_reason`;
+- `mosaic_side`;
+- `mosaic_candidate_scene_ids`;
+- `mosaic_estimated_gap_share`;
+- `mosaic_estimated_neighbor_cover_share`;
+- `mosaic_overlap_record`.
+
+Если tile полностью внутри footprint anchor-сцены, mosaic не вызывается. Если boundary tile имеет gap, но сосед не покрывает этот gap геометрически, mosaic также не вызывается. `read_mosaic_window` вызывается только для records, где `TileMosaicPlan.needed=True`, и получает только candidate neighbors из плана.
+
+Overlap policy намеренно простая: neighbor используется только для пикселей, где anchor invalid. Valid-valid blending не реализован, чтобы не менять семантику данных и не тратить время на ненужное смешивание снимков.
+
+Mosaic counters доступны в build metadata, scene reports и sample metadata:
+
+- `mosaic_attempted`;
+- `mosaic_skipped_fully_inside`;
+- `mosaic_skipped_no_gap`;
+- `mosaic_skipped_no_candidates`;
+- `mosaic_candidate_neighbors_total`;
+- `mosaic_intersecting_neighbors_total`;
+- `mosaic_warped_vrt_calls`;
+- `mosaic_used_neighbors`;
+- `mosaic_filled_pixels`;
+- `mosaic_zero_fill_attempts`;
+- `mosaic_boundary_records`;
+- `mosaic_overlap_records`.

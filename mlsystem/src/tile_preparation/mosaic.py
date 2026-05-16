@@ -5,6 +5,7 @@ from typing import Any
 
 import numpy as np
 from rasterio.enums import Resampling
+from rasterio.features import rasterize
 from rasterio.vrt import WarpedVRT
 from rasterio.warp import transform_bounds
 from rasterio.windows import Window
@@ -33,6 +34,13 @@ class MosaicReadResult:
     intersecting_neighbors: int = 0
     actually_used_neighbors: list[str] = field(default_factory=list)
     skipped_non_intersecting_neighbors: int = 0
+    attempted: bool = False
+    skipped_no_candidates: bool = False
+    skipped_no_gap: bool = False
+    warped_vrt_calls: int = 0
+    zero_fill_attempts: int = 0
+    neighbor_valid_from_footprint: int = 0
+    neighbor_valid_from_pixels_fallback: int = 0
 
 
 def read_mosaic_window(
@@ -64,8 +72,12 @@ def read_mosaic_window(
     candidate_neighbors = len(neighbor_datasets)
     intersecting_neighbors = 0
     skipped_non_intersecting_neighbors = 0
+    warped_vrt_calls = 0
+    zero_fill_attempts = 0
+    neighbor_valid_from_footprint = 0
+    neighbor_valid_from_pixels_fallback = 0
 
-    if not config.mosaic_enabled or not config.mosaic_fill_nodata or valid.all():
+    if not config.mosaic_enabled or not config.mosaic_fill_nodata:
         return MosaicReadResult(
             image=image,
             valid_mask=valid,
@@ -81,6 +93,63 @@ def read_mosaic_window(
             intersecting_neighbors=0,
             actually_used_neighbors=[],
             skipped_non_intersecting_neighbors=0,
+            attempted=False,
+            skipped_no_candidates=False,
+            skipped_no_gap=False,
+            warped_vrt_calls=0,
+            zero_fill_attempts=0,
+            neighbor_valid_from_footprint=0,
+            neighbor_valid_from_pixels_fallback=0,
+        )
+
+    if valid.all():
+        return MosaicReadResult(
+            image=image,
+            valid_mask=valid,
+            source_map=source_map,
+            source_scenes=source_scenes,
+            filled_pixel_count=0,
+            unfilled_pixel_count=0,
+            warnings=warnings,
+            anchor_valid_pixel_share=anchor_valid_share,
+            final_valid_pixel_share=anchor_valid_share,
+            valid_data_source=anchor_valid_source,
+            candidate_neighbors=candidate_neighbors,
+            intersecting_neighbors=0,
+            actually_used_neighbors=[],
+            skipped_non_intersecting_neighbors=0,
+            attempted=False,
+            skipped_no_candidates=False,
+            skipped_no_gap=True,
+            warped_vrt_calls=0,
+            zero_fill_attempts=0,
+            neighbor_valid_from_footprint=0,
+            neighbor_valid_from_pixels_fallback=0,
+        )
+
+    if not neighbor_datasets:
+        return MosaicReadResult(
+            image=image,
+            valid_mask=valid,
+            source_map=source_map,
+            source_scenes=source_scenes,
+            filled_pixel_count=0,
+            unfilled_pixel_count=int(valid.size - np.count_nonzero(valid)),
+            warnings=warnings,
+            anchor_valid_pixel_share=anchor_valid_share,
+            final_valid_pixel_share=anchor_valid_share,
+            valid_data_source=anchor_valid_source,
+            candidate_neighbors=0,
+            intersecting_neighbors=0,
+            actually_used_neighbors=[],
+            skipped_non_intersecting_neighbors=0,
+            attempted=False,
+            skipped_no_candidates=True,
+            skipped_no_gap=False,
+            warped_vrt_calls=0,
+            zero_fill_attempts=0,
+            neighbor_valid_from_footprint=0,
+            neighbor_valid_from_pixels_fallback=0,
         )
 
     target_transform = anchor_ds.window_transform(raster_window)
@@ -93,6 +162,14 @@ def read_mosaic_window(
             skipped_non_intersecting_neighbors += 1
             continue
         intersecting_neighbors += 1
+        neighbor_valid = None
+        if neighbor_footprints and scene_id in neighbor_footprints:
+            neighbor_valid = _rasterize_neighbor_footprint_in_anchor_window(neighbor_footprints[scene_id], neighbor_ds, anchor_ds, record)
+            neighbor_valid_from_footprint += 1
+            fill_candidate = (valid == 0) & (neighbor_valid > 0)
+            if not fill_candidate.any():
+                zero_fill_attempts += 1
+                continue
         try:
             with WarpedVRT(
                 neighbor_ds,
@@ -102,13 +179,18 @@ def read_mosaic_window(
                 height=int(record.height),
                 resampling=_resampling(config.mosaic_resampling),
             ) as vrt:
+                warped_vrt_calls += 1
                 neighbor_image = vrt.read(_bands(vrt, config), window=Window(0, 0, int(record.width), int(record.height)))
-                neighbor_valid = read_valid_data_mask_with_source(vrt, Window(0, 0, int(record.width), int(record.height)), mode=config.valid_pixel_mode)
+                if neighbor_valid is None:
+                    neighbor_valid_result = read_valid_data_mask_with_source(vrt, Window(0, 0, int(record.width), int(record.height)), mode=config.valid_pixel_mode)
+                    neighbor_valid = neighbor_valid_result.mask
+                    neighbor_valid_from_pixels_fallback += 1
         except Exception as exc:  # noqa: BLE001
             warnings.append(f"mosaic skipped {scene_id}: {type(exc).__name__}: {exc}")
             continue
-        fill = (valid == 0) & (neighbor_valid.mask > 0)
+        fill = (valid == 0) & (neighbor_valid > 0)
         if not fill.any():
+            zero_fill_attempts += 1
             continue
         image[:, fill] = neighbor_image[:, fill]
         valid[fill] = 1
@@ -135,6 +217,13 @@ def read_mosaic_window(
         intersecting_neighbors=intersecting_neighbors,
         actually_used_neighbors=actually_used_neighbors,
         skipped_non_intersecting_neighbors=skipped_non_intersecting_neighbors,
+        attempted=True,
+        skipped_no_candidates=False,
+        skipped_no_gap=False,
+        warped_vrt_calls=warped_vrt_calls,
+        zero_fill_attempts=zero_fill_attempts,
+        neighbor_valid_from_footprint=neighbor_valid_from_footprint,
+        neighbor_valid_from_pixels_fallback=neighbor_valid_from_pixels_fallback,
     )
 
 
@@ -203,6 +292,44 @@ def _neighbor_intersects_target(
     except Exception:  # noqa: BLE001
         return False
     return _bounds_intersect(target_bounds, neighbor_bounds)
+
+
+def _rasterize_neighbor_footprint_in_anchor_window(
+    neighbor_footprint: SceneFootprint,
+    neighbor_ds: Any,
+    anchor_ds: Any,
+    record: TileWindow | TileSampleRecord,
+) -> np.ndarray:
+    polygon = neighbor_footprint.polygon_raster_crs
+    if polygon is None:
+        return np.zeros((int(record.height), int(record.width)), dtype="uint8")
+    if neighbor_ds.crs and anchor_ds.crs and neighbor_ds.crs != anchor_ds.crs:
+        try:
+            from pyproj import Transformer
+
+            transformer = Transformer.from_crs(neighbor_ds.crs, anchor_ds.crs, always_xy=True)
+            polygon = shapely_transform(transformer.transform, polygon)
+        except Exception:  # noqa: BLE001
+            return np.zeros((int(record.height), int(record.width)), dtype="uint8")
+    try:
+        inverse = ~anchor_ds.transform
+        pixel_polygon = shapely_transform(lambda x, y, z=None: inverse * (x, y), polygon)
+    except Exception:  # noqa: BLE001
+        return np.zeros((int(record.height), int(record.width)), dtype="uint8")
+    return rasterize(
+        [(pixel_polygon, 1)],
+        out_shape=(int(record.height), int(record.width)),
+        transform=_window_rasterize_transform(record),
+        fill=0,
+        dtype="uint8",
+        all_touched=True,
+    ).astype("uint8")
+
+
+def _window_rasterize_transform(record: TileWindow | TileSampleRecord):
+    from affine import Affine
+
+    return Affine.translation(float(record.x), float(record.y))
 
 
 def _bounds_intersect(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> bool:

@@ -86,6 +86,13 @@ class TileSampleRecord:
             "footprint_valid_share_estimated": float(metadata.get("footprint_valid_share_estimated", self.valid_pixel_share) or 0.0),
             "footprint_source": metadata.get("footprint_source"),
             "footprint_boundary": bool(metadata.get("footprint_boundary", False)),
+            "mosaic_needed": bool(metadata.get("mosaic_needed", False)),
+            "mosaic_reason": metadata.get("mosaic_reason"),
+            "mosaic_side": metadata.get("mosaic_side"),
+            "mosaic_candidate_scene_ids": list(metadata.get("mosaic_candidate_scene_ids") or []),
+            "mosaic_estimated_gap_share": float(metadata.get("mosaic_estimated_gap_share", 0.0) or 0.0),
+            "mosaic_estimated_neighbor_cover_share": float(metadata.get("mosaic_estimated_neighbor_cover_share", 0.0) or 0.0),
+            "mosaic_overlap_record": bool(metadata.get("mosaic_overlap_record", False)),
             "metadata": metadata,
         }
 

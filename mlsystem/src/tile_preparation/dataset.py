@@ -71,15 +71,17 @@ class TrainingTileDataset(torch.utils.data.Dataset):
         ds = self._dataset(record.image_path)
         annotation_geoms = self._annotation_geometries(record.image_path, ds)
         mosaic_metadata: dict[str, Any] = {}
-        if self.config.mosaic_enabled:
+        use_mosaic = self.config.mosaic_enabled and bool(record.metadata.get("mosaic_needed", False))
+        if use_mosaic:
+            candidate_scene_ids = [str(item) for item in record.metadata.get("mosaic_candidate_scene_ids") or []]
             with self._profile.time_sample("mosaic_sec", sample_profile):
                 mosaic = read_mosaic_window(
                     ds,
-                    self._neighbor_datasets(record.image_path),
+                    self._neighbor_datasets(record.image_path, candidate_scene_ids=candidate_scene_ids),
                     record,
                     self.config,
                     anchor_footprint=self._footprint(record.image_path),
-                    neighbor_footprints=self._neighbor_footprints(record.image_path),
+                    neighbor_footprints=self._neighbor_footprints(record.image_path, candidate_scene_ids=candidate_scene_ids),
                 )
             valid_mask = mosaic.valid_mask
             with self._profile.time_sample("normalize_sec", sample_profile):
@@ -94,6 +96,14 @@ class TrainingTileDataset(torch.utils.data.Dataset):
                 "mosaic_intersecting_neighbors": mosaic.intersecting_neighbors,
                 "mosaic_actually_used_neighbors": mosaic.actually_used_neighbors,
                 "mosaic_skipped_non_intersecting_neighbors": mosaic.skipped_non_intersecting_neighbors,
+                "mosaic_attempted": mosaic.attempted,
+                "mosaic_skipped_no_candidates": mosaic.skipped_no_candidates,
+                "mosaic_skipped_no_gap": mosaic.skipped_no_gap,
+                "mosaic_warped_vrt_calls": mosaic.warped_vrt_calls,
+                "mosaic_used_neighbors": len(mosaic.actually_used_neighbors),
+                "mosaic_zero_fill_attempts": mosaic.zero_fill_attempts,
+                "mosaic_neighbor_valid_from_footprint": mosaic.neighbor_valid_from_footprint,
+                "mosaic_neighbor_valid_from_pixels_fallback": mosaic.neighbor_valid_from_pixels_fallback,
                 "mosaic_warnings": mosaic.warnings,
             }
             valid_source = mosaic.valid_data_source
@@ -103,6 +113,7 @@ class TrainingTileDataset(torch.utils.data.Dataset):
                 arr = read_band_window(ds, record, bands=self.config.input_bands)
             with self._profile.time_sample("normalize_sec", sample_profile):
                 image = format_training_image(arr, self.config, scene_stats=self._scene_stats(record.image_path, ds))
+            mosaic_metadata = self._mosaic_skip_metadata(record)
         with self._profile.time_sample("rasterize_sec", sample_profile):
             mask_result = rasterize_mask_for_window(
                 ds,
@@ -121,6 +132,13 @@ class TrainingTileDataset(torch.utils.data.Dataset):
             "mask_pixels_before_valid_clip": mask_result.raw_positive_pixels,
             "mask_pixels_after_valid_clip": mask_result.clipped_positive_pixels,
             "valid_data_source": valid_source,
+            "mosaic_needed": bool(record.metadata.get("mosaic_needed", False)),
+            "mosaic_reason": record.metadata.get("mosaic_reason"),
+            "mosaic_side": record.metadata.get("mosaic_side"),
+            "mosaic_candidate_scene_ids": list(record.metadata.get("mosaic_candidate_scene_ids") or []),
+            "mosaic_estimated_gap_share": float(record.metadata.get("mosaic_estimated_gap_share", 0.0) or 0.0),
+            "mosaic_estimated_neighbor_cover_share": float(record.metadata.get("mosaic_estimated_neighbor_cover_share", 0.0) or 0.0),
+            "mosaic_overlap_record": bool(record.metadata.get("mosaic_overlap_record", False)),
             **mosaic_metadata,
         }
         if self.train and self.config.apply_random_augmentations and any(bool(value) for value in (self.config.augmentations or {}).values()):
@@ -190,28 +208,36 @@ class TrainingTileDataset(torch.utils.data.Dataset):
             self._datasets[image_path] = ds
         return ds
 
-    def _neighbor_datasets(self, image_path: str) -> list[tuple[str, Any]]:
+    def _neighbor_datasets(self, image_path: str, *, candidate_scene_ids: list[str] | None = None) -> list[tuple[str, Any]]:
         if not self.config.mosaic_enabled:
             return []
+        candidate_set = {str(item) for item in candidate_scene_ids or []}
         neighbors: list[tuple[str, Any]] = []
         for scene in self.scenes:
             path = str(scene.image_path)
             if path == image_path:
                 continue
-            neighbors.append((scene.resolved_scene_id(), self._dataset(path)))
+            scene_id = scene.resolved_scene_id()
+            if candidate_set and scene_id not in candidate_set:
+                continue
+            neighbors.append((scene_id, self._dataset(path)))
         return neighbors
 
-    def _neighbor_footprints(self, image_path: str) -> dict[str, SceneFootprint]:
+    def _neighbor_footprints(self, image_path: str, *, candidate_scene_ids: list[str] | None = None) -> dict[str, SceneFootprint]:
         if not self.config.mosaic_enabled:
             return {}
+        candidate_set = {str(item) for item in candidate_scene_ids or []}
         footprints: dict[str, SceneFootprint] = {}
         for scene in self.scenes:
             path = str(scene.image_path)
             if path == image_path:
                 continue
+            scene_id = scene.resolved_scene_id()
+            if candidate_set and scene_id not in candidate_set:
+                continue
             footprint = self._footprint(path)
             if footprint is not None:
-                footprints[scene.resolved_scene_id()] = footprint
+                footprints[scene_id] = footprint
         return footprints
 
     def _annotation_geometries(self, image_path: str, ds: Any) -> Any:
@@ -259,6 +285,31 @@ class TrainingTileDataset(torch.utils.data.Dataset):
         footprint = SceneFootprint.from_metadata(payload)
         self._footprint_cache[image_path] = footprint
         return footprint
+
+    def _mosaic_skip_metadata(self, record: TileSampleRecord) -> dict[str, Any]:
+        reason = str(record.metadata.get("mosaic_reason") or ("mosaic_disabled" if not self.config.mosaic_enabled else "not_needed"))
+        candidates = list(record.metadata.get("mosaic_candidate_scene_ids") or [])
+        return {
+            "mosaic_sources": [record.scene_id],
+            "mosaic_filled_pixel_count": 0,
+            "mosaic_unfilled_pixel_count": int(record.width * record.height * max(0.0, float(record.invalid_pixel_share))),
+            "valid_pixel_share_before_mosaic": float(record.metadata.get("valid_pixel_share_before_mosaic", record.valid_pixel_share) or record.valid_pixel_share),
+            "valid_pixel_share_after_mosaic": float(record.valid_pixel_share),
+            "mosaic_candidate_neighbors": int(len(candidates)),
+            "mosaic_intersecting_neighbors": 0,
+            "mosaic_actually_used_neighbors": [],
+            "mosaic_skipped_non_intersecting_neighbors": int(len(candidates)),
+            "mosaic_attempted": False,
+            "mosaic_skipped_fully_inside": reason == "fully_inside_footprint",
+            "mosaic_skipped_no_gap": reason == "no_gap",
+            "mosaic_skipped_no_candidates": reason in {"no_neighbor_for_gap", "no_raster_transform", "missing_anchor_footprint"},
+            "mosaic_warped_vrt_calls": 0,
+            "mosaic_used_neighbors": 0,
+            "mosaic_zero_fill_attempts": 0,
+            "mosaic_neighbor_valid_from_footprint": 0,
+            "mosaic_neighbor_valid_from_pixels_fallback": 0,
+            "mosaic_warnings": [],
+        }
 
 
 def iter_dataset_batches(

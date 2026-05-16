@@ -10,6 +10,7 @@
 - `mlsystem-api` container poluchil `shm_size=${MLSYSTEM_API_SHM_SIZE:-1gb}`, chtoby DataLoader workers mogli peredavat 512px batch tensor bez `/dev/shm` OOM.
 - Dobavlen lokalnyy `scripts/profile_tile_training_local.py`: korotkiy profiler batch_wait, tile-prep function timings, CPU->GPU transfer, forward/loss/backward/optimizer step s JSON/CSV/Markdown output.
 - `tile_preparation` pereveden na `SceneFootprint`: records stroyatsya tolko po fakticheskomu footprint snimka, boundary valid mask rasterizuetsya iz footprint, per-window `read_valid_mask` v build records ubrany; dobavlen `scripts/benchmark_tile_record_build.py`.
+- `tile_preparation` poluchil internal `SceneAdjacencyIndex` i `TileMosaicPlan`: mosaic vyzyvaetsya tolko dlya boundary records s geometriqueski poleznymi sosedyami, `WarpedVRT` sozdaetsya lazy, neighbor valid mask beretsya iz footprint.
 - Zafiksirovany architecture docs dlya module boundaries, `tile_preparation`, `mlflow_adapter`, `pipeline_runner`, tile/preprocessing inventory i pipeline/orchestration inventory; dobavlen runbook zapuska experimentov bez Airflow.
 
 ## 2026-05-07

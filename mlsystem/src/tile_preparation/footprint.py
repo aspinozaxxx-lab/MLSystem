@@ -12,6 +12,7 @@ from rasterio.features import rasterize, shapes
 from rasterio.enums import Resampling
 from rasterio.windows import Window
 from shapely.geometry import box, shape
+from shapely.ops import transform as shapely_transform
 from shapely.ops import unary_union
 from shapely import wkt
 
@@ -34,6 +35,7 @@ class SceneFootprint:
     valid_pixel_share_estimated: float
     warnings: list[str] = field(default_factory=list)
     build_sec: float = 0.0
+    raster_transform: tuple[float, float, float, float, float, float] | None = None
 
     @property
     def is_empty(self) -> bool:
@@ -57,6 +59,7 @@ class SceneFootprint:
             "valid_pixel_share_estimated": float(self.valid_pixel_share_estimated),
             "warnings": list(self.warnings),
             "build_sec": float(self.build_sec),
+            "raster_transform": list(self.raster_transform) if self.raster_transform is not None else None,
         }
 
     @classmethod
@@ -77,6 +80,7 @@ class SceneFootprint:
             valid_pixel_share_estimated=float(payload.get("valid_pixel_share_estimated") or 0.0),
             warnings=list(payload.get("warnings") or []),
             build_sec=float(payload.get("build_sec") or 0.0),
+            raster_transform=_metadata_affine_tuple(payload.get("raster_transform")),
         )
 
 
@@ -143,6 +147,27 @@ def rasterize_footprint_for_window(footprint: SceneFootprint, window: Any) -> np
         dtype="uint8",
         all_touched=True,
     ).astype("uint8")
+
+
+def window_polygon_pixel(window: Any) -> Any:
+    return box(int(window.x), int(window.y), int(window.x) + int(window.width), int(window.y) + int(window.height))
+
+
+def footprint_affine(footprint: SceneFootprint) -> Affine | None:
+    if footprint.raster_transform is None:
+        return None
+    return Affine(*footprint.raster_transform)
+
+
+def pixel_geometry_to_raster_crs(footprint: SceneFootprint, geometry: Any) -> Any | None:
+    affine = footprint_affine(footprint)
+    if affine is None or geometry is None:
+        return None
+    return shapely_transform(lambda x, y, z=None: affine * (x, y), geometry)
+
+
+def window_polygon_raster_crs(footprint: SceneFootprint, window: Any) -> Any | None:
+    return pixel_geometry_to_raster_crs(footprint, window_polygon_pixel(window))
 
 
 def generate_windows_for_footprint(
@@ -318,6 +343,7 @@ def _mask_to_footprint(ds: Any, mask: np.ndarray, pixel_transform: Affine, scene
         area_pixels_estimated=area,
         valid_pixel_share_estimated=area / max(1.0, float(int(ds.width) * int(ds.height))),
         warnings=warnings,
+        raster_transform=_affine_tuple(ds.transform),
     )
 
 
@@ -339,6 +365,7 @@ def _full_footprint(ds: Any, scene_id: str, image_path: str, *, source: str, war
         area_pixels_estimated=area,
         valid_pixel_share_estimated=1.0,
         warnings=warnings,
+        raster_transform=_affine_tuple(ds.transform),
     )
 
 
@@ -358,7 +385,24 @@ def _empty_footprint(ds: Any, scene_id: str, image_path: str, *, source: str, wa
         area_pixels_estimated=0.0,
         valid_pixel_share_estimated=0.0,
         warnings=warnings,
+        raster_transform=_affine_tuple(ds.transform),
     )
+
+
+def _affine_tuple(transform: Affine) -> tuple[float, float, float, float, float, float]:
+    return (float(transform.a), float(transform.b), float(transform.c), float(transform.d), float(transform.e), float(transform.f))
+
+
+def _metadata_affine_tuple(value: Any) -> tuple[float, float, float, float, float, float] | None:
+    if value is None:
+        return None
+    try:
+        values = [float(item) for item in value]
+    except Exception:  # noqa: BLE001
+        return None
+    if len(values) >= 6:
+        return (values[0], values[1], values[2], values[3], values[4], values[5])
+    return None
 
 
 def _clean_union(geometries: list[Any]) -> Any:

@@ -270,3 +270,33 @@ python scripts\benchmark_tile_record_build.py `
   --record-workers 0,1,2,4 `
   --output-json outputs\debug_tile_prep_profile_footprint\record_build_benchmark.json
 ```
+
+## Mosaic optimization
+
+Mosaic остается внутренней частью `tile_preparation`; публичный фасад не расширен.
+
+Новый internal flow:
+
+1. `SceneAdjacencyIndex` строится по footprint всех сцен.
+2. Для каждого tile record строится `TileMosaicPlan`.
+3. Fully-inside records получают `mosaic_needed=False` и читаются обычным быстрым path.
+4. Boundary records без соседа, покрывающего gap, тоже не вызывают `read_mosaic_window`.
+5. `read_mosaic_window` получает только `mosaic_candidate_scene_ids`, а не все сцены.
+6. Neighbor valid mask строится из footprint rasterization; pixel valid fallback используется только если footprint недоступен.
+
+Counters:
+
+- `mosaic_attempted`;
+- `mosaic_skipped_fully_inside`;
+- `mosaic_skipped_no_gap`;
+- `mosaic_skipped_no_candidates`;
+- `mosaic_candidate_neighbors_total`;
+- `mosaic_intersecting_neighbors_total`;
+- `mosaic_warped_vrt_calls`;
+- `mosaic_used_neighbors`;
+- `mosaic_filled_pixels`;
+- `mosaic_zero_fill_attempts`;
+- `mosaic_boundary_records`;
+- `mosaic_overlap_records`.
+
+Overlap policy: neighbor заполняет только anchor invalid pixels. Valid-valid blending пока не реализуется намеренно.
