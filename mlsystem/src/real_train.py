@@ -25,7 +25,7 @@ from .tile_preparation import (
     TrainingTileDataset,
 )
 from .tile_preparation.config import train_sampling_enabled as resolve_train_sampling_enabled
-from .tile_preparation.dataloader import resolve_prefetch_factor, resolve_worker_count
+from .tile_preparation.dataloader import make_tile_dataloader, resolve_prefetch_factor, resolve_worker_count, tile_collate_with_metadata_fn
 from .tile_preparation.summary import summarize_tile_records
 from .mlflow_adapter import MLflowJobRun, trace_stage
 from .metrics.debug_dump import (
@@ -737,6 +737,19 @@ def _batch_wait_metric_payload(
     return payload
 
 
+def _timing_metric_payload(prefix: str, values: list[float]) -> dict[str, float]:
+    total = float(sum(values))
+    count = len(values)
+    return {
+        f"{prefix}_total_sec": round(total, 6),
+        f"{prefix}_mean_sec": round(total / count, 6) if count else 0.0,
+        f"{prefix}_median_sec": round(_percentile(values, 50.0), 6),
+        f"{prefix}_p95_sec": round(_percentile(values, 95.0), 6),
+        f"{prefix}_max_sec": round(max(values), 6) if values else 0.0,
+        f"{prefix}_samples": float(count),
+    }
+
+
 def _default_tile_limits(job: JobSpec) -> tuple[int, int, int]:
     use_all_scenes = bool(job.preprocess.get("use_all_matched_scenes"))
     default_train_tiles = 512 if use_all_scenes else 24
@@ -817,6 +830,31 @@ def _merge_tile_profile_summaries(*summaries: dict[str, float]) -> dict[str, flo
             if suffix in bucket:
                 merged[f"{base}_{suffix}"] = bucket[suffix]
     return merged
+
+
+def _tile_profile_metric_payload(values: dict[str, list[float]]) -> dict[str, float]:
+    payload: dict[str, float] = {}
+    for name, samples in values.items():
+        if not samples:
+            continue
+        prefix = f"tile_prep/{name}"
+        total = float(sum(samples))
+        count = float(len(samples))
+        payload[f"{prefix}_count"] = count
+        payload[f"{prefix}_total"] = total
+        payload[f"{prefix}_mean"] = total / count if count else 0.0
+        payload[f"{prefix}_p50"] = _percentile(samples, 50.0)
+        payload[f"{prefix}_p95"] = _percentile(samples, 95.0)
+    return payload
+
+
+def _accumulate_tile_profile_metadata(metadata: list[dict[str, Any]], values: dict[str, list[float]]) -> None:
+    for item in metadata:
+        profile = item.get("tile_prep_profile") if isinstance(item, dict) else None
+        if not isinstance(profile, dict):
+            continue
+        for key, value in profile.items():
+            values.setdefault(str(key), []).append(float(value or 0.0))
 
 
 def _resolve_mosaic_enabled(job: JobSpec) -> bool | None:
@@ -1881,6 +1919,11 @@ def run_real_train(
     mlflow_run.log_params({"train.augmentations_profile": _augmentation_profile(augmentations_cfg)})
     wallclock_limit_sec = _resolve_wallclock_limit(job)
     time_limit_sec = int(wallclock_limit_sec or 0)
+    profile_step_timing = bool(
+        job.train.get("profile_step_timing", False)
+        or str(os.getenv("MLSYSTEM_TRAIN_STEP_PROFILE", "")).strip().lower() in {"1", "true", "yes", "on"}
+    )
+    collect_tile_profile_metadata = str(os.getenv("MLSYSTEM_TILE_PREP_PROFILE", "")).strip().lower() in {"1", "true", "yes", "on"}
     early_cfg = job.train.get("early_stopping") or {}
     early_enabled = bool(early_cfg.get("enabled", job.train.get("early_stopping_enabled", False)))
     early_patience = int(early_cfg.get("patience") or job.train.get("early_stopping_patience") or 10)
@@ -1911,6 +1954,8 @@ def run_real_train(
             "metrics.debug_enabled": debug_enabled,
             "metrics.debug_class_name": metrics_debug_cfg.get("class_name"),
             "train.max_wallclock_seconds": wallclock_limit_sec,
+            "train.profile_step_timing": profile_step_timing,
+            "train.collect_tile_profile_metadata": collect_tile_profile_metadata,
         }
     )
 
@@ -1946,40 +1991,89 @@ def run_real_train(
             train_loss_acc = WeightedLossAccumulator()
             train_metric_acc = PixelMetricAccumulator(threshold=metric_threshold)
             train_dataset.set_epoch(epoch)
+            tile_profile_values: dict[str, list[float]] = {}
             train_batch_count = 0
             train_sample_count = 0
             train_batch_wait_values: list[float] = []
-            train_loader = TilePreparationFacade.train_dataloader(
-                tile_bundle,
-                batch_size,
-                workers=dataloader_workers,
-                prefetch_factor=dataloader_prefetch_factor,
-                pin_memory=pin_memory,
-                persistent_workers=persistent_workers_effective,
-                seed=seed + epoch,
-            )
+            train_transfer_values: list[float] = []
+            train_forward_values: list[float] = []
+            train_loss_timing_values: list[float] = []
+            train_backward_values: list[float] = []
+            train_optimizer_values: list[float] = []
+            if collect_tile_profile_metadata:
+                train_loader = make_tile_dataloader(
+                    tile_bundle.train_dataset,
+                    batch_size=batch_size,
+                    shuffle=True,
+                    seed=seed + epoch,
+                    workers=dataloader_workers,
+                    prefetch_factor=dataloader_prefetch_factor,
+                    pin_memory=pin_memory,
+                    persistent_workers=persistent_workers_effective,
+                    collate_fn=tile_collate_with_metadata_fn,
+                )
+            else:
+                train_loader = TilePreparationFacade.train_dataloader(
+                    tile_bundle,
+                    batch_size,
+                    workers=dataloader_workers,
+                    prefetch_factor=dataloader_prefetch_factor,
+                    pin_memory=pin_memory,
+                    persistent_workers=persistent_workers_effective,
+                    seed=seed + epoch,
+                )
             train_iterator = iter(train_loader)
             while True:
                 if max_train_batches is not None and train_batch_count >= max_train_batches:
                     break
                 batch_wait_started = time.perf_counter()
                 try:
-                    _batch_indices, x_cpu, y_cpu = next(train_iterator)
+                    train_batch = next(train_iterator)
                 except StopIteration:
                     break
                 train_batch_wait_values.append(time.perf_counter() - batch_wait_started)
+                if len(train_batch) == 4:
+                    _batch_indices, x_cpu, y_cpu, batch_metadata = train_batch
+                    _accumulate_tile_profile_metadata(batch_metadata, tile_profile_values)
+                else:
+                    _batch_indices, x_cpu, y_cpu = train_batch
                 train_batch_count += 1
                 train_sample_count += int(y_cpu.shape[0])
+                transfer_started = time.perf_counter()
                 x = x_cpu.to(device, non_blocking=True)
                 y = y_cpu.to(device, non_blocking=True)
+                if profile_step_timing and device.type == "cuda":
+                    torch.cuda.synchronize()
+                if profile_step_timing:
+                    train_transfer_values.append(time.perf_counter() - transfer_started)
                 optimizer.zero_grad(set_to_none=True)
+                forward_started = time.perf_counter()
                 logits = model(x)
+                if profile_step_timing and device.type == "cuda":
+                    torch.cuda.synchronize()
+                if profile_step_timing:
+                    train_forward_values.append(time.perf_counter() - forward_started)
+                loss_started = time.perf_counter()
                 components = _loss_components(logits, y, loss_cfg)
                 loss = components["loss_total"]
+                if profile_step_timing and device.type == "cuda":
+                    torch.cuda.synchronize()
+                if profile_step_timing:
+                    train_loss_timing_values.append(time.perf_counter() - loss_started)
+                backward_started = time.perf_counter()
                 loss.backward()
                 if grad_clip_norm is not None:
                     torch.nn.utils.clip_grad_norm_(model.parameters(), float(grad_clip_norm))
+                if profile_step_timing and device.type == "cuda":
+                    torch.cuda.synchronize()
+                if profile_step_timing:
+                    train_backward_values.append(time.perf_counter() - backward_started)
+                optimizer_started = time.perf_counter()
                 optimizer.step()
+                if profile_step_timing and device.type == "cuda":
+                    torch.cuda.synchronize()
+                if profile_step_timing:
+                    train_optimizer_values.append(time.perf_counter() - optimizer_started)
                 train_loss_acc.update({name: float(value.detach().item()) for name, value in components.items()}, weight=int(y.shape[0]))
                 train_metric_acc.update_from_logits(logits.detach(), y)
 
@@ -1992,33 +2086,69 @@ def run_real_train(
             val_batch_count = 0
             val_sample_count = 0
             val_batch_wait_values: list[float] = []
+            val_transfer_values: list[float] = []
+            val_forward_values: list[float] = []
+            val_loss_timing_values: list[float] = []
             with torch.no_grad():
                 val_dataset.set_epoch(0)
-                val_loader = TilePreparationFacade.val_dataloader(
-                    tile_bundle,
-                    batch_size,
-                    workers=dataloader_workers,
-                    prefetch_factor=dataloader_prefetch_factor,
-                    pin_memory=pin_memory,
-                    persistent_workers=persistent_workers_effective,
-                    seed=seed,
-                )
+                if collect_tile_profile_metadata:
+                    val_loader = make_tile_dataloader(
+                        tile_bundle.val_dataset,
+                        batch_size=batch_size,
+                        shuffle=False,
+                        seed=seed,
+                        workers=dataloader_workers,
+                        prefetch_factor=dataloader_prefetch_factor,
+                        pin_memory=pin_memory,
+                        persistent_workers=persistent_workers_effective,
+                        collate_fn=tile_collate_with_metadata_fn,
+                    )
+                else:
+                    val_loader = TilePreparationFacade.val_dataloader(
+                        tile_bundle,
+                        batch_size,
+                        workers=dataloader_workers,
+                        prefetch_factor=dataloader_prefetch_factor,
+                        pin_memory=pin_memory,
+                        persistent_workers=persistent_workers_effective,
+                        seed=seed,
+                    )
                 val_iterator = iter(val_loader)
                 while True:
                     if max_val_batches is not None and val_batch_count >= max_val_batches:
                         break
                     batch_wait_started = time.perf_counter()
                     try:
-                        batch_indices, x_cpu, y_cpu = next(val_iterator)
+                        val_batch = next(val_iterator)
                     except StopIteration:
                         break
                     val_batch_wait_values.append(time.perf_counter() - batch_wait_started)
+                    if len(val_batch) == 4:
+                        batch_indices, x_cpu, y_cpu, batch_metadata = val_batch
+                        _accumulate_tile_profile_metadata(batch_metadata, tile_profile_values)
+                    else:
+                        batch_indices, x_cpu, y_cpu = val_batch
                     val_batch_count += 1
                     val_sample_count += int(y_cpu.shape[0])
+                    transfer_started = time.perf_counter()
                     x = x_cpu.to(device, non_blocking=True)
                     y = y_cpu.to(device, non_blocking=True)
+                    if profile_step_timing and device.type == "cuda":
+                        torch.cuda.synchronize()
+                    if profile_step_timing:
+                        val_transfer_values.append(time.perf_counter() - transfer_started)
+                    forward_started = time.perf_counter()
                     logits = model(x)
+                    if profile_step_timing and device.type == "cuda":
+                        torch.cuda.synchronize()
+                    if profile_step_timing:
+                        val_forward_values.append(time.perf_counter() - forward_started)
+                    loss_started = time.perf_counter()
                     components = _loss_components(logits, y, loss_cfg)
+                    if profile_step_timing and device.type == "cuda":
+                        torch.cuda.synchronize()
+                    if profile_step_timing:
+                        val_loss_timing_values.append(time.perf_counter() - loss_started)
                     val_loss_acc.update({name: float(value.detach().item()) for name, value in components.items()}, weight=int(y.shape[0]))
                     val_metric_acc.update_from_logits(logits, y)
                     for accumulator in val_threshold_accs.values():
@@ -2060,6 +2190,7 @@ def run_real_train(
             tile_profile_metrics = _merge_tile_profile_summaries(
                 train_dataset.profile_summary(reset=True),
                 val_dataset.profile_summary(reset=True),
+                _tile_profile_metric_payload(tile_profile_values),
             )
 
             row = {
@@ -2115,6 +2246,17 @@ def run_real_train(
             }
             row.update(batch_wait_metrics)
             row.update(tile_profile_metrics)
+            if profile_step_timing:
+                combined_transfer_values = train_transfer_values + val_transfer_values
+                combined_forward_values = train_forward_values + val_forward_values
+                combined_loss_timing_values = train_loss_timing_values + val_loss_timing_values
+                row.update(_timing_metric_payload("model/cpu_to_gpu", combined_transfer_values))
+                row.update(_timing_metric_payload("model/forward", combined_forward_values))
+                row.update(_timing_metric_payload("model/loss_timing", combined_loss_timing_values))
+                row.update(_timing_metric_payload("model/backward", train_backward_values))
+                row.update(_timing_metric_payload("model/optimizer_step", train_optimizer_values))
+                row.update(_timing_metric_payload("model/train_forward", train_forward_values))
+                row.update(_timing_metric_payload("model/val_forward", val_forward_values))
             row.update(_best_threshold_metrics_payload(best_threshold, best_threshold_metrics))
             for threshold, metrics_payload in threshold_metrics.items():
                 suffix = _threshold_metric_suffix(threshold)

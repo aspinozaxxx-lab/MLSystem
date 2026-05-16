@@ -40,6 +40,24 @@ class RealTrainDataloaderIntegrationTests(unittest.TestCase):
         self.assertIn("persistent_workers_effective = False", text)
         self.assertIn("persistent_workers=persistent_workers_effective", text)
 
+    def test_real_train_has_opt_in_step_timing_profile_metrics(self) -> None:
+        text = Path("mlsystem/src/real_train.py").read_text(encoding="utf-8")
+        self.assertIn("profile_step_timing", text)
+        for key in (
+            "model/cpu_to_gpu",
+            "model/forward",
+            "model/loss_timing",
+            "model/backward",
+            "model/optimizer_step",
+        ):
+            self.assertIn(key, text)
+
+    def test_real_train_can_collect_tile_profile_metadata_with_workers(self) -> None:
+        text = Path("mlsystem/src/real_train.py").read_text(encoding="utf-8")
+        self.assertIn("tile_collate_with_metadata_fn", text)
+        self.assertIn("_accumulate_tile_profile_metadata", text)
+        self.assertIn("collect_tile_profile_metadata", text)
+
 
 if __name__ == "__main__":
     unittest.main()
