@@ -32,7 +32,9 @@ Public API:
 - `stride`;
 - augmentation level;
 - normalization mode;
-- DataLoader параметры workers/prefetch/pin/persistent.
+- batch size для DataLoader.
+
+DataLoader workers, prefetch, pin memory и persistent worker policy являются внутренними defaults модуля. Они не должны задаваться как параметры experiment trace.
 
 ## Выход
 
@@ -88,9 +90,13 @@ Validation всегда:
 
 ```python
 bundle = TilePreparationFacade.build_datasets(...)
-train_loader = TilePreparationFacade.train_dataloader(bundle, batch_size=4, workers=4)
-val_loader = TilePreparationFacade.val_dataloader(bundle, batch_size=4, workers=4)
+train_loader = TilePreparationFacade.train_dataloader(bundle, batch_size=4)
+val_loader = TilePreparationFacade.val_dataloader(bundle, batch_size=4)
 ```
+
+По умолчанию на Linux `tile_preparation` использует 16 DataLoader workers, `prefetch_factor=2`, `pin_memory=True`.
+На Windows default workers падает до 0, чтобы не ломать локальную отладку multiprocessing.
+Для аварийной диагностики есть env override `MLSYSTEM_TILE_DATALOADER_WORKERS` и `MLSYSTEM_TILE_DATALOADER_PREFETCH_FACTOR`, но это не публичные параметры эксперимента.
 
 ## Локальный profiler
 

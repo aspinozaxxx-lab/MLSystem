@@ -12,6 +12,7 @@
 - `tile_preparation` pereveden na `SceneFootprint`: records stroyatsya tolko po fakticheskomu footprint snimka, boundary valid mask rasterizuetsya iz footprint, per-window `read_valid_mask` v build records ubrany; dobavlen `scripts/benchmark_tile_record_build.py`.
 - `tile_preparation` poluchil internal `SceneAdjacencyIndex` i `TileMosaicPlan`: mosaic vyzyvaetsya tolko dlya boundary records s geometriqueski poleznymi sosedyami, `WarpedVRT` sozdaetsya lazy, neighbor valid mask beretsya iz footprint.
 - `real_train.py` poluchil opt-in profiling `profile_step_timing` / `MLSYSTEM_TRAIN_STEP_PROFILE` i sborka worker `tile_prep_profile` metadata pri `MLSYSTEM_TILE_PREP_PROFILE=1`, chtoby v history/MLflow videt CPU->GPU, forward, backward, optimizer i tile-prep breakdown pri DataLoader workers.
+- DataLoader workers/prefetch/pin/persistent policy sdelany internal defaults `tile_preparation`: Linux default workers=16, Windows fallback=0, trace keys ignoriruyutsya kak deprecated; env override ostalsya tolko dlya diagnostiki.
 - Zafiksirovany architecture docs dlya module boundaries, `tile_preparation`, `mlflow_adapter`, `pipeline_runner`, tile/preprocessing inventory i pipeline/orchestration inventory; dobavlen runbook zapuska experimentov bez Airflow.
 
 ## 2026-05-07

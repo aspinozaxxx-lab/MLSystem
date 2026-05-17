@@ -5,7 +5,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .config import AnnotationInput, SceneInput, TilePreparationConfig
-from .dataloader import make_tile_dataloader
+from .dataloader import DEFAULT_PERSISTENT_WORKERS, DEFAULT_PIN_MEMORY, make_tile_dataloader
 from .dataset import TrainingTileDataset, iter_dataset_batches
 from .report import generate_annotated_tile_report
 from .summary import summarize_tile_records
@@ -182,8 +182,8 @@ class TilePreparationFacade:
         batch_size: int,
         workers: int | None = None,
         prefetch_factor: int | None = None,
-        pin_memory: bool = True,
-        persistent_workers: bool = True,
+        pin_memory: bool = DEFAULT_PIN_MEMORY,
+        persistent_workers: bool = DEFAULT_PERSISTENT_WORKERS,
         *,
         seed: int | None = None,
     ):
@@ -204,8 +204,8 @@ class TilePreparationFacade:
         batch_size: int,
         workers: int | None = None,
         prefetch_factor: int | None = None,
-        pin_memory: bool = True,
-        persistent_workers: bool = True,
+        pin_memory: bool = DEFAULT_PIN_MEMORY,
+        persistent_workers: bool = DEFAULT_PERSISTENT_WORKERS,
         *,
         seed: int | None = None,
     ):

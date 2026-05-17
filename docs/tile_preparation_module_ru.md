@@ -201,8 +201,10 @@ Debug outputs и реальные GeoTIFF/GeoJSON не коммитятся.
 # DataLoader and normalization update
 
 Recommended training entrypoint is `TilePreparationFacade.train_dataloader(...)` / `val_dataloader(...)`.
-These methods return `torch.utils.data.DataLoader` and accept `workers`, `prefetch_factor`, `pin_memory`, `persistent_workers`.
-On Windows the default `workers=None` resolves to `0`. On Linux it resolves to `min(8, os.cpu_count() // 2)`.
+These methods return `torch.utils.data.DataLoader`.
+DataLoader workers, prefetch, pin memory and persistent worker policy are internal `tile_preparation` defaults, not experiment trace parameters.
+On Windows the default `workers=None` resolves to `0`. On Linux it resolves to `16`; default `prefetch_factor=2` is used only when workers are enabled.
+Emergency diagnostics can override workers/prefetch through `MLSYSTEM_TILE_DATALOADER_WORKERS` and `MLSYSTEM_TILE_DATALOADER_PREFETCH_FACTOR`, but normal traces should not set them.
 The returned batch format stays compatible with the old iterator: `indices: list[int]`, `x: torch.Tensor [B,C,H,W]`, `y: torch.Tensor [B,1,H,W]`.
 `iter_dataset_batches()` remains as a compatibility fallback, but production training should use the facade DataLoader path.
 

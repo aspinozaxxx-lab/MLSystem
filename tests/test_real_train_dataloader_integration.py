@@ -40,6 +40,16 @@ class RealTrainDataloaderIntegrationTests(unittest.TestCase):
         self.assertIn("persistent_workers_effective = False", text)
         self.assertIn("persistent_workers=persistent_workers_effective", text)
 
+    def test_real_train_uses_internal_tile_dataloader_defaults(self) -> None:
+        text = Path("mlsystem/src/real_train.py").read_text(encoding="utf-8")
+        self.assertIn("resolve_worker_count(None)", text)
+        self.assertIn("resolve_prefetch_factor(dataloader_workers, None)", text)
+        self.assertIn("dataloader_config_source", text)
+        self.assertIn("deprecated_dataloader_trace_keys_ignored", text)
+        self.assertNotIn('job.train.get("dataloader_workers"', text)
+        self.assertNotIn("workers=dataloader_workers", text)
+        self.assertNotIn("prefetch_factor=dataloader_prefetch_factor", text)
+
     def test_real_train_has_opt_in_step_timing_profile_metrics(self) -> None:
         text = Path("mlsystem/src/real_train.py").read_text(encoding="utf-8")
         self.assertIn("profile_step_timing", text)

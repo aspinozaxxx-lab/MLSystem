@@ -25,7 +25,14 @@ from .tile_preparation import (
     TrainingTileDataset,
 )
 from .tile_preparation.config import train_sampling_enabled as resolve_train_sampling_enabled
-from .tile_preparation.dataloader import make_tile_dataloader, resolve_prefetch_factor, resolve_worker_count, tile_collate_with_metadata_fn
+from .tile_preparation.dataloader import (
+    DEFAULT_PERSISTENT_WORKERS,
+    DEFAULT_PIN_MEMORY,
+    make_tile_dataloader,
+    resolve_prefetch_factor,
+    resolve_worker_count,
+    tile_collate_with_metadata_fn,
+)
 from .tile_preparation.summary import summarize_tile_records
 from .mlflow_adapter import MLflowJobRun, trace_stage
 from .metrics.debug_dump import (
@@ -1848,14 +1855,15 @@ def run_real_train(
     if batch_size == "auto":
         batch_size = _auto_batch_size(model_name, patch_size, device)
     batch_size = max(1, int(batch_size))
-    dataloader_workers_config = _coerce_optional_int(job.train.get("dataloader_workers", job.train.get("num_workers")))
-    dataloader_workers = resolve_worker_count(dataloader_workers_config)
-    dataloader_prefetch_config = _coerce_optional_int(job.train.get("dataloader_prefetch_factor", job.train.get("prefetch_factor")))
-    dataloader_prefetch_factor = resolve_prefetch_factor(dataloader_workers, dataloader_prefetch_config)
-    pin_memory = _coerce_optional_bool(job.train.get("pin_memory"))
-    pin_memory = True if pin_memory is None else bool(pin_memory)
-    persistent_workers_requested = _coerce_optional_bool(job.train.get("persistent_workers"))
-    persistent_workers_requested = True if persistent_workers_requested is None else bool(persistent_workers_requested)
+    deprecated_loader_keys = [
+        key
+        for key in ("dataloader_workers", "num_workers", "dataloader_prefetch_factor", "prefetch_factor", "pin_memory", "persistent_workers")
+        if key in job.train
+    ]
+    dataloader_workers = resolve_worker_count(None)
+    dataloader_prefetch_factor = resolve_prefetch_factor(dataloader_workers, None)
+    pin_memory = DEFAULT_PIN_MEMORY
+    persistent_workers_requested = DEFAULT_PERSISTENT_WORKERS
     # Loaders are rebuilt every epoch after train_dataset.set_epoch(...). Keeping workers
     # alive across discarded loader instances can leave stale processes around.
     persistent_workers_effective = False
@@ -1903,11 +1911,20 @@ def run_real_train(
             "train.persistent_workers": bool(persistent_workers_effective and dataloader_workers > 0),
             "train.persistent_workers_requested": persistent_workers_requested,
             "train.persistent_workers_effective": bool(persistent_workers_effective and dataloader_workers > 0),
+            "train.dataloader_config_source": "tile_preparation_internal_default",
+            "train.deprecated_dataloader_trace_keys_ignored": ",".join(deprecated_loader_keys),
             "train.max_train_tiles": max_train_tiles,
             "train.max_val_tiles": max_val_tiles,
             "train.max_tiles_per_scene": max_tiles_per_scene,
         }
     )
+    if deprecated_loader_keys:
+        log_fn(
+            job_log,
+            "real_train deprecated dataloader trace keys ignored; "
+            "DataLoader workers/prefetch/pin_memory are internal tile_preparation defaults: "
+            + ",".join(deprecated_loader_keys),
+        )
     log_fn(
         job_log,
         "real_train dataloader "
@@ -2006,8 +2023,8 @@ def run_real_train(
                     batch_size=batch_size,
                     shuffle=True,
                     seed=seed + epoch,
-                    workers=dataloader_workers,
-                    prefetch_factor=dataloader_prefetch_factor,
+                    workers=None,
+                    prefetch_factor=None,
                     pin_memory=pin_memory,
                     persistent_workers=persistent_workers_effective,
                     collate_fn=tile_collate_with_metadata_fn,
@@ -2016,8 +2033,8 @@ def run_real_train(
                 train_loader = TilePreparationFacade.train_dataloader(
                     tile_bundle,
                     batch_size,
-                    workers=dataloader_workers,
-                    prefetch_factor=dataloader_prefetch_factor,
+                    workers=None,
+                    prefetch_factor=None,
                     pin_memory=pin_memory,
                     persistent_workers=persistent_workers_effective,
                     seed=seed + epoch,
@@ -2097,8 +2114,8 @@ def run_real_train(
                         batch_size=batch_size,
                         shuffle=False,
                         seed=seed,
-                        workers=dataloader_workers,
-                        prefetch_factor=dataloader_prefetch_factor,
+                        workers=None,
+                        prefetch_factor=None,
                         pin_memory=pin_memory,
                         persistent_workers=persistent_workers_effective,
                         collate_fn=tile_collate_with_metadata_fn,
@@ -2107,8 +2124,8 @@ def run_real_train(
                     val_loader = TilePreparationFacade.val_dataloader(
                         tile_bundle,
                         batch_size,
-                        workers=dataloader_workers,
-                        prefetch_factor=dataloader_prefetch_factor,
+                        workers=None,
+                        prefetch_factor=None,
                         pin_memory=pin_memory,
                         persistent_workers=persistent_workers_effective,
                         seed=seed,
@@ -2372,8 +2389,8 @@ def run_real_train(
             val_loader = TilePreparationFacade.val_dataloader(
                 tile_bundle,
                 batch_size,
-                workers=dataloader_workers,
-                prefetch_factor=dataloader_prefetch_factor,
+                workers=None,
+                prefetch_factor=None,
                 pin_memory=pin_memory,
                 persistent_workers=persistent_workers_effective,
                 seed=seed,

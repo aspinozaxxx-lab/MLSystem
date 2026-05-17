@@ -12,21 +12,41 @@ import torch
 from .records import ReadyTileSample
 
 
+DEFAULT_DATALOADER_WORKERS = 16
+DEFAULT_PREFETCH_FACTOR = 2
+DEFAULT_PIN_MEMORY = True
+DEFAULT_PERSISTENT_WORKERS = True
+WORKERS_ENV = "MLSYSTEM_TILE_DATALOADER_WORKERS"
+PREFETCH_ENV = "MLSYSTEM_TILE_DATALOADER_PREFETCH_FACTOR"
+
+
 def resolve_worker_count(workers: int | None) -> int:
     if workers is not None:
         return max(0, int(workers))
+    env_workers = _env_int(WORKERS_ENV)
+    if env_workers is not None:
+        return max(0, env_workers)
     if platform.system().lower().startswith("win"):
         return 0
-    cpu_count = os.cpu_count() or 1
-    return max(0, min(8, int(cpu_count) // 2))
+    return DEFAULT_DATALOADER_WORKERS
 
 
 def resolve_prefetch_factor(workers: int, prefetch_factor: int | None) -> int | None:
     if workers <= 0:
         return None
-    if prefetch_factor is None:
-        return 2
-    return max(1, int(prefetch_factor))
+    if prefetch_factor is not None:
+        return max(1, int(prefetch_factor))
+    env_prefetch = _env_int(PREFETCH_ENV)
+    if env_prefetch is not None:
+        return max(1, env_prefetch)
+    return DEFAULT_PREFETCH_FACTOR
+
+
+def _env_int(name: str) -> int | None:
+    value = os.getenv(name)
+    if value is None or str(value).strip() == "":
+        return None
+    return int(value)
 
 
 def tile_collate_fn(samples: list[ReadyTileSample]) -> tuple[list[int], torch.Tensor, torch.Tensor]:
@@ -62,8 +82,8 @@ def make_tile_dataloader(
     seed: int,
     workers: int | None = None,
     prefetch_factor: int | None = None,
-    pin_memory: bool = True,
-    persistent_workers: bool = True,
+    pin_memory: bool = DEFAULT_PIN_MEMORY,
+    persistent_workers: bool = DEFAULT_PERSISTENT_WORKERS,
     collate_fn: Callable[[list[ReadyTileSample]], Any] = tile_collate_fn,
 ) -> torch.utils.data.DataLoader:
     resolved_workers = resolve_worker_count(workers)

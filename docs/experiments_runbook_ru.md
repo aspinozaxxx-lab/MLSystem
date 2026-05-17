@@ -63,10 +63,6 @@ preprocess:
 train:
   max_epochs: 2
   batch_size: 4
-  dataloader_workers: 4
-  dataloader_prefetch_factor: 2
-  pin_memory: true
-  persistent_workers: true
   augmentation_level: 1
   require_gpu: true
 model:
@@ -167,12 +163,12 @@ Eval-only:
 - `preprocess.stride`;
 - `train.augmentation_level`;
 - `train.batch_size`;
-- `train.dataloader_workers`;
-- `train.dataloader_prefetch_factor`;
 - `train.loss`;
 - `train.learning_rate`;
 - `train.weight_decay`;
 - `train.scheduler`.
+
+DataLoader workers, prefetch, pin memory and persistent worker policy are internal `tile_preparation` settings, not experiment trace parameters. Emergency diagnostics can override them with environment variables, but normal traces should not set them.
 
 ## Что не менять без согласования
 
