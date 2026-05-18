@@ -35,27 +35,4 @@
 6. Финальный статус и MLflow metadata фиксируются после завершения.
 
 ## Граница с pipeline
-
 `pipeline_runner` не содержит domain stage logic.
-
-`mlsystem/src/pipeline` содержит implementations stages и registry:
-
-- inventory;
-- prepare_dataset;
-- train_model;
-- evaluate;
-- inference/pseudolabel stages;
-- finalize implementation.
-
-`pipeline` не должен владеть run lifecycle, store, API status или worker process.
-
-## Worker diagnostics
-
-Если worker умер без terminal state, runner должен записать:
-
-- `WorkerExited`;
-- pid;
-- last stage;
-- tails worker stdout/stderr;
-- tail stage log;
-- OOM/log hints, если они видны.
