@@ -5,8 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from mlsystem.src.pipeline_runner.config import PipelineRunConfig
-from mlsystem.src.pipeline_runner.run_store import PipelineRunStore
+from mlsystem.src.pipeline_runner.api import PipelineRunConfig, PipelineRunStore
 from mlsystem.src.pipeline_runner.worker import run_worker
 
 

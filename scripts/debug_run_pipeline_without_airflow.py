@@ -10,9 +10,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from mlsystem.src.pipeline_runner.config import load_trace_file
-from mlsystem.src.pipeline_runner.run_store import PipelineRunStore
-from mlsystem.src.pipeline_runner.runner import PipelineRunner
+from mlsystem.src.pipeline_runner.api import PipelineRunStore, PipelineRunner, load_trace_file
 
 
 def main() -> int:

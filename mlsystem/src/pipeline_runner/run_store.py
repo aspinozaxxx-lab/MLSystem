@@ -9,7 +9,8 @@ from typing import Any
 
 from ..api.security import mask_secrets, mask_text
 from ..pipeline.stage_report_formatter import write_stage_report_file
-from .config import PipelineRunConfig, dump_trace_yaml, safe_run_id
+from .config import config_with_run_id, dump_trace_yaml, parse_pipeline_run_config, safe_run_id
+from .contracts import PipelineRunConfig
 
 RUN_STATES = {"queued", "running", "succeeded", "failed", "cancelled"}
 
@@ -48,13 +49,21 @@ class PipelineRunStore:
     def summary_path(self) -> Path:
         return self.run_dir / "summary.json"
 
+    @property
+    def state_dir(self) -> Path:
+        return self.root
+
+    @property
+    def pipeline_run_id(self) -> str:
+        return str(self.run_id or self.experiment_id)
+
     def bind(self, run_id: str, config: PipelineRunConfig | dict[str, Any] | None = None) -> "PipelineRunStore":
         return PipelineRunStore(self.root, run_id, config)
 
     def create_run(self, config: PipelineRunConfig | dict[str, Any]) -> dict[str, Any]:
-        parsed = config if isinstance(config, PipelineRunConfig) else PipelineRunConfig.model_validate(config)
+        parsed = parse_pipeline_run_config(config)
         run_id = parsed.run_id or _new_run_id(parsed.experiment_id)
-        parsed = parsed.with_run_id(run_id)
+        parsed = config_with_run_id(parsed, run_id)
         run_dir = self.root / run_id
         if run_dir.exists() and parsed.run_id:
             raise FileExistsError(f"Pipeline run already exists: {run_id}")
@@ -71,7 +80,7 @@ class PipelineRunStore:
 
     def read_config(self, run_id: str | None = None) -> PipelineRunConfig:
         bound = self._bound(run_id)
-        return PipelineRunConfig.model_validate(_read_json(bound.run_dir / "trace.json"))
+        return parse_pipeline_run_config(_read_json(bound.run_dir / "trace.json"))
 
     def read_run(self, run_id: str | None = None) -> dict[str, Any]:
         bound = self._bound(run_id)

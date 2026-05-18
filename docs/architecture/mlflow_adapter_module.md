@@ -2,7 +2,7 @@
 
 ## Назначение
 
-`mlsystem/src/mlflow_adapter.py` - единственная граница доступа к MLflow для production-кода MLSystem.
+`mlsystem/src/mlflow_adapter/api.py` - единственная граница доступа к MLflow для production-кода MLSystem.
 
 Остальные модули не импортируют `mlflow` напрямую.
 

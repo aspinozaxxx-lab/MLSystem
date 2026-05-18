@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from ..job_schema import JobSpec
-from ..mlflow_adapter import MLflowJobRun
+from ..mlflow_adapter.api import MLflowJobRun
 from ..pipeline_config import PipelineConfig
 
 

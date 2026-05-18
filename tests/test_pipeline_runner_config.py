@@ -5,14 +5,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from pydantic import ValidationError
-
-from mlsystem.src.pipeline_runner.config import DEFAULT_PIPELINE_STAGES, PipelineRunConfig, load_trace_file
+from mlsystem.src.pipeline_runner.api import DEFAULT_PIPELINE_STAGES, load_trace_file, parse_pipeline_run_config
 
 
 class PipelineRunnerConfigTests(unittest.TestCase):
     def test_parse_json_trace_defaults_and_aliases(self) -> None:
-        config = PipelineRunConfig.model_validate({"experiment_id": "unit", "pipeline": {"stages": ["inventory", "prepare-dataset", "compute-f1"]}})
+        config = parse_pipeline_run_config({"experiment_id": "unit", "pipeline": {"stages": ["inventory", "prepare-dataset", "compute-f1"]}})
         self.assertEqual(config.pipeline.stages, ["inventory_scenes", "prepare_dataset", "compute_f1"])
         self.assertEqual(config.task, "train_predict_pseudolabel")
 
@@ -33,8 +31,8 @@ class PipelineRunnerConfigTests(unittest.TestCase):
         self.assertEqual(config.experiment_id, "json_unit")
 
     def test_rejects_bad_run_id(self) -> None:
-        with self.assertRaises(ValidationError):
-            PipelineRunConfig.model_validate({"experiment_id": "unit", "run_id": "../bad"})
+        with self.assertRaises(ValueError):
+            parse_pipeline_run_config({"experiment_id": "unit", "run_id": "../bad"})
 
 
 if __name__ == "__main__":

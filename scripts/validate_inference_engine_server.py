@@ -485,7 +485,7 @@ else
   python - <<'PY'
 import subprocess
 from pathlib import Path
-from src.mlflow_adapter import download_run_artifacts, get_run, list_artifact_paths, search_child_runs
+from src.mlflow_adapter.api import download_run_artifacts, get_run, list_artifact_paths, search_child_runs
 from src.inference.triton_export import export_segmentation_checkpoint_to_onnx
 
 run_id = "{DEFAULT_RUN_ID}"

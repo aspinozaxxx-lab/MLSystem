@@ -34,7 +34,7 @@ from .tile_preparation.dataloader import (
     tile_collate_with_metadata_fn,
 )
 from .tile_preparation.summary import summarize_tile_records
-from .mlflow_adapter import MLflowJobRun, trace_stage
+from .mlflow_adapter.api import MLflowJobRun, trace_stage
 from .metrics.debug_dump import (
     build_sample_payload,
     manifest_hash,

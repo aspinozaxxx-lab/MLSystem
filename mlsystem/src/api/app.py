@@ -10,17 +10,26 @@ try:
 except Exception as exc:  # noqa: BLE001
     raise RuntimeError("FastAPI is required for mlsystem-api. Install fastapi and uvicorn.") from exc
 
-from ..pipeline.stages.registry import known_stages
-from ..pipeline_runner.config import PipelineRunConfig, load_trace_payload
-from ..pipeline_runner.run_store import PipelineRunStore
-from ..pipeline_runner.runner import PipelineRunner
-from ..pipeline_runner.stages import DEFAULT_PIPELINE_STAGES
+from ..pipeline_runner.api import (
+    DEFAULT_PIPELINE_STAGES,
+    JobStatusResponse,
+    PipelineRunConfig,
+    PipelineRunner,
+    StageStartRequest,
+    StageStartResponse,
+    create_run_store,
+    create_stage_job_runner,
+    create_stage_job_store,
+    debug_run_stage_sync,
+    job_status,
+    load_trace_payload,
+    parse_pipeline_run_config,
+    run_summary,
+    stages_payload,
+    start_stage,
+)
 from . import __version__
-from .job_runner import JobRunner
-from .job_store import JobStore
-from .models import JobStatusResponse, StageStartRequest, StageStartResponse
 from .security import mask_text, masked_env_snapshot, verify_token_header
-from .stage_routes import debug_run_stage_sync, job_status, run_summary, stages_payload, start_stage
 
 
 def require_api_token(authorization: str | None = Header(default=None)) -> None:
@@ -61,11 +70,16 @@ def ready(response: Response) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         checks["job_root"] = {"status": "failed", "message": mask_text(str(exc))}
     try:
-        checks["stage_registry"] = {"status": "ok", "registry_stages": known_stages(), "pipeline_stages": DEFAULT_PIPELINE_STAGES}
+        payload = stages_payload()
+        checks["stage_registry"] = {
+            "status": "ok",
+            "registry_stages": payload["registry_stages"],
+            "pipeline_stages": payload.get("pipeline_stages") or DEFAULT_PIPELINE_STAGES,
+        }
     except Exception as exc:  # noqa: BLE001
         checks["stage_registry"] = {"status": "failed", "message": mask_text(str(exc))}
     try:
-        from ..mlflow_adapter import check_mlflow
+        from ..mlflow_adapter.api import check_mlflow
         from ..pipeline_config import load_config
 
         checks["mlflow"] = {"status": "ok", "details": check_mlflow(load_config())}
@@ -101,7 +115,7 @@ def list_stages() -> dict[str, Any]:
 @app.post("/api/v1/runs/{run_id}/stages/{stage_name}/start", response_model=StageStartResponse, dependencies=[Depends(require_api_token)])
 def start_stage_endpoint(run_id: str, stage_name: str, request: StageStartRequest) -> StageStartResponse:
     try:
-        return start_stage(run_id, stage_name, request, JobRunner(JobStore()))
+        return start_stage(run_id, stage_name, request, create_stage_job_runner())
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -109,7 +123,7 @@ def start_stage_endpoint(run_id: str, stage_name: str, request: StageStartReques
 @app.get("/api/v1/jobs/{job_id}", response_model=JobStatusResponse, dependencies=[Depends(require_api_token)])
 def job_status_endpoint(job_id: str) -> JobStatusResponse:
     try:
-        return job_status(job_id, JobRunner(JobStore()))
+        return job_status(job_id, create_stage_job_runner())
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}") from exc
 
@@ -123,7 +137,7 @@ def run_summary_endpoint(run_id: str) -> dict[str, Any]:
 async def start_pipeline_run_endpoint(request: Request) -> dict[str, Any]:
     try:
         config = await _pipeline_config_from_request(request)
-        run = PipelineRunner(PipelineRunStore()).start_run(config, source="api")
+        run = PipelineRunner(create_run_store()).start_run(config, source="api")
         return {
             "run_id": run.run_id,
             "state": run.state,
@@ -139,7 +153,7 @@ async def start_pipeline_run_endpoint(request: Request) -> dict[str, Any]:
 
 @app.get("/api/v1/pipeline-runs/{run_id}", dependencies=[Depends(require_api_token)])
 def pipeline_run_status_endpoint(run_id: str) -> dict[str, Any]:
-    store = PipelineRunStore()
+    store = create_run_store()
     try:
         run = PipelineRunner(store).refresh_run(run_id).model_dump()
     except FileNotFoundError as exc:
@@ -150,7 +164,7 @@ def pipeline_run_status_endpoint(run_id: str) -> dict[str, Any]:
 
 @app.get("/api/v1/pipeline-runs/{run_id}/log", dependencies=[Depends(require_api_token)])
 def pipeline_run_log_endpoint(run_id: str, tail: int = 20000) -> dict[str, Any]:
-    store = PipelineRunStore()
+    store = create_run_store()
     try:
         run = store.read_run(run_id)
     except FileNotFoundError as exc:
@@ -160,7 +174,7 @@ def pipeline_run_log_endpoint(run_id: str, tail: int = 20000) -> dict[str, Any]:
 
 @app.get("/api/v1/pipeline-runs/{run_id}/stages", dependencies=[Depends(require_api_token)])
 def pipeline_run_stages_endpoint(run_id: str) -> dict[str, Any]:
-    store = PipelineRunStore()
+    store = create_run_store()
     try:
         run = store.read_run(run_id)
     except FileNotFoundError as exc:
@@ -179,7 +193,7 @@ def pipeline_run_stages_endpoint(run_id: str) -> dict[str, Any]:
 @app.post("/api/v1/pipeline-runs/{run_id}/cancel", dependencies=[Depends(require_api_token)])
 def pipeline_run_cancel_endpoint(run_id: str) -> dict[str, Any]:
     try:
-        return PipelineRunner(PipelineRunStore()).cancel_run(run_id).model_dump()
+        return PipelineRunner(create_run_store()).cancel_run(run_id).model_dump()
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=f"Pipeline run not found: {run_id}") from exc
 
@@ -207,7 +221,7 @@ async def _pipeline_config_from_request(request: Request) -> PipelineRunConfig:
         if not isinstance(trace, dict):
             raise ValueError("trace must be an object")
         dry_run = _truthy(body.get("dry_run"))
-    config = PipelineRunConfig.model_validate(trace)
+    config = parse_pipeline_run_config(trace)
     if dry_run:
         config = config.model_copy(update={"pipeline": config.pipeline.model_copy(update={"dry_run": True})})
     return config
@@ -307,6 +321,6 @@ if str(os.getenv("MLSYSTEM_DEBUG_DATASET_ENDPOINTS") or "").lower() in {"1", "tr
 @app.post("/api/v1/debug/run-stage-sync", response_model=JobStatusResponse, dependencies=[Depends(require_api_token)])
 def debug_run_stage_sync_endpoint(request: StageStartRequest, run_id: str, stage_name: str) -> JobStatusResponse:
     try:
-        return debug_run_stage_sync(run_id, stage_name, request, JobStore())
+        return debug_run_stage_sync(run_id, stage_name, request, create_stage_job_store())
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

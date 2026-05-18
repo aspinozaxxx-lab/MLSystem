@@ -6,10 +6,15 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from mlsystem.src.api.job_runner import JobRunner
-from mlsystem.src.api.job_store import JobStore
-from mlsystem.src.api.models import StageStartRequest
-from mlsystem.src.api.stage_routes import debug_run_stage_sync, stages_payload, start_stage, validate_stage_name
+from mlsystem.src.pipeline_runner.api import (
+    StageJobRunner as JobRunner,
+    StageJobStore as JobStore,
+    StageStartRequest,
+    debug_run_stage_sync,
+    stages_payload,
+    start_stage,
+    validate_stage_name,
+)
 
 
 class ApiStageRoutesTests(unittest.TestCase):

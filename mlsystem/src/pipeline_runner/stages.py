@@ -4,7 +4,8 @@ from typing import Any
 
 from ..pipeline import experiment_stages
 from ..pipeline.stages.registry import get_stage_entrypoint, known_stages
-from .config import DEFAULT_PIPELINE_STAGES, PipelineRunConfig, canonical_stage_name
+from .config import DEFAULT_PIPELINE_STAGES, canonical_stage_name, parse_pipeline_run_config
+from .contracts import PipelineRunConfig
 from .progress import STAGE_WEIGHTS
 from .run_store import PipelineRunStore
 
@@ -26,8 +27,8 @@ def validate_stage_name(stage_name: str) -> str:
 
 def run_stage(stage_name: str, config: PipelineRunConfig | dict[str, Any], store: PipelineRunStore, run_id: str) -> dict[str, Any]:
     stage = validate_stage_name(stage_name)
-    parsed = config if isinstance(config, PipelineRunConfig) else PipelineRunConfig.model_validate(config)
-    return experiment_stages.run_stage(stage, parsed.model_dump(mode="json"), run_id, store.root)
+    parsed = parse_pipeline_run_config(config)
+    return experiment_stages.run_stage(stage, parsed, store.bind(run_id, parsed))
 
 
 def get_registry_stage(stage_name: str) -> Any:

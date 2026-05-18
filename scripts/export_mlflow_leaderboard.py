@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from mlsystem.src.mlflow_adapter import search_runs  # noqa: E402
+from mlsystem.src.mlflow_adapter.api import search_runs  # noqa: E402
 from mlsystem.src.pipeline_config import load_config  # noqa: E402
 
 

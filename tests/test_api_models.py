@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from mlsystem.src.api.models import StageStartRequest
+from mlsystem.src.pipeline_runner.api import StageStartRequest
 from mlsystem.src.api.security import mask_secrets, mask_text
 
 

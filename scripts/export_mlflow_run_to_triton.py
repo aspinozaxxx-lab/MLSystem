@@ -7,9 +7,9 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from mlsystem.src.mlflow_adapter import download_run_artifacts, get_run, list_artifact_paths, search_child_runs
+    from mlsystem.src.mlflow_adapter.api import download_run_artifacts, get_run, list_artifact_paths, search_child_runs
 except ImportError:
-    from src.mlflow_adapter import download_run_artifacts, get_run, list_artifact_paths, search_child_runs
+    from src.mlflow_adapter.api import download_run_artifacts, get_run, list_artifact_paths, search_child_runs
 
 
 DEFAULT_RUN_ID = "a7838f91528a47e1931b685c2ea06686"

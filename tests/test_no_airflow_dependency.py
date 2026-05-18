@@ -8,8 +8,6 @@ class NoAirflowDependencyTests(unittest.TestCase):
     def test_new_runner_and_api_do_not_import_removed_stage_wrapper(self) -> None:
         files = list(Path("mlsystem/src/pipeline_runner").glob("*.py")) + [
             Path("mlsystem/src/api/app.py"),
-            Path("mlsystem/src/api/stage_job_worker.py"),
-            Path("mlsystem/src/api/stage_routes.py"),
         ]
         for path in files:
             text = path.read_text(encoding="utf-8")

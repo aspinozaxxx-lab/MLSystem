@@ -4,8 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mlsystem.src.pipeline_runner.config import PipelineRunConfig
-from mlsystem.src.pipeline_runner.run_store import PipelineRunStore
+from mlsystem.src.pipeline_runner.api import PipelineRunConfig, PipelineRunStore
 
 
 class PipelineRunStoreTests(unittest.TestCase):

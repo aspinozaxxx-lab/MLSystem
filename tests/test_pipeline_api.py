@@ -9,9 +9,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from mlsystem.src.api.app import app
-from mlsystem.src.pipeline_runner.config import PipelineRunConfig
-from mlsystem.src.pipeline_runner.run_store import PipelineRunStore
-from mlsystem.src.pipeline_runner.runner import PipelineRun
+from mlsystem.src.pipeline_runner.api import PipelineRun, PipelineRunConfig, PipelineRunStore
 
 
 class PipelineApiTests(unittest.TestCase):

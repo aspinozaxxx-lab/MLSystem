@@ -10,9 +10,9 @@ from typing import Any
 
 from ..api.security import mask_text
 from . import stages
-from .config import PipelineRunConfig
+from .contracts import PipelineRunConfig
 from .logging import tee_stage_logs
-from .mlflow_logging import log_pipeline_metadata
+from ..mlflow_adapter.api import log_pipeline_metadata
 from .progress import progress_percent
 from .run_store import PipelineRunStore, utc_now
 

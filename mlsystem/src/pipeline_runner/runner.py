@@ -6,32 +6,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
-
 from ..api.security import mask_text
-from .config import PipelineRunConfig
+from .config import parse_pipeline_run_config
+from .contracts import PipelineRun, PipelineRunConfig
 from .run_store import PipelineRunStore, utc_now
-
-
-class PipelineRun(BaseModel):
-    model_config = ConfigDict(extra="allow")
-
-    run_id: str
-    state: str
-    progress_percent: int = 0
-    current_stage: str | None = None
-    current_stage_index: int = 0
-    total_stages: int = 0
-    created_at: str
-    started_at: str | None = None
-    updated_at: str
-    finished_at: str | None = None
-    duration_sec: float | None = None
-    pid: int | None = None
-    mlflow: dict[str, Any] = Field(default_factory=dict)
-    stages: list[dict[str, Any]] = Field(default_factory=list)
-    artifacts: dict[str, Any] = Field(default_factory=dict)
-    error: Any = None
 
 
 def worker_module_name() -> str:
@@ -48,7 +26,7 @@ class PipelineRunner:
         self.store = store or PipelineRunStore()
 
     def start_run(self, config: PipelineRunConfig | dict[str, Any], *, source: str = "api") -> PipelineRun:
-        parsed = config if isinstance(config, PipelineRunConfig) else PipelineRunConfig.model_validate(config)
+        parsed = parse_pipeline_run_config(config)
         created = self.store.create_run(parsed)
         run_id = str(created["run_id"])
         self.store.update_run(run_id, source=source)

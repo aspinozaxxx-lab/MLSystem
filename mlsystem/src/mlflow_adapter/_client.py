@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from .pipeline_config import PipelineConfig
+from ..pipeline_config import PipelineConfig, load_config
 
 MAX_ARTIFACT_BYTES = 20_000_000
 MLFLOW_NOTE_TAG = "mlflow.note.content"
@@ -181,9 +181,14 @@ def _run_url(base_uri: str, experiment_id: str, run_id: str) -> str:
 def mlflow_url_fields(config: PipelineConfig, experiment_id: str | None, run_id: str | None) -> dict[str, Any]:
     if not experiment_id or not run_id:
         return {}
+    base_uri = os.getenv("MLSYSTEM_MLFLOW_PUBLIC_URL") or config.mlflow_tracking_uri_external
+    run_url = _run_url(base_uri, str(experiment_id), str(run_id))
+    experiment_url = f"{base_uri.rstrip('/')}/#/experiments/{experiment_id}"
     return {
-        "url_mlflow_run": _run_url(config.mlflow_tracking_uri_external, str(experiment_id), str(run_id)),
-        "url_mlflow_experiment": f"{config.mlflow_tracking_uri_external.rstrip('/')}/#/experiments/{experiment_id}",
+        "url_mlflow_run": run_url,
+        "url_mlflow_experiment": experiment_url,
+        "mlflow_run_url": run_url,
+        "mlflow_experiment_url": experiment_url,
     }
 
 def _stringify_param(value: Any) -> str | int | float | bool:
@@ -664,6 +669,68 @@ def _is_excluded_metric_key(key: str) -> bool:
     lowered = key.lower()
     return any(lowered.startswith(prefix) for prefix in MLFLOW_EXCLUDED_METRIC_PREFIXES)
 
+
+def mlflow_tuning_metadata(params: dict[str, Any] | None) -> tuple[dict[str, str], dict[str, str]]:
+    params = params or {}
+    prefixes = (
+        "tuning.",
+        "dataset.",
+        "validation.",
+        "mlmarkup.",
+        "tile_preparation.",
+        "pipeline_runner.",
+        "validity.",
+        "checkpoint.",
+    )
+    exact_keys = {"tuning"}
+    tags: dict[str, str] = {}
+    mlflow_params: dict[str, str] = {}
+    for key, value in params.items():
+        key_str = str(key)
+        if key_str not in exact_keys and not key_str.startswith(prefixes):
+            continue
+        if isinstance(value, (dict, list, tuple, set)):
+            value_str = json.dumps(value, ensure_ascii=False, sort_keys=True)
+        else:
+            value_str = "" if value is None else str(value)
+        tags[key_str] = value_str[:5000]
+        mlflow_params[key_str] = value_str[:500]
+    return tags, mlflow_params
+
+
+def log_pipeline_metadata(config: Any, store: Any, run_id: str) -> list[str]:
+    if not getattr(getattr(config, "pipeline", None), "log_mlflow", False):
+        return []
+    warnings: list[str] = []
+    bound = store.bind(run_id, config)
+    summary = bound.read_summary()
+    mlflow_info = summary.get("mlflow") or bound.read_run().get("mlflow") or {}
+    mlflow_run_id = mlflow_info.get("run_id")
+    if not mlflow_run_id or str(mlflow_run_id).startswith("smoke-"):
+        return warnings
+    try:
+        pipeline_config = load_config()
+        set_run_tags(pipeline_config, str(mlflow_run_id), {"pipeline.run_id": run_id, "pipeline.final_status": bound.read_run().get("state")})
+        log_params_to_run(
+            pipeline_config,
+            str(mlflow_run_id),
+            {
+                "pipeline.stages": ",".join(config.pipeline.stages)[:500],
+                "pipeline.trace": json.dumps(config.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)[:500],
+            },
+        )
+        artifacts = [
+            path
+            for path in [*sorted((bound.stage_dir).glob("*.json")), bound.summary_path, bound.log_dir / "pipeline.log"]
+            if path.exists() and path.is_file() and path.stat().st_size <= MAX_ARTIFACT_BYTES
+        ]
+        artifact_errors = log_artifacts_to_run(pipeline_config, str(mlflow_run_id), artifacts)
+        warnings.extend(f"MLflow artifact logging skipped: {item}" for item in artifact_errors)
+    except Exception as exc:  # noqa: BLE001
+        warnings.append(f"MLflow pipeline metadata logging skipped: {type(exc).__name__}: {exc}")
+    return warnings
+
+
 def log_lightweight_run(
     config: PipelineConfig,
     experiment_name: str,
@@ -685,3 +752,36 @@ def log_lightweight_run(
             "tracking_uri_external": config.mlflow_tracking_uri_external,
             "error": f"{type(exc).__name__}: {exc}",
         }
+
+
+__all__ = [
+    "MAX_ARTIFACT_BYTES",
+    "MLFLOW_EXCLUDED_ARTIFACT_NAMES",
+    "MLFLOW_EXCLUDED_METRIC_PREFIXES",
+    "MLFLOW_NOTE_TAG",
+    "MLflowJobRun",
+    "_is_excluded_metric_key",
+    "build_run_note",
+    "check_mlflow",
+    "compact_run_label",
+    "create_run",
+    "download_run_artifacts",
+    "flatten_params",
+    "get_or_create_experiment_id",
+    "get_run",
+    "list_artifact_paths",
+    "log_artifacts_to_run",
+    "log_lightweight_run",
+    "log_metrics_to_run",
+    "log_params_to_run",
+    "log_pipeline_metadata",
+    "mlflow_tuning_metadata",
+    "mlflow_url_fields",
+    "search_child_runs",
+    "search_runs",
+    "set_experiment_tags",
+    "set_run_tags",
+    "setup_deforest_experiment",
+    "start_job_run",
+    "trace_stage",
+]

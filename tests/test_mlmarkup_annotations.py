@@ -4,8 +4,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mlsystem.src.mlflow_adapter import _is_excluded_metric_key
-from mlsystem.src.pipeline.experiment_stages import ExperimentStageConfig, _build_pipeline_job, _git_output
+from mlsystem.src.mlflow_adapter.api import _is_excluded_metric_key
+from mlsystem.src.pipeline.experiment_stages import _build_pipeline_job
+from mlsystem.src.pipeline_runner.api import parse_pipeline_run_config
+from mlsystem.src.pipeline_runner.config import _git_output
 from mlsystem.src.pipeline_config import PipelineConfig
 from mlsystem.src.storage.s3 import find_layout_files, read_s3_text
 
@@ -19,7 +21,7 @@ class MLMarkupAnnotationTests(unittest.TestCase):
             (class_dir / "deforestation.txt").write_text("scene_a.tif\n", encoding="utf-8")
             (class_dir / "deforestation.geojson").write_text('{"type":"FeatureCollection","features":[]}', encoding="utf-8")
 
-            conf = ExperimentStageConfig.model_validate(
+            conf = parse_pipeline_run_config(
                 {
                     "experiment_id": "mlmarkup_unit",
                     "class_name": "вырубки",

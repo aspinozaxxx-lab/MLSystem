@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import argparse
 import json
 import logging
 import math
 import os
-import re
 import shutil
 import subprocess
 import threading
@@ -14,38 +12,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator, model_validator
-
 from ..job_schema import JobSpec
-from ..mlflow_adapter import (
+from ..mlflow_adapter.api import (
     MLFLOW_EXCLUDED_ARTIFACT_NAMES,
     MLflowJobRun,
     create_run as mlflow_create_run,
     log_artifacts_to_run as mlflow_log_artifacts_to_run,
     log_metrics_to_run as mlflow_log_metrics_to_run,
+    mlflow_tuning_metadata,
     mlflow_url_fields,
     set_run_tags as mlflow_set_run_tags,
 )
 from ..pipeline_config import load_config
+from ..pipeline_runner.contracts import PipelineRunConfig
 from ..storage.local_io import read_json, write_json
 from .training_pipeline import TrainingPipeline
-
-
-DEFAULT_PIPELINE_STAGES = [
-    "inventory_scenes",
-    "prepare_dataset",
-    "create_mlflow_run",
-    "train_model",
-    "evaluate_pixel_metrics",
-    "predict_validation_scenes",
-    "vectorize_validation_predictions",
-    "compute_f1",
-    "inference_engine_pipeline",
-    "generate_prediction_examples",
-    "log_mlflow_artifacts",
-    "write_codex_api_summary",
-    "finalize_mlflow_run",
-]
 
 STAGE_POOLS = {
     "inventory_scenes": ("io_light", 1),
@@ -64,18 +45,6 @@ STAGE_POOLS = {
 }
 
 GPU_RESOURCE_STAGES = {"train_model", "predict_validation_scenes"}
-
-PIPELINE_STAGE_ALIASES = {
-    "inventory": "inventory_scenes",
-    "prepare-dataset": "prepare_dataset",
-    "train": "train_model",
-    "evaluate": "evaluate_pixel_metrics",
-    "compute-f1": "compute_f1",
-    "inference-engine": "inference_engine_pipeline",
-    "pseudolabel": "inference_engine_pipeline",
-    "finalize": "finalize_mlflow_run",
-}
-
 DISPATCHER_STAGE_NAMES = {
     "create_mlflow_run",
     "train_model",
@@ -90,154 +59,8 @@ DISPATCHER_STAGE_NAMES = {
 }
 
 
-class ExperimentStageConfig(BaseModel):
-    schema_version: int | None = None
-    experiment_id: str
-    class_name: str | None = None
-    task: str = "train_predict_pseudolabel"
-    smoke: bool = False
-    images_uri: str = "s3://mlsystems/images/"
-    layout_uri: str = "s3://mlsystems/layouts/deforest/"
-    scenes_file: str = "scenes.txt"
-    annotation_file: str = "auto"
-    model: dict[str, Any] = Field(default_factory=dict)
-    preprocess: dict[str, Any] = Field(default_factory=dict)
-    train: dict[str, Any] = Field(default_factory=dict)
-    evaluate: dict[str, Any] = Field(default_factory=dict)
-    pseudolabel: dict[str, Any] = Field(default_factory=dict)
-    postprocess: dict[str, Any] = Field(default_factory=dict)
-    inference: dict[str, Any] = Field(default_factory=dict)
-    predict: dict[str, Any] = Field(default_factory=dict)
-    annotations: dict[str, Any] = Field(default_factory=dict)
-    params: dict[str, Any] = Field(default_factory=dict)
-    mlflow: dict[str, Any] = Field(default_factory=dict)
-
-    @field_validator("experiment_id")
-    @classmethod
-    def validate_experiment_id(cls, value: str) -> str:
-        if not value or not re.match(r"^[A-Za-z0-9._-]+$", value):
-            raise ValueError("experiment_id may contain only letters, digits, dot, underscore and dash")
-        return value
-
-    @model_validator(mode="after")
-    def resolve_annotation_source(self) -> "ExperimentStageConfig":
-        annotations = dict(self.annotations or {})
-        if _is_mlmarkup_source(annotations):
-            resolved = _resolve_mlmarkup_annotation_config(annotations, self.class_name)
-            self.annotations = resolved
-            self.layout_uri = resolved["layout_uri"]
-            self.scenes_file = resolved["scenes_file"]
-            self.annotation_file = resolved["annotation_file"]
-            self.pseudolabel = {**(self.pseudolabel or {}), "enabled": False}
-            self.params = {
-                **(self.params or {}),
-                "annotations": resolved,
-                "pseudolabeling.enabled": False,
-            }
-        return self
-
-
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def safe_run_id(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9._-]+", "_", value)[:180] or "run"
-
-
-def _is_mlmarkup_source(annotations: dict[str, Any]) -> bool:
-    return str(annotations.get("source") or "").strip().lower() in {"mlmarkup", "ml_markup", "ml-markup"}
-
-
-def _resolve_mlmarkup_annotation_config(annotations: dict[str, Any], class_name: str | None) -> dict[str, Any]:
-    repo_path = Path(str(annotations.get("repo_path") or os.getenv("MLSYSTEM_MLMARKUP_REPO_PATH") or "/data/mlsystem/MLMarkup"))
-    class_dir = str(annotations.get("class_dir") or annotations.get("folder") or _default_mlmarkup_class_dir(class_name))
-    scenes_file = str(annotations.get("scenes_file") or "deforestation.txt")
-    annotation_file = str(annotations.get("annotation_file") or "deforestation.geojson")
-    commit = str(annotations.get("commit") or _git_output(repo_path, "rev-parse", "HEAD") or "")
-    branch = str(annotations.get("branch") or _git_output(repo_path, "branch", "--show-current") or "")
-    dirty = bool(_git_output(repo_path, "status", "--short"))
-    resolved = dict(annotations)
-    resolved.update(
-        {
-            "source": "MLMarkup",
-            "repo_path": str(repo_path),
-            "class_dir": class_dir,
-            "layout_uri": str(repo_path / class_dir),
-            "scenes_file": scenes_file,
-            "annotation_file": annotation_file,
-            "commit": commit,
-            "branch": branch,
-            "dirty": dirty,
-            "use_pseudolabels": False,
-        }
-    )
-    return resolved
-
-
-def _default_mlmarkup_class_dir(class_name: str | None) -> str:
-    normalized = str(class_name or "").strip().lower()
-    if normalized in {"deforest", "cuttings", "clearcuts", "clear_cuts", "РІС‹СЂСѓР±РєРё", "вырубки"}:
-        return "Вырубки"
-    return str(class_name or "").strip() or "Вырубки"
-
-
-def _git_output(repo_path: Path, *args: str) -> str:
-    fallback = _git_metadata_without_binary(repo_path, *args)
-    if fallback is not None:
-        return fallback
-    try:
-        git_bin = "/usr/bin/git" if Path("/usr/bin/git").exists() else "git"
-        result = subprocess.run(
-            [git_bin, "-C", str(repo_path), *args],
-            check=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=10,
-        )
-    except Exception:
-        return ""
-    return result.stdout.strip() if result.returncode == 0 else ""
-
-
-def _git_metadata_without_binary(repo_path: Path, *args: str) -> str | None:
-    if args == ("status", "--short"):
-        return ""
-    git_dir = repo_path / ".git"
-    head_path = git_dir / "HEAD"
-    if not head_path.exists():
-        return None
-    try:
-        head = head_path.read_text(encoding="utf-8").strip()
-    except OSError:
-        return None
-    if args == ("branch", "--show-current"):
-        if head.startswith("ref: refs/heads/"):
-            return head.rsplit("/", 1)[-1]
-        return ""
-    if args == ("rev-parse", "HEAD"):
-        if not head.startswith("ref: "):
-            return head
-        ref = head[5:].strip()
-        ref_path = git_dir / ref
-        if ref_path.exists():
-            try:
-                return ref_path.read_text(encoding="utf-8").strip()
-            except OSError:
-                return None
-        packed_refs = git_dir / "packed-refs"
-        if packed_refs.exists():
-            try:
-                for line in packed_refs.read_text(encoding="utf-8").splitlines():
-                    if line.startswith("#") or not line.strip():
-                        continue
-                    sha, _, packed_ref = line.partition(" ")
-                    if packed_ref.strip() == ref:
-                        return sha
-            except OSError:
-                return None
-    return None
 
 
 def _model_name_from_config(model_cfg: dict[str, Any]) -> str:
@@ -257,84 +80,6 @@ def load_conf(conf_file: str | None = None, conf_json: str | None = None) -> dic
     if conf_file:
         return json.loads(Path(conf_file).read_text(encoding="utf-8-sig"))
     return {}
-
-
-class ExperimentStageStore:
-    def __init__(self, state_dir: Path, pipeline_run_id: str, conf: dict[str, Any]) -> None:
-        self.state_dir = state_dir
-        self.pipeline_run_id = pipeline_run_id
-        self.conf = conf
-        self.experiment_id = str(conf.get("experiment_id") or safe_run_id(pipeline_run_id))
-        self.run_dir = state_dir / safe_run_id(pipeline_run_id)
-        self.stage_dir = self.run_dir / "stages"
-        self.run_dir.mkdir(parents=True, exist_ok=True)
-        self.stage_dir.mkdir(parents=True, exist_ok=True)
-
-    @property
-    def summary_path(self) -> Path:
-        return self.run_dir / "summary.json"
-
-    def read_summary(self) -> dict[str, Any]:
-        return read_json(self.summary_path, default={}) or {}
-
-    def update_summary(self, **updates: Any) -> dict[str, Any]:
-        payload = {
-            "schema_version": 1,
-            "experiment_id": self.experiment_id,
-            "pipeline_run_id": self.pipeline_run_id,
-            "updated_at": utc_now(),
-            "stages": {},
-            "warnings": [],
-            "errors": [],
-            **self.read_summary(),
-        }
-        payload.update(updates)
-        payload["updated_at"] = utc_now()
-        write_json(self.summary_path, payload)
-        return payload
-
-    def write_stage(self, stage: str, payload: dict[str, Any]) -> dict[str, Any]:
-        stage_payload = {"stage": stage, "finished_at": utc_now(), **payload}
-        stage_json_path = self.stage_dir / f"{stage}.json"
-        report_path = self.stage_dir / f"{stage}.report.md"
-        stage_payload["stage_json_path"] = str(stage_json_path)
-        stage_payload["report_path"] = str(report_path)
-        try:
-            from .stage_report_formatter import path_views, write_stage_report_file
-
-            stage_payload["path_views"] = {
-                "stage_json": path_views(stage_json_path, container_status_root=self.state_dir),
-                "stage_report": path_views(report_path, container_status_root=self.state_dir),
-            }
-            write_json(stage_json_path, stage_payload)
-            write_stage_report_file(
-                stage_payload,
-                path=report_path,
-                stage=stage,
-                run_id=self.pipeline_run_id,
-                stage_json_path=stage_json_path,
-                container_status_root=self.state_dir,
-            )
-        except Exception as exc:  # noqa: BLE001 - report formatting must not hide the stage result.
-            stage_payload["report_format_error"] = str(exc)
-            write_json(stage_json_path, stage_payload)
-        summary = self.read_summary()
-        stages = summary.get("stages") or {}
-        stages[stage] = {
-            "status": stage_payload.get("status"),
-            "finished_at": stage_payload["finished_at"],
-            "duration_sec": stage_payload.get("duration_sec"),
-            "summary": stage_payload.get("summary"),
-        }
-        summary["stages"] = stages
-        summary["current_stage"] = stage
-        summary["updated_at"] = utc_now()
-        if stage_payload.get("warnings"):
-            summary["warnings"] = sorted(set((summary.get("warnings") or []) + stage_payload["warnings"]))
-        if stage_payload.get("error"):
-            summary["errors"] = (summary.get("errors") or []) + [stage_payload["error"]]
-        write_json(self.summary_path, summary)
-        return stage_payload
 
 
 def _stage_result(status: str = "success", **payload: Any) -> dict[str, Any]:
@@ -501,7 +246,7 @@ def _safe_rel(path: Path, root: Path) -> str:
         return path.as_posix()
 
 
-def _existing_artifacts(store: ExperimentStageStore) -> dict[str, str]:
+def _existing_artifacts(store: Any) -> dict[str, str]:
     names = [
         "train_scenes.txt",
         "val_scenes.txt",
@@ -520,11 +265,11 @@ def _existing_artifacts(store: ExperimentStageStore) -> dict[str, str]:
     return {name: _safe_rel(store.run_dir / name, store.run_dir) for name in names if (store.run_dir / name).exists()}
 
 
-def _forbidden_logged_artifacts(store: ExperimentStageStore) -> list[str]:
+def _forbidden_logged_artifacts(store: Any) -> list[str]:
     return sorted(name for name in MLFLOW_EXCLUDED_ARTIFACT_NAMES if (store.run_dir / name).exists())
 
 
-def _cleanup_runtime_intermediates(conf: ExperimentStageConfig, store: ExperimentStageStore) -> dict[str, Any]:
+def _cleanup_runtime_intermediates(conf: PipelineRunConfig, store: Any) -> dict[str, Any]:
     cleanup_cfg = conf.pseudolabel.get("cleanup_intermediates", True)
     if cleanup_cfg is False or conf.pseudolabel.get("keep_intermediates"):
         return {"enabled": False, "reason": "disabled_by_config"}
@@ -575,12 +320,12 @@ def _cleanup_runtime_intermediates(conf: ExperimentStageConfig, store: Experimen
     }
 
 
-def _read_training_result(store: ExperimentStageStore) -> dict[str, Any]:
+def _read_training_result(store: Any) -> dict[str, Any]:
     summary = store.read_summary()
     return summary.get("training_result") or read_json(store.run_dir / "training_result.json", default={}) or {}
 
 
-def _build_pipeline_job(conf: ExperimentStageConfig) -> JobSpec:
+def _build_pipeline_job(conf: PipelineRunConfig) -> JobSpec:
     train_cfg = dict(conf.train or {})
     preprocess_cfg = dict(conf.preprocess or {})
     model_cfg = dict(conf.model or {})
@@ -644,7 +389,7 @@ def _build_pipeline_job(conf: ExperimentStageConfig) -> JobSpec:
     )
 
 
-def _run_training_pipeline(conf: ExperimentStageConfig, store: ExperimentStageStore) -> dict[str, Any]:
+def _run_training_pipeline(conf: PipelineRunConfig, store: Any) -> dict[str, Any]:
     summary = store.read_summary()
     mlflow_info = summary.get("mlflow") or {}
     run_id = mlflow_info.get("run_id")
@@ -662,7 +407,7 @@ def _run_training_pipeline(conf: ExperimentStageConfig, store: ExperimentStageSt
             "pipeline_trace": store.conf,
         },
     )
-    extra_tags, extra_params = _mlflow_tuning_metadata(conf.params)
+    extra_tags, extra_params = mlflow_tuning_metadata(conf.params)
     prepared_manifest = store.run_dir / "dataset_manifest.json"
     if prepared_manifest.exists():
         job.preprocess.setdefault("prepared_dataset_manifest", str(prepared_manifest))
@@ -704,7 +449,7 @@ def _run_training_pipeline(conf: ExperimentStageConfig, store: ExperimentStageSt
     return result
 
 
-def _write_run_summaries(conf: ExperimentStageConfig, store: ExperimentStageStore) -> tuple[Path, Path]:
+def _write_run_summaries(conf: PipelineRunConfig, store: Any) -> tuple[Path, Path]:
     summary = store.read_summary()
     result = _read_training_result(store)
     post_metrics = result.get("postprocess_metrics") or {}
@@ -759,7 +504,7 @@ def _write_run_summaries(conf: ExperimentStageConfig, store: ExperimentStageStor
     return run_summary_path, codex_summary_path
 
 
-def _smoke_or_skip(conf: ExperimentStageConfig, stage: str) -> dict[str, Any] | None:
+def _smoke_or_skip(conf: PipelineRunConfig, stage: str) -> dict[str, Any] | None:
     if not conf.smoke:
         return None
     skip_reason = "synthetic smoke validates Pipeline/API orchestration only; external S3, dataset, training, inference, vectorization and MLflow writes are skipped."
@@ -779,25 +524,7 @@ def _smoke_or_skip(conf: ExperimentStageConfig, stage: str) -> dict[str, Any] | 
     )
 
 
-def _mlflow_url_fields(pipeline_config: Any, experiment_id: str | None, run_id: str | None) -> tuple[dict[str, Any], list[str]]:
-    warnings: list[str] = []
-    internal_uri = str(getattr(pipeline_config, "mlflow_tracking_uri_internal", "") or "")
-    configured_public = os.getenv("MLSYSTEM_MLFLOW_PUBLIC_URL") or str(getattr(pipeline_config, "mlflow_tracking_uri_external", "") or "")
-    base = configured_public or internal_uri
-    if not configured_public:
-        warnings.append("MLflow public URL is not configured; using tracking URI.")
-    fields: dict[str, Any] = {"tracking_uri": internal_uri}
-    if base and experiment_id:
-        base = base.rstrip("/")
-        fields["url_mlflow_experiment"] = f"{base}/#/experiments/{experiment_id}"
-        fields["mlflow_experiment_url"] = fields["url_mlflow_experiment"]
-    if base and experiment_id and run_id:
-        fields["url_mlflow_run"] = f"{base}/#/experiments/{experiment_id}/runs/{run_id}"
-        fields["mlflow_run_url"] = fields["url_mlflow_run"]
-    return fields, warnings
-
-
-def _dataset_manifest(store: ExperimentStageStore) -> dict[str, Any]:
+def _dataset_manifest(store: Any) -> dict[str, Any]:
     return read_json(store.run_dir / "dataset_manifest.json", default={}) or {}
 
 
@@ -908,7 +635,7 @@ def _close_metric(left: float, right: float | None, *, rel_tol: float = 1e-3, ab
     return math.isclose(float(left), float(right), rel_tol=rel_tol, abs_tol=abs_tol)
 
 
-def _write_pixel_metrics_artifacts(store: ExperimentStageStore, metrics: dict[str, Any], counters: dict[str, Any], aliases: list[dict[str, str]], warnings: list[str]) -> dict[str, str]:
+def _write_pixel_metrics_artifacts(store: Any, metrics: dict[str, Any], counters: dict[str, Any], aliases: list[dict[str, str]], warnings: list[str]) -> dict[str, str]:
     payload = {
         "metrics": metrics,
         "counters": counters,
@@ -962,7 +689,7 @@ def _object_metric_summary(training_result: dict[str, Any]) -> tuple[dict[str, A
     return normalized, counters, warnings
 
 
-def _log_mlflow_metrics_if_available(store: ExperimentStageStore, metrics: dict[str, Any], counters: dict[str, Any] | None = None) -> list[str]:
+def _log_mlflow_metrics_if_available(store: Any, metrics: dict[str, Any], counters: dict[str, Any] | None = None) -> list[str]:
     summary = store.read_summary()
     mlflow_info = summary.get("mlflow") or _read_training_result(store).get("mlflow") or {}
     run_id = mlflow_info.get("run_id")
@@ -998,72 +725,11 @@ def _write_simple_key_value_report(path: Path, title: str, sections: dict[str, d
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _safe_set_mlflow_experiment_tag(client: Any, experiment_id: str, key: str, value: str) -> str | None:
-    try:
-        client.set_experiment_tag(experiment_id, key, value)
-        return None
-    except Exception as exc:
-        message = f"{type(exc).__name__}: {exc}"
-        lowered = message.lower()
-        if "experiment_tag_pk" in lowered or ("duplicate key" in lowered and "experiment_tags" in lowered):
-            return f"Skipped concurrent MLflow experiment tag write: {key}"
-        raise
-
-
-def _is_mlflow_duplicate_experiment_error(exc: Exception) -> bool:
-    message = f"{type(exc).__name__}: {exc}".lower()
-    return "resource_already_exists" in message or ("already exists" in message and "experiment" in message)
-
-
-def _get_or_create_mlflow_experiment_id(client: Any, experiment_name: str, *, attempts: int = 5) -> str:
-    import time
-
-    for attempt in range(max(1, attempts)):
-        experiment = client.get_experiment_by_name(experiment_name)
-        if experiment is not None:
-            return str(experiment.experiment_id)
-        try:
-            return str(client.create_experiment(experiment_name))
-        except Exception as exc:
-            if not _is_mlflow_duplicate_experiment_error(exc) or attempt == attempts - 1:
-                raise
-            time.sleep(0.2 * (attempt + 1))
-    raise RuntimeError(f"MLflow experiment was not created: {experiment_name}")
-
-
-def _mlflow_tuning_metadata(params: dict[str, Any] | None) -> tuple[dict[str, str], dict[str, str]]:
-    params = params or {}
-    prefixes = (
-        "tuning.",
-        "dataset.",
-        "validation.",
-        "mlmarkup.",
-        "tile_preparation.",
-        "pipeline_runner.",
-        "validity.",
-        "checkpoint.",
-    )
-    exact_keys = {"tuning"}
-    tags: dict[str, str] = {}
-    mlflow_params: dict[str, str] = {}
-    for key, value in params.items():
-        key_str = str(key)
-        if key_str not in exact_keys and not key_str.startswith(prefixes):
-            continue
-        if isinstance(value, (dict, list, tuple, set)):
-            value_str = json.dumps(value, ensure_ascii=False, sort_keys=True)
-        else:
-            value_str = "" if value is None else str(value)
-        tags[key_str] = value_str[:5000]
-        mlflow_params[key_str] = value_str[:500]
-    return tags, mlflow_params
-
-
-def _create_mlflow_run(conf: ExperimentStageConfig, store: ExperimentStageStore) -> dict[str, Any]:
+def _create_mlflow_run(conf: PipelineRunConfig, store: Any) -> dict[str, Any]:
     try:
         pipeline_config = load_config()
         experiment_name = conf.mlflow.get("experiment") or pipeline_config.mlflow_default_experiment
-        extra_tags, extra_params = _mlflow_tuning_metadata(conf.params)
+        extra_tags, extra_params = mlflow_tuning_metadata(conf.params)
         experiment_tags = {}
         if conf.class_name:
             experiment_tags = {
@@ -1161,7 +827,7 @@ def _create_mlflow_run(conf: ExperimentStageConfig, store: ExperimentStageStore)
         raise
 
 
-def _finalize_mlflow_run(conf: ExperimentStageConfig, store: ExperimentStageStore) -> dict[str, Any]:
+def _finalize_mlflow_run(conf: PipelineRunConfig, store: Any) -> dict[str, Any]:
     summary = store.read_summary()
     mlflow_info = summary.get("mlflow") or {}
     run_id = mlflow_info.get("run_id")
@@ -1188,7 +854,8 @@ def _finalize_mlflow_run(conf: ExperimentStageConfig, store: ExperimentStageStor
         )
     try:
         pipeline_config = load_config()
-        url_fields, url_warnings = _mlflow_url_fields(pipeline_config, mlflow_info.get("experiment_id"), run_id)
+        url_fields = mlflow_url_fields(pipeline_config, mlflow_info.get("experiment_id"), run_id)
+        url_warnings: list[str] = []
         store.update_summary(status="success", finished_at=utc_now(), runtime_cleanup=cleanup)
         mlflow_set_run_tags(pipeline_config, str(run_id), {"job_status": "success", "pipeline_status": "success"})
         artifact_errors = mlflow_log_artifacts_to_run(pipeline_config, str(run_id), [store.summary_path])
@@ -1212,7 +879,7 @@ def _finalize_mlflow_run(conf: ExperimentStageConfig, store: ExperimentStageStor
         return _stage_result("failed", error=f"{type(exc).__name__}: {exc}", counters={**final_counters, "mlflow_run_id": run_id, "mlflow_final_status": "failed"})
 
 
-def _run_pipeline_synthetic_pseudolabel_smoke(store: ExperimentStageStore) -> dict[str, Any]:
+def _run_pipeline_synthetic_pseudolabel_smoke(store: Any) -> dict[str, Any]:
     smoke_dir = store.run_dir / "synthetic_pseudolabel"
     smoke_dir.mkdir(parents=True, exist_ok=True)
     accepted_geojson = smoke_dir / f"{store.experiment_id}.accepted.geojson"
@@ -1279,15 +946,13 @@ def _run_pipeline_synthetic_pseudolabel_smoke(store: ExperimentStageStore) -> di
     }
 
 
-def _run_dispatcher_stage(stage: str, conf_payload: dict[str, Any], pipeline_run_id: str, state_dir: Path) -> dict[str, Any]:
+def _run_dispatcher_stage(stage: str, conf: PipelineRunConfig, store: Any) -> dict[str, Any]:
     started = time.time()
     resources_before = _resource_snapshot()
-    conf = ExperimentStageConfig.model_validate(conf_payload)
-    store = ExperimentStageStore(state_dir, pipeline_run_id, conf.model_dump())
     store.update_summary(
         status="running",
         experiment_config=conf.model_dump(),
-        pipeline={"pipeline_id": "mlsystem_experiment_pipeline", "run_id": pipeline_run_id},
+        pipeline={"pipeline_id": "mlsystem_experiment_pipeline", "run_id": store.pipeline_run_id},
         active_stage=stage,
         active_stage_started_at=utc_now(),
         active_stage_resources=resources_before,
@@ -1613,7 +1278,8 @@ def _run_dispatcher_stage(stage: str, conf_payload: dict[str, Any], pipeline_run
             artifact_errors = mlflow_log_artifacts_to_run(pipeline_config, str(run_id), logged_paths)
             artifacts_failed = len(artifact_errors)
         pipeline_config = load_config()
-        url_fields, url_warnings = _mlflow_url_fields(pipeline_config, mlflow_info.get("experiment_id"), run_id)
+        url_fields = mlflow_url_fields(pipeline_config, mlflow_info.get("experiment_id"), run_id)
+        url_warnings: list[str] = []
         result = _stage_result(
             "failed" if artifacts_failed else "success",
             summary=f"Logged {len(logged_paths) - artifacts_failed} summary artifacts to MLflow.",
@@ -1653,7 +1319,7 @@ def _run_dispatcher_stage(stage: str, conf_payload: dict[str, Any], pipeline_run
     return store.write_stage(stage, result)
 
 
-def run_stage(stage: str, conf_payload: dict[str, Any], pipeline_run_id: str, state_dir: Path) -> dict[str, Any]:
+def run_stage(stage: str, config: PipelineRunConfig, store: Any) -> dict[str, Any]:
     from .stages.context import StageContext
     from .stages.registry import get_stage_entrypoint
     from .stages.report import StageFailure, StageReport
@@ -1662,19 +1328,18 @@ def run_stage(stage: str, conf_payload: dict[str, Any], pipeline_run_id: str, st
         entrypoint = get_stage_entrypoint(stage)
     except KeyError:
         if stage not in DISPATCHER_STAGE_NAMES:
-            known = ", ".join(DEFAULT_PIPELINE_STAGES + sorted(DISPATCHER_STAGE_NAMES))
+            known = ", ".join(sorted(DISPATCHER_STAGE_NAMES))
             raise ValueError(f"Unknown Pipeline MLSystem stage: {stage}. Known stages: {known}")
-        return _run_dispatcher_stage(stage, conf_payload, pipeline_run_id, state_dir)
+        return _run_dispatcher_stage(stage, config, store)
 
     started = time.time()
     resources_before = _resource_snapshot()
-    conf = ExperimentStageConfig.model_validate(conf_payload)
-    store = ExperimentStageStore(state_dir, pipeline_run_id, conf.model_dump())
+    conf = config
     logger = logging.getLogger(f"mlsystem.pipeline.{stage}")
     store.update_summary(
         status="running",
         experiment_config=conf.model_dump(),
-        pipeline={"pipeline_id": "mlsystem_experiment_pipeline", "run_id": pipeline_run_id},
+        pipeline={"pipeline_id": "mlsystem_experiment_pipeline", "run_id": store.pipeline_run_id},
         active_stage=stage,
         active_stage_started_at=utc_now(),
         active_stage_resources=resources_before,
@@ -1690,10 +1355,10 @@ def run_stage(stage: str, conf_payload: dict[str, Any], pipeline_run_id: str, st
         else:
             context = StageContext(
                 stage_id=stage,
-                run_id=pipeline_run_id,
+                run_id=store.pipeline_run_id,
                 config=conf,
-                raw_conf=conf_payload,
-                status_dir=state_dir,
+                raw_conf=conf.model_dump(mode="json"),
+                status_dir=store.state_dir,
                 store=store,
                 logger=logger,
             )
@@ -1735,19 +1400,7 @@ def run_stage(stage: str, conf_payload: dict[str, Any], pipeline_run_id: str, st
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="MLSystem Pipeline task wrapper")
-    sub = parser.add_subparsers(dest="command", required=True)
-    command_names = sorted(set([stage.replace("_", "-") for stage in DEFAULT_PIPELINE_STAGES] + list(PIPELINE_STAGE_ALIASES)))
-    for command_name in command_names:
-        p = sub.add_parser(command_name)
-        p.add_argument("--run-id", required=True)
-        p.add_argument("--state-dir", default=os.getenv("MLSYSTEM_RUN_ROOT", "/data/mlsystem/runs"))
-        p.add_argument("--conf-file", default=None)
-        p.add_argument("--conf-json", default=None)
-    args = parser.parse_args()
-    stage = PIPELINE_STAGE_ALIASES.get(args.command, args.command.replace("-", "_"))
-    payload = run_stage(stage, load_conf(args.conf_file, args.conf_json), args.run_id, Path(args.state_dir))
-    print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True, default=str))
+    raise SystemExit("Use python -m mlsystem.src.pipeline_runner.cli for pipeline lifecycle execution.")
 
 
 if __name__ == "__main__":

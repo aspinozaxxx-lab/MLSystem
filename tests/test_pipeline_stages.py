@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from mlsystem.src.storage.local_io import write_json
-from mlsystem.src.pipeline_runner.run_store import PipelineRunStore
+from mlsystem.src.pipeline_runner.api import PipelineRunStore
 from mlsystem.src.pipeline.stages.context import StageContext
 from mlsystem.src.pipeline.stages.inventory_scenes import run as run_inventory_scenes
 from mlsystem.src.pipeline.stages.inference_engine_pipeline import _shared_run_dir_for_inference_engine, run as run_inference_engine_pipeline

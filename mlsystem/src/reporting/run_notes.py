@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..mlflow_adapter import build_run_note, compact_run_label
+from ..mlflow_adapter.api import build_run_note, compact_run_label
 
 
 def build_job_run_note(**kwargs: Any) -> str:

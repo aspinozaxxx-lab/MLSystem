@@ -8,7 +8,7 @@ from typing import Any
 
 from ..io_utils import write_json
 from ..job_schema import JobSpec
-from ..mlflow_adapter import MLflowJobRun
+from ..mlflow_adapter.api import MLflowJobRun
 
 
 def write_history(experiment_dir: Path, history: list[dict[str, float]]) -> list[Path]:
