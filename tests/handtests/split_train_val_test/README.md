@@ -7,7 +7,7 @@
 - детерминированный object-balanced train/val split;
 - запись человекочитаемых отчетов.
 
-Production-логика находится в `mlsystem/src/data/dataset_split.py`. Handtest только вызывает этот код и не содержит копии алгоритма.
+Production-логика находится в `mlsystem/src/dataset_preparing/_dataset_split.py`. Handtest только вызывает этот код и не содержит копии алгоритма.
 
 ## Что лежит во входе
 
@@ -60,7 +60,7 @@ tests\handtests\split_train_val_test\run.bat
 
 - очищает и пересоздает `output`;
 - проверяет, что в `input` есть ровно один GeoJSON;
-- запускает CLI `python -m mlsystem.src.data.dataset_split split`;
+- запускает CLI `python -m mlsystem.src.dataset_preparing._dataset_split split`;
 - пишет отчеты.
 
 ## Что смотреть в output

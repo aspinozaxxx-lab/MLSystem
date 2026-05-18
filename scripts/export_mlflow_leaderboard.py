@@ -12,7 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from mlsystem.src.mlflow_adapter.api import search_runs  # noqa: E402
-from mlsystem.src.pipeline_config import load_config  # noqa: E402
+from mlsystem.src.settings.api import load_config  # noqa: E402
 
 
 def main() -> None:

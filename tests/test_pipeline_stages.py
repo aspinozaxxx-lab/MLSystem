@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from mlsystem.src.storage.local_io import write_json
+from mlsystem.src.storage.api import write_json
 from mlsystem.src.train_pipeline.api import TrainPipelineRunStore
 from mlsystem.src.train_pipeline.stages.context import StageContext
 from mlsystem.src.train_pipeline.stages.inventory_scenes import run as run_inventory_scenes

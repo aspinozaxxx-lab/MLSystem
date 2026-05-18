@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import unittest
 
-from shapely.geometry import box
+import pytest
 
-from mlsystem.src.object_metrics import compute_object_f1
+shapely_geometry = pytest.importorskip("shapely.geometry")
+box = shapely_geometry.box
+
+from mlsystem.src.metrics.api import compute_object_f1
 
 
 class ObjectMetricsTests(unittest.TestCase):

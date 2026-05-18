@@ -29,8 +29,19 @@ class TrainingReportMLflowReaderTests(unittest.TestCase):
                 },
                 "data": {
                     "metrics": [{"key": "best_val_pixel_f1", "value": 0.55, "step": 11}],
-                    "params": [{"key": "model_name", "value": "segformer_b2"}, {"key": "train.epochs", "value": 12}],
-                    "tags": [{"key": "mlsystem.class_name", "value": "lakes"}],
+                    "params": [
+                        {"key": "model_name", "value": "segformer_b2"},
+                        {"key": "train.epochs", "value": 12},
+                        {"key": "dataset.version", "value": "abc123"},
+                        {"key": "dataset.version_source", "value": "mlmarkup_git_commit"},
+                        {"key": "dataset.fingerprint", "value": "fp1"},
+                        {"key": "dataset.objects", "value": "42"},
+                        {"key": "dataset.scenes", "value": "7"},
+                        {"key": "dataset.train_scenes", "value": "5"},
+                        {"key": "dataset.val_scenes", "value": "2"},
+                        {"key": "dataset.git_commit_date", "value": "2026-05-11T10:00:00+00:00"},
+                    ],
+                    "tags": [{"key": "dataset.class_slug", "value": "lakes"}],
                 },
             }
         )
@@ -41,8 +52,16 @@ class TrainingReportMLflowReaderTests(unittest.TestCase):
         self.assertEqual(run["training_duration_sec"], 123.0)
         self.assertEqual(run["best_epoch"], 11.0)
         self.assertEqual(run["epochs_planned"], 12.0)
+        self.assertEqual(run["dataset_version"], "abc123")
+        self.assertEqual(run["dataset_version_source"], "mlmarkup_git_commit")
+        self.assertEqual(run["dataset_fingerprint"], "fp1")
+        self.assertEqual(run["dataset_objects"], 42)
+        self.assertEqual(run["dataset_scenes"], 7)
+        self.assertEqual(run["dataset_train_scenes"], 5)
+        self.assertEqual(run["dataset_val_scenes"], 2)
+        self.assertEqual(run["dataset_date"], "2026-05-11")
 
-    def test_top_runs_sorted_desc(self) -> None:
+    def test_best_run_per_dataset_version_selected_by_pixel_f1(self) -> None:
         collector = object.__new__(TrainingReportCollector)
         rows = collector._build_class_rows(  # pylint: disable=protected-access
             {"lakes": {"objects_count": 2, "scenes_count": 3, "dataset_date": "2026-05-10"}},
@@ -54,6 +73,7 @@ class TrainingReportMLflowReaderTests(unittest.TestCase):
                     "run_url": "/mlflow/#/experiments/1/runs/low",
                     "train_date": "2026-05-10",
                     "best_epoch": 12,
+                    "dataset_version": "v1",
                 },
                 {
                     "run_id": "high",
@@ -62,12 +82,24 @@ class TrainingReportMLflowReaderTests(unittest.TestCase):
                     "run_url": "/mlflow/#/experiments/1/runs/high",
                     "train_date": "2026-05-10",
                     "best_epoch": 12,
+                    "dataset_version": "v1",
+                },
+                {
+                    "run_id": "other_version",
+                    "class_slug": "lakes",
+                    "pixel_f1": 0.3,
+                    "run_url": "/mlflow/#/experiments/1/runs/other_version",
+                    "train_date": "2026-05-10",
+                    "best_epoch": 12,
+                    "dataset_version": "v2",
                 },
             ],
         )
         lakes = next(item for item in rows if item["class_slug"] == "lakes")
+        self.assertEqual([run["run_id"] for run in lakes["dataset_versions"]], ["high", "other_version"])
         self.assertEqual(lakes["top_runs"][0]["run_id"], "high")
         self.assertEqual(lakes["best_pixel_f1"], 0.9)
+        self.assertEqual(lakes["dataset_version"], "v1")
 
     def test_perfect_pixel_f1_runs_are_excluded(self) -> None:
         collector = object.__new__(TrainingReportCollector)
@@ -95,6 +127,24 @@ class TrainingReportMLflowReaderTests(unittest.TestCase):
         lakes = next(item for item in rows if item["class_slug"] == "lakes")
         self.assertEqual([run["run_id"] for run in lakes["top_runs"]], ["real"])
         self.assertEqual(lakes["best_pixel_f1"], 0.42)
+
+    def test_dataset_version_falls_back_to_inventory_fingerprint(self) -> None:
+        collector = object.__new__(TrainingReportCollector)
+        rows = collector._build_class_rows(  # pylint: disable=protected-access
+            {"lakes": {"objects_count": 2, "scenes_count": 3, "dataset_date": "2026-05-10", "dataset_fingerprint": "inventory-fp"}},
+            [
+                {
+                    "run_id": "run",
+                    "class_slug": "lakes",
+                    "pixel_f1": 0.42,
+                    "run_url": "/mlflow/#/experiments/1/runs/run",
+                    "train_date": "2026-05-10",
+                    "best_epoch": 12,
+                },
+            ],
+        )
+        lakes = next(item for item in rows if item["class_slug"] == "lakes")
+        self.assertEqual(lakes["dataset_versions"][0]["dataset_version"], "inventory-fp")
 
     def test_runs_before_cutoff_or_before_epoch_10_are_excluded(self) -> None:
         collector = object.__new__(TrainingReportCollector)

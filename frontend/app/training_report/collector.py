@@ -103,21 +103,20 @@ class TrainingReportCollector:
                 for run in (_enrich_run(run, inventory) for run in runs_by_class.get(spec.class_slug, []))
                 if _is_trusted_training_run(run)
             ]
-            class_runs.sort(key=lambda item: (_sort_f1(item.get("pixel_f1")), item.get("train_date") or ""))
-            top_runs = []
-            for index, run in enumerate(class_runs[:10], start=1):
+            dataset_versions = []
+            for index, run in enumerate(_best_runs_by_dataset_version(class_runs), start=1):
                 run = dict(run)
                 run["rank"] = index
-                top_runs.append(_public_run(run))
+                dataset_versions.append(_public_run(run))
 
-            best = top_runs[0] if top_runs else None
+            best = dataset_versions[0] if dataset_versions else None
             dataset_objects = _int_or_zero((best or {}).get("dataset_objects"), inventory.get("objects_count"))
             dataset_scenes = _int_or_zero((best or {}).get("dataset_scenes"), inventory.get("scenes_count"))
             validation_kind = (best or {}).get("validation_kind") or "unknown"
             if validation_kind == "unknown":
                 validation_kind = _validation_kind_from_inventory(dataset_scenes)
             warning = None
-            if not top_runs:
+            if not dataset_versions:
                 warning = "no runs"
             elif validation_kind != "scene_level" or dataset_scenes < 4:
                 warning = "limited validation"
@@ -126,6 +125,9 @@ class TrainingReportCollector:
                     "class_name": spec.class_name,
                     "class_slug": spec.class_slug,
                     "best_pixel_f1": (best or {}).get("pixel_f1"),
+                    "dataset_version": (best or {}).get("dataset_version"),
+                    "dataset_version_source": (best or {}).get("dataset_version_source"),
+                    "dataset_fingerprint": (best or {}).get("dataset_fingerprint"),
                     "dataset_date": (best or {}).get("dataset_date") or inventory.get("dataset_date"),
                     "dataset_objects": dataset_objects,
                     "dataset_scenes": dataset_scenes,
@@ -146,7 +148,8 @@ class TrainingReportCollector:
                             f"exclude runs whose best epoch is before {int(MIN_TRUSTED_BEST_EPOCH)}",
                         ],
                     },
-                    "top_runs": top_runs,
+                    "dataset_versions": dataset_versions,
+                    "top_runs": dataset_versions,
                 }
             )
         rows.sort(key=lambda item: (item.get("class_name") or ""))
@@ -233,9 +236,15 @@ def _enrich_run(run: dict[str, Any], inventory: dict[str, Any]) -> dict[str, Any
     tags = run.get("tags") if isinstance(run.get("tags"), dict) else {}
     params = run.get("params") if isinstance(run.get("params"), dict) else {}
     dicts = (tags, params)
-    dataset_objects = _first_number(dicts, "dataset.objects", "dataset_objects", "objects_count")
-    dataset_scenes = _first_number(dicts, "dataset.scenes", "dataset_scenes", "scenes_count")
-    dataset_date = _first_text(dicts, "dataset.date", "dataset_date", "mlmarkup_commit_date", "dataset_published_date")
+    dataset_objects = _int_or_none(run.get("dataset_objects")) or _first_number(dicts, "dataset.objects", "dataset_objects", "objects_count")
+    dataset_scenes = _int_or_none(run.get("dataset_scenes")) or _first_number(dicts, "dataset.scenes", "dataset_scenes", "scenes_count")
+    dataset_train_scenes = _int_or_none(run.get("dataset_train_scenes")) or _first_number(dicts, "dataset.train_scenes", "dataset_train_scenes", "train_scenes")
+    dataset_val_scenes = _int_or_none(run.get("dataset_val_scenes")) or _first_number(dicts, "dataset.val_scenes", "dataset_val_scenes", "val_scenes")
+    dataset_version = run.get("dataset_version") or _first_text(dicts, "dataset.version", "dataset_version")
+    dataset_version_source = run.get("dataset_version_source") or _first_text(dicts, "dataset.version_source", "dataset_version_source")
+    dataset_fingerprint = run.get("dataset_fingerprint") or _first_text(dicts, "dataset.fingerprint", "dataset_fingerprint")
+    dataset_git_commit_date = run.get("dataset_git_commit_date") or _first_text(dicts, "dataset.git_commit_date", "dataset_git_commit_date", "mlmarkup_commit_date")
+    dataset_date = run.get("dataset_date") or _date_only(dataset_git_commit_date) or _first_text(dicts, "dataset.date", "dataset_date", "dataset_published_date")
     split_strategy = run.get("split_strategy") or _first_text(dicts, "validation.split_strategy", "split_strategy", "preprocess.split_strategy")
     validation_kind = run.get("validation_kind") or _first_text(dicts, "validation.kind", "validation_kind") or validation_kind_from_split(split_strategy)
     model_name = run.get("model_name") or _first_text(dicts, "model.name", "model_name", "architecture", "model")
@@ -243,8 +252,14 @@ def _enrich_run(run: dict[str, Any], inventory: dict[str, Any]) -> dict[str, Any
     enriched.update(
         {
             "dataset_date": _date_only(dataset_date) or inventory.get("dataset_date"),
+            "dataset_version": dataset_version or dataset_fingerprint or inventory.get("dataset_fingerprint") or "unknown",
+            "dataset_version_source": dataset_version_source or ("fallback_inventory" if not dataset_version and inventory.get("dataset_fingerprint") else None),
+            "dataset_fingerprint": dataset_fingerprint or inventory.get("dataset_fingerprint"),
             "dataset_objects": dataset_objects if dataset_objects is not None else inventory.get("objects_count", 0),
             "dataset_scenes": dataset_scenes if dataset_scenes is not None else inventory.get("scenes_count", 0),
+            "dataset_train_scenes": dataset_train_scenes,
+            "dataset_val_scenes": dataset_val_scenes,
+            "dataset_git_commit_date": dataset_git_commit_date,
             "split_strategy": split_strategy or "unknown",
             "validation_kind": validation_kind or "unknown",
             "model_name": model_name or "unknown",
@@ -264,9 +279,15 @@ def _public_run(run: dict[str, Any]) -> dict[str, Any]:
         "run_id": run.get("run_id"),
         "run_url": run.get("run_url"),
         "pixel_f1": run.get("pixel_f1"),
+        "dataset_version": run.get("dataset_version"),
+        "dataset_version_source": run.get("dataset_version_source"),
+        "dataset_fingerprint": run.get("dataset_fingerprint"),
         "dataset_date": run.get("dataset_date"),
         "dataset_objects": run.get("dataset_objects"),
         "dataset_scenes": run.get("dataset_scenes"),
+        "dataset_train_scenes": run.get("dataset_train_scenes"),
+        "dataset_val_scenes": run.get("dataset_val_scenes"),
+        "dataset_git_commit_date": run.get("dataset_git_commit_date"),
         "train_date": run.get("train_date"),
         "class_name": run.get("class_name"),
         "class_slug": run.get("class_slug"),
@@ -281,6 +302,19 @@ def _public_run(run: dict[str, Any]) -> dict[str, Any]:
         "epochs_planned": run.get("epochs_planned"),
         "best_epoch": run.get("best_epoch"),
     }
+
+
+def _best_runs_by_dataset_version(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for run in runs:
+        key = f"{run.get('class_slug') or ''}:{run.get('dataset_version') or run.get('dataset_fingerprint') or 'unknown'}"
+        grouped.setdefault(key, []).append(run)
+    best: list[dict[str, Any]] = []
+    for group in grouped.values():
+        group.sort(key=lambda item: (_sort_f1(item.get("pixel_f1")), item.get("train_date") or ""))
+        best.append(group[0])
+    best.sort(key=lambda item: (_sort_f1(item.get("pixel_f1")), item.get("train_date") or ""))
+    return best
 
 
 def _read_runtime_report_runs(report_root: Path) -> list[dict[str, Any]]:
@@ -318,6 +352,15 @@ def _read_runtime_report_runs(report_root: Path) -> list[dict[str, Any]]:
                 "pixel_f1": f1["pixel_f1"] if f1["pixel_f1"] is not None else _float_or_none(_first_existing(item, "best_val_f1", "best_f1", "f1")),
                 "metric_name_source": f1["metric_name_source"],
                 "best_threshold": f1["best_threshold"],
+                "dataset_version": _first_existing(item, "dataset_version", "dataset.version"),
+                "dataset_version_source": _first_existing(item, "dataset_version_source", "dataset.version_source"),
+                "dataset_fingerprint": _first_existing(item, "dataset_fingerprint", "dataset.fingerprint"),
+                "dataset_objects": _first_existing(item, "dataset_objects", "dataset.objects", "objects_count"),
+                "dataset_scenes": _first_existing(item, "dataset_scenes", "dataset.scenes", "scenes_count"),
+                "dataset_train_scenes": _first_existing(item, "dataset_train_scenes", "dataset.train_scenes"),
+                "dataset_val_scenes": _first_existing(item, "dataset_val_scenes", "dataset.val_scenes"),
+                "dataset_git_commit_date": _first_existing(item, "dataset_git_commit_date", "dataset.git_commit_date"),
+                "dataset_date": _date_only(_first_existing(item, "dataset_date", "dataset.git_commit_date", "dataset_git_commit_date")),
                 "train_date": _date_only(_first_existing(item, "train_date", "start_time", "started_at")),
                 "split_strategy": _first_existing(item, "split_strategy", "validation_kind") or "unknown",
                 "validation_kind": _first_existing(item, "validation_kind") or validation_kind_from_split(str(_first_existing(item, "split_strategy") or "")),
@@ -408,6 +451,13 @@ def _int_or_zero(*values: Any) -> int:
         except (TypeError, ValueError):
             continue
     return 0
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
 
 
 def _float_or_none(value: Any) -> float | None:

@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mlsystem.src.data.dataset_split import (
+from mlsystem.src.dataset_preparing.api import (
     SceneObjectCount,
     clean_scene_list_file,
     count_objects_per_scene,

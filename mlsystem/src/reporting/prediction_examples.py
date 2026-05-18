@@ -3,7 +3,7 @@ from __future__ import annotations
 import html
 from pathlib import Path
 
-from ..storage.local_io import write_json
+from ..storage.api import write_json
 
 
 def write_prediction_examples_report(experiment_dir: Path, job_id: str, preview_paths: list[Path], limit: int = 30) -> list[Path]:

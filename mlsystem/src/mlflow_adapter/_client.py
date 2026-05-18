@@ -9,7 +9,8 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from ..pipeline_config import PipelineConfig, load_config
+from ..settings.api import load_config
+from ..settings.contracts import PipelineConfig
 
 MAX_ARTIFACT_BYTES = 20_000_000
 MLFLOW_NOTE_TAG = "mlflow.note.content"

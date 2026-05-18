@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from ...data.dataset_split import (
+from ...dataset_preparing.api import (
     SceneObjectCount,
     TrainValSplit,
     count_objects_per_scene,
@@ -14,9 +14,8 @@ from ...data.dataset_split import (
     write_split_outputs,
     write_train_val_split_report,
 )
-from ...pipeline_config import load_config
-from ...storage.local_io import read_json, write_json
-from ...storage.s3 import raster_path_for_s3_key, read_s3_text
+from ...settings.api import load_config
+from ...storage.api import raster_path_for_s3_key, read_json, read_s3_text, write_json
 from .context import StageContext
 from .report import StageCheck, StageFailure, StageReport
 

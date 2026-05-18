@@ -6,7 +6,7 @@ from typing import Any
 
 from shapely.geometry import shape
 
-from ..storage.local_io import write_json
+from ..storage.api import write_json
 from .object_metrics import compute_object_f1
 
 

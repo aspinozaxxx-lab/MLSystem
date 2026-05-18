@@ -130,6 +130,15 @@ def normalize_run(run: dict[str, Any]) -> dict[str, Any]:
         "params.split_strategy",
     )
     model_name = _first_value((tags, params), "model.name", "model_name", "model", "architecture", "model.architecture")
+    dataset_version = _first_value((tags, params), "dataset.version", "dataset_version")
+    dataset_version_source = _first_value((tags, params), "dataset.version_source", "dataset_version_source")
+    dataset_fingerprint = _first_value((tags, params), "dataset.fingerprint", "dataset_fingerprint")
+    dataset_objects = _first_float((tags, params), "dataset.objects", "dataset_objects", "objects_count")
+    dataset_scenes = _first_float((tags, params), "dataset.scenes", "dataset_scenes", "scenes_count")
+    dataset_train_scenes = _first_float((tags, params), "dataset.train_scenes", "dataset_train_scenes", "train_scenes")
+    dataset_val_scenes = _first_float((tags, params), "dataset.val_scenes", "dataset_val_scenes", "val_scenes")
+    dataset_git_commit_date = _first_value((tags, params), "dataset.git_commit_date", "dataset_git_commit_date", "mlmarkup_commit_date")
+    dataset_date = _date_from_iso(dataset_git_commit_date)
     train_date = _date_from_ms(info.get("start_time")) or _date_from_iso(tags.get("mlsystem.train_date") or tags.get("train_date"))
     duration_sec = _duration_sec(info.get("start_time"), info.get("end_time"))
     epochs_completed = _first_float(
@@ -163,6 +172,15 @@ def normalize_run(run: dict[str, Any]) -> dict[str, Any]:
         "metric_name_source": f1["metric_name_source"],
         "best_threshold": f1["best_threshold"],
         "train_date": train_date,
+        "dataset_version": dataset_version,
+        "dataset_version_source": dataset_version_source,
+        "dataset_fingerprint": dataset_fingerprint,
+        "dataset_objects": int(dataset_objects) if dataset_objects is not None else None,
+        "dataset_scenes": int(dataset_scenes) if dataset_scenes is not None else None,
+        "dataset_train_scenes": int(dataset_train_scenes) if dataset_train_scenes is not None else None,
+        "dataset_val_scenes": int(dataset_val_scenes) if dataset_val_scenes is not None else None,
+        "dataset_git_commit_date": dataset_git_commit_date,
+        "dataset_date": dataset_date,
         "split_strategy": split_strategy or "unknown",
         "validation_kind": validation_kind_from_split(split_strategy),
         "model_name": model_name or "unknown",
@@ -253,6 +271,10 @@ def summarize_params(params: dict[str, Any], *, model_name: str | None = None, s
 
 
 def _detect_class_slug(*, tags: dict[str, Any], params: dict[str, Any], info: dict[str, Any]) -> str | None:
+    for key in ("dataset.class_slug", "class_slug", "mlsystem.class_slug"):
+        value = str(tags.get(key) or params.get(key) or "").strip()
+        if value:
+            return value
     for key in ("mlsystem.class_name", "class_name", "dataset.class_name"):
         slug = class_slug_for_text(str(tags.get(key) or ""))
         if slug:

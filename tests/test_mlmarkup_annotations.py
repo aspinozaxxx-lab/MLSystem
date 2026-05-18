@@ -8,8 +8,8 @@ from mlsystem.src.mlflow_adapter.api import _is_excluded_metric_key
 from mlsystem.src.train_pipeline.experiment_stages import _build_pipeline_job
 from mlsystem.src.train_pipeline.api import parse_pipeline_run_config
 from mlsystem.src.train_pipeline.config import _git_output
-from mlsystem.src.pipeline_config import PipelineConfig
-from mlsystem.src.storage.s3 import find_layout_files, read_s3_text
+from mlsystem.src.settings.contracts import PipelineConfig
+from mlsystem.src.storage.api import find_layout_files, read_s3_text
 
 
 class MLMarkupAnnotationTests(unittest.TestCase):

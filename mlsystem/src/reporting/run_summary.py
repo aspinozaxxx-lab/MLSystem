@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ..storage.local_io import write_json
+from ..storage.api import write_json
 
 
 def write_run_summary(path: Path, payload: dict[str, Any]) -> Path:

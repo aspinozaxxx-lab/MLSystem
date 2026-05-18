@@ -77,3 +77,8 @@ python -m mlsystem.src.train_pipeline.cli
 - `train_pipeline` не создает псевдоразметку. Это зона `inference_pipeline`.
 - `train_pipeline` не копирует InferenceEngine logic.
 - `train_pipeline` не является deprecated wrapper вокруг старого имени модуля.
+## Dataset metadata
+
+После `prepare_dataset` и до/во время `train_model` pipeline вычисляет `dataset_preparing.compute_dataset_identity(...)` и логирует в MLflow через `mlflow_adapter` параметры `dataset.version`, `dataset.version_source`, `dataset.fingerprint`, `dataset.git_commit`, `dataset.git_commit_date`, `dataset.class_name`, `dataset.class_slug`, `dataset.objects`, `dataset.scenes`, `dataset.selected_scenes`, `dataset.train_scenes`, `dataset.val_scenes`, `dataset.split_strategy`, `dataset.annotation_uri`, `dataset.scenes_uri`, `dataset.images_uri`, `dataset.layout_uri`.
+
+Pipeline также логирует dataset artifacts, если они существуют: `dataset_manifest.json`, `inventory_scenes.json`, `scene_matching_report.json`, `split_summary.json`.

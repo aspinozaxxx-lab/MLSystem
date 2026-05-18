@@ -1,12 +1,16 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import tempfile
 import unittest
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from frontend.app.config import FrontendConfig
+
+pytest.importorskip("itsdangerous")
+
 from frontend.app.main import create_app
 
 
@@ -30,9 +34,10 @@ def _sample_report() -> dict[str, object]:
         "source": {"mlflow_tracking_uri": "http://mlflow:5000/mlflow", "mlmarkup_path": "/data/MLMarkup", "cache_path": "/tmp/index.json"},
         "classes": [
             {
-                "class_name": "Озера",
+                "class_name": "РћР·РµСЂР°",
                 "class_slug": "lakes",
                 "best_pixel_f1": 0.5,
+                "dataset_version": "abc123",
                 "dataset_date": "2026-05-10",
                 "dataset_objects": 202,
                 "dataset_scenes": 124,
@@ -41,17 +46,18 @@ def _sample_report() -> dict[str, object]:
                 "best_train_date": "2026-05-11",
                 "validation_kind": "scene_level",
                 "warning": None,
-                "top_runs": [
+                "dataset_versions": [
                     {
                         "rank": 1,
                         "run_id": "run-lakes",
                         "run_url": "/mlflow/#/experiments/38/runs/run-lakes",
                         "pixel_f1": 0.5,
+                        "dataset_version": "abc123",
                         "dataset_date": "2026-05-10",
                         "dataset_objects": 202,
                         "dataset_scenes": 124,
                         "train_date": "2026-05-11",
-                        "class_name": "Озера",
+                        "class_name": "РћР·РµСЂР°",
                         "class_slug": "lakes",
                         "split_strategy": "scene_level",
                         "model_name": "segformer_b2",
@@ -60,11 +66,13 @@ def _sample_report() -> dict[str, object]:
                         "training_duration_sec": 123.4,
                     }
                 ],
+                "top_runs": [],
             },
             {
-                "class_name": "Абразия",
+                "class_name": "РђР±СЂР°Р·РёСЏ",
                 "class_slug": "abrasion",
                 "best_pixel_f1": None,
+                "dataset_version": None,
                 "dataset_date": "2026-05-10",
                 "dataset_objects": 11,
                 "dataset_scenes": 3,
@@ -73,6 +81,7 @@ def _sample_report() -> dict[str, object]:
                 "best_train_date": None,
                 "validation_kind": "unknown",
                 "warning": "no runs",
+                "dataset_versions": [],
                 "top_runs": [],
             },
         ],
@@ -93,14 +102,14 @@ class TrainingReportRouteTests(unittest.TestCase):
             self.assertEqual(allowed_head.status_code, 200)
             response = client.get("/training-report")
             self.assertEqual(response.status_code, 200)
-            self.assertIn("Отчет об обучении", response.text)
-            self.assertIn("Озера", response.text)
-            self.assertIn("Абразия", response.text)
+            self.assertIn("Training report", response.text)
+            self.assertIn("Лучший по версии датасета", response.text)
+            self.assertIn("training-report-table", response.text)
             self.assertIn("training-report-expandable", response.text)
-            self.assertIn("Best epoch", response.text)
-            self.assertIn("Duration", response.text)
+            self.assertIn("best_epoch", response.text)
+            self.assertIn("dataset_version", response.text)
             self.assertNotIn("training-tuning-status", response.text)
-            self.assertNotIn("<h2>Тюнинг</h2>", response.text)
+            self.assertNotIn("<h2>РўСЋРЅРёРЅРі</h2>", response.text)
             self.assertNotIn("row-toggle", response.text)
             self.assertNotIn("STOP_ALL", response.text)
             self.assertNotIn("Run id", response.text)
@@ -116,7 +125,7 @@ class TrainingReportRouteTests(unittest.TestCase):
             response = client.get("/api/training-report")
             self.assertEqual(response.status_code, 200)
             payload = response.json()
-            self.assertEqual(payload["classes"][0]["class_name"], "Озера")
+            self.assertEqual(payload["classes"][0]["class_name"], "РћР·РµСЂР°")
             self.assertEqual(payload["classes"][0]["best_run_url"], "/mlflow/#/experiments/38/runs/run-lakes")
             refresh = client.post("/api/training-report/refresh")
             self.assertEqual(refresh.status_code, 200)

@@ -4,7 +4,7 @@ import unittest
 
 from pydantic import ValidationError
 
-from mlsystem.src.config.job_schema import JobSpec
+from mlsystem.src.train_pipeline.api import JobSpec
 
 
 class JobSchemaTests(unittest.TestCase):

@@ -27,7 +27,7 @@ if not exist "%IMAGES_DIR%" (
 
 mkdir "%TARGET_INPUT%" 2>nul
 
-python -m mlsystem.src.data.dataset_split clean-list ^
+python -m mlsystem.src.dataset_preparing._dataset_split clean-list ^
   --scene-list "%SOURCE_LIST%" ^
   --images-dir "%IMAGES_DIR%" ^
   --output-report "%REPORT%" ^

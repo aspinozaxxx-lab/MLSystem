@@ -7,7 +7,7 @@ from typing import Any
 
 import torch
 
-from ..metrics.segmentation import PixelMetricAccumulator, WeightedLossAccumulator
+from ..metrics.api import PixelMetricAccumulator, WeightedLossAccumulator
 from ._checkpoints import load_initial_checkpoint, save_checkpoint
 from ._device import resolve_device
 from ._history import write_history

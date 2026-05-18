@@ -26,4 +26,10 @@ MLSystem предназначена для обучения нейронных �
 # Вспомогательные модули:
 * Работа с MLFlow (mlflow_adapter) - предоставляет интерфейс для логирования эксериментов, а так же их просмотра.
 * Работа с S3 и файлами - единый интерфейс для доступа к данным в S3 и файловой системы
-* Логирование 
+* Логирование
+
+## Актуальные вспомогательные модули
+- `dataset_preparing` — проверка входных данных, scene matching, train/val split, dataset manifest.
+- `metrics` — расчёт pixel/object metrics и metric artifacts.
+- `storage` — единый доступ к local/S3 IO.
+- `settings` — загрузка runtime config MLSystem.

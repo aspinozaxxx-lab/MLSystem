@@ -1,9 +1,9 @@
-{% extends "base.html" %}
-{% block title %}Отчет об обучении · MLSystem{% endblock %}
+﻿{% extends "base.html" %}
+{% block title %}Training report · MLSystem{% endblock %}
 {% block content %}
 <section class="hero compact-hero">
   <h1>Отчет об обучении</h1>
-  <p>Лучшие модели по классам и история экспериментов</p>
+  <p>Лучший эксперимент по каждой версии датасета</p>
 </section>
 
 <section class="panel training-report-panel">
@@ -18,25 +18,27 @@
   <div id="training-report-loading" class="report-loading">Загрузка...</div>
   <div id="training-report-error" class="error hidden"></div>
   <div class="table-wrap training-table-wrap">
-    <table id="training-report-table" class="training-report-table" aria-label="Отчет об обучении">
+    <table id="training-report-table" class="training-report-table" aria-label="Лучший по версии датасета">
       <thead>
         <tr>
-          <th>Название класса</th>
-          <th>Лучший pixel F1</th>
-          <th>Дата датасета</th>
-          <th>Объекты</th>
-          <th>Сцены</th>
-          <th>Дата обучения</th>
+          <th>class</th>
+          <th>dataset_version</th>
+          <th>dataset_date</th>
+          <th>objects</th>
+          <th>scenes</th>
+          <th>best_pixel_f1</th>
+          <th>mlflow_run</th>
+          <th>train_date</th>
+          <th>model/config</th>
+          <th>best_epoch</th>
         </tr>
       </thead>
       <tbody id="training-report-body">
-        <tr><td colspan="6">Загрузка...</td></tr>
+        <tr><td colspan="10">Загрузка...</td></tr>
       </tbody>
     </table>
   </div>
 </section>
-
-<template id="training-report-supported-classes">Озера Абразия</template>
 
 <script>
   (function () {
@@ -56,15 +58,6 @@
       return Number.isFinite(numeric) ? numeric.toFixed(4) : "n/a";
     }
 
-    function duration(value) {
-      const numeric = Number(value);
-      if (!Number.isFinite(numeric)) return "n/a";
-      if (numeric < 60) return `${numeric.toFixed(0)}s`;
-      const minutes = Math.floor(numeric / 60);
-      const seconds = Math.round(numeric % 60);
-      return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
-    }
-
     function epoch(value) {
       const numeric = Number(value);
       return Number.isFinite(numeric) ? String(Math.round(numeric)) : "n/a";
@@ -80,13 +73,18 @@
 
     function mlflowLink(runUrl, label) {
       if (!runUrl) return "n/a";
-      return `<a class="secondary-link compact-link" href="${escapeHtml(runUrl)}">MLflow</a>`;
+      return `<a class="secondary-link compact-link" href="${escapeHtml(runUrl)}">${escapeHtml(label || "MLflow")}</a>`;
     }
 
     function badge(value) {
       if (!value) return "";
       const cls = value === "no runs" ? "neutral" : "warning";
       return `<span class="badge ${cls}">${escapeHtml(value)}</span>`;
+    }
+
+    function versionLabel(value) {
+      const raw = text(value);
+      return raw.length > 12 ? raw.slice(0, 12) : raw;
     }
 
     function renderReport(data) {
@@ -97,59 +95,62 @@
       statusBadge.className = "badge " + (data.status === "stale" ? "warning" : "ok");
       const rows = data.classes || [];
       if (!rows.length) {
-        body.innerHTML = '<tr><td colspan="6">Нет данных</td></tr>';
+        body.innerHTML = '<tr><td colspan="10">Нет данных</td></tr>';
         return;
       }
       body.innerHTML = rows.map((item) => {
         const slug = escapeHtml(item.class_slug);
         const warning = item.warning ? badge(item.warning) : "";
+        const best = (item.dataset_versions || item.top_runs || [])[0] || {};
         const mainRow = `
           <tr class="training-main-row training-report-expandable" data-slug="${slug}" aria-expanded="false">
-            <td>
-              <b>${escapeHtml(item.class_name)}</b> ${warning}
-            </td>
-            <td>${f1(item.best_pixel_f1)}</td>
+            <td><b>${escapeHtml(item.class_name)}</b> ${warning}</td>
+            <td title="${escapeHtml(item.dataset_version)}">${escapeHtml(versionLabel(item.dataset_version))}</td>
             <td>${escapeHtml(item.dataset_date)}</td>
             <td>${escapeHtml(item.dataset_objects)}</td>
             <td>${escapeHtml(item.dataset_scenes)}</td>
+            <td>${f1(item.best_pixel_f1)}</td>
+            <td>${mlflowLink(item.best_run_url, item.best_run_id)}</td>
             <td>${escapeHtml(item.best_train_date)}</td>
+            <td>${escapeHtml(best.params_summary || best.model_name)}</td>
+            <td>${epoch(best.best_epoch)}</td>
           </tr>`;
-        const topRows = (item.top_runs || []).map((run) => `
+        const versionRows = (item.dataset_versions || item.top_runs || []).map((run) => `
           <tr>
-            <td>${f1(run.pixel_f1)}</td>
+            <td>${escapeHtml(run.class_name || item.class_name)}</td>
+            <td title="${escapeHtml(run.dataset_version)}">${escapeHtml(versionLabel(run.dataset_version))}</td>
             <td>${escapeHtml(run.dataset_date)}</td>
             <td>${escapeHtml(run.dataset_objects)}</td>
             <td>${escapeHtml(run.dataset_scenes)}</td>
-            <td>${escapeHtml(run.train_date)}</td>
+            <td>${f1(run.pixel_f1)}</td>
             <td>${mlflowLink(run.run_url, run.run_id)}</td>
-            <td>${epoch(run.best_epoch)}</td>
-            <td>${duration(run.training_duration_sec)}</td>
-            <td>${escapeHtml(run.split_strategy)}</td>
+            <td>${escapeHtml(run.train_date)}</td>
             <td>${escapeHtml(run.params_summary || run.model_name)}</td>
+            <td>${epoch(run.best_epoch)}</td>
           </tr>`).join("");
         const empty = '<tr><td colspan="10">Нет run\u2019ов</td></tr>';
         const detailRow = `
           <tr class="training-detail-row" data-detail-for="${slug}">
-            <td colspan="6">
+            <td colspan="10">
               <div class="detail-collapse">
-                <div class="subtable-title">Лучшие 10 экспериментов</div>
+                <div class="subtable-title">Лучший по версии датасета</div>
                 <div class="table-wrap subtable-wrap">
                   <table class="training-subtable">
                     <thead>
                       <tr>
-                        <th>pixel F1</th>
-                        <th>Дата датасета</th>
-                        <th>Объекты</th>
-                        <th>Сцены</th>
-                        <th>Дата обучения</th>
-                        <th>MLflow run</th>
-                        <th>Best epoch</th>
-                        <th>Duration</th>
-                        <th>Split strategy</th>
-                        <th>Model/config</th>
+                        <th>class</th>
+                        <th>dataset_version</th>
+                        <th>dataset_date</th>
+                        <th>objects</th>
+                        <th>scenes</th>
+                        <th>best_pixel_f1</th>
+                        <th>mlflow_run</th>
+                        <th>train_date</th>
+                        <th>model/config</th>
+                        <th>best_epoch</th>
                       </tr>
                     </thead>
-                    <tbody>${topRows || empty}</tbody>
+                    <tbody>${versionRows || empty}</tbody>
                   </table>
                 </div>
               </div>

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from ..api.security import mask_secrets, mask_text
-from ..storage.local_io import read_json
+from ..storage.api import read_json
 from .config import DEFAULT_PIPELINE_STAGES, STAGE_ALIASES
 from .contracts import ApiJob, JobError, JobState, JobStatusResponse, StageStartRequest, StageStartResponse
 from .run_store import utc_now

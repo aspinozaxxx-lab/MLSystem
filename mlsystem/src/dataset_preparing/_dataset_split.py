@@ -12,8 +12,6 @@ from datetime import datetime
 from pathlib import Path, PurePath
 from typing import Any, TypeVar
 
-from shapely.geometry import box, shape
-
 T = TypeVar("T")
 
 IMAGE_EXTENSIONS = (".tif", ".tiff", ".TIF", ".TIFF")
@@ -281,6 +279,11 @@ def clean_scene_list_file(
 
 
 def load_geojson_features(annotation_path: Path) -> list[LoadedFeature]:
+    try:
+        from shapely.geometry import shape
+    except Exception:  # noqa: BLE001 - property-based counting does not need geometry operations.
+        shape = None
+
     payload = json.loads(Path(annotation_path).read_text(encoding="utf-8-sig"))
     if payload.get("type") == "FeatureCollection":
         raw_features = payload.get("features") or []
@@ -296,14 +299,17 @@ def load_geojson_features(annotation_path: Path) -> list[LoadedFeature]:
         geom = None
         geometry_payload = feature.get("geometry")
         if geometry_payload:
-            try:
-                candidate = shape(geometry_payload)
-                if candidate.is_empty or not candidate.is_valid:
-                    warnings.append(f"feature_{index}: empty_or_invalid_geometry")
-                else:
-                    geom = candidate
-            except Exception as exc:  # noqa: BLE001 - report bad features without failing the whole file.
-                warnings.append(f"feature_{index}: bad_geometry: {exc}")
+            if shape is None:
+                geom = geometry_payload
+            else:
+                try:
+                    candidate = shape(geometry_payload)
+                    if candidate.is_empty or not candidate.is_valid:
+                        warnings.append(f"feature_{index}: empty_or_invalid_geometry")
+                    else:
+                        geom = candidate
+                except Exception as exc:  # noqa: BLE001 - report bad features without failing the whole file.
+                    warnings.append(f"feature_{index}: bad_geometry: {exc}")
         else:
             warnings.append(f"feature_{index}: missing_geometry")
         loaded.append(LoadedFeature(properties=dict(properties), geometry=geom, warnings=warnings))
@@ -401,6 +407,7 @@ def _count_by_geometry(
     counts: Counter[str] = Counter()
     try:
         import rasterio
+        from shapely.geometry import box
         from rasterio.warp import transform_bounds
     except Exception as exc:  # noqa: BLE001
         return counts, [f"geometry fallback unavailable: rasterio import failed: {exc}"]

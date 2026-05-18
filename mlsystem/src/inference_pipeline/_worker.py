@@ -102,7 +102,7 @@ def _artifact_warnings(artifacts: dict[str, Any]) -> list[str]:
 def _log_mlflow_metadata(request: Any, run_id: str, store: PseudolabelRunStore, summary: dict[str, Any]) -> dict[str, Any]:
     try:
         from ..mlflow_adapter.api import log_lightweight_run
-        from ..pipeline_config import load_config
+        from ..settings.api import load_config
 
         config = load_config()
         return log_lightweight_run(

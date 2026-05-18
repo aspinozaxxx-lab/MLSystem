@@ -43,7 +43,7 @@ if %GEOJSON_COUNT% GTR 1 (
 if exist "%OUTPUT_DIR%" rmdir /s /q "%OUTPUT_DIR%"
 mkdir "%OUTPUT_DIR%"
 
-python -m mlsystem.src.data.dataset_split split ^
+python -m mlsystem.src.dataset_preparing._dataset_split split ^
   --scene-list "%SCENE_LIST%" ^
   --images-dir "%IMAGES_DIR%" ^
   --annotation "%ANNOTATION%" ^

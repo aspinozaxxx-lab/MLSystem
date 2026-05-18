@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ..job_schema import JobSpec
+from ..dataset_preparing.api import compute_dataset_identity, dataset_identity_mlflow_payload
 from ..mlflow_adapter.api import (
     MLFLOW_EXCLUDED_ARTIFACT_NAMES,
     create_run as mlflow_create_run,
@@ -24,10 +24,9 @@ from ..mlflow_adapter.api import (
     mlflow_url_fields,
     set_run_tags as mlflow_set_run_tags,
 )
-from ..pipeline_config import load_config
-from ..train_pipeline.contracts import PipelineRunConfig
-from ..storage.local_io import read_json, write_json
-from ..storage.s3 import raster_path_for_s3_key
+from ..settings.api import load_config
+from ..train_pipeline.contracts import JobSpec, PipelineRunConfig
+from ..storage.api import raster_path_for_s3_key, read_json, write_json
 from ..train.api import train_model
 from ..train.contracts import TrainConfig, TrainRequest
 
@@ -74,6 +73,18 @@ def _model_name_from_config(model_cfg: dict[str, Any]) -> str:
     if architecture == "segformer" and backbone:
         return backbone if backbone.startswith("segformer_") else f"segformer_{backbone.replace('mit_', 'b')}"
     return "tiny_unet_4ch"
+
+
+def _class_slug(value: str | None) -> str | None:
+    if not value:
+        return None
+    import re
+
+    normalized = str(value).strip().casefold()
+    if normalized in {"deforest", "cuttings", "clearcuts", "clear_cuts", "вырубки", "РІС‹СЂСѓР±РєРё".casefold()}:
+        return "deforest"
+    slug = re.sub(r"[^a-z0-9]+", "_", normalized).strip("_")
+    return slug or None
 
 
 def load_conf(conf_file: str | None = None, conf_json: str | None = None) -> dict[str, Any]:
@@ -413,6 +424,32 @@ def _run_training_pipeline(conf: PipelineRunConfig, store: Any) -> dict[str, Any
     if prepared_manifest.exists():
         job.preprocess.setdefault("prepared_dataset_manifest", str(prepared_manifest))
         job.preprocess.setdefault("use_prepared_dataset_manifest", True)
+    inventory = read_json(store.run_dir / "inventory_scenes.json", default={}) or {}
+    scene_matching = read_json(store.run_dir / "scene_matching_report.json", default={}) or {}
+    manifest = read_json(prepared_manifest, default={}) or {}
+    dataset_identity = compute_dataset_identity(
+        dataset_manifest=manifest,
+        inventory=inventory,
+        scene_matching=scene_matching,
+        class_name=conf.class_name,
+        class_slug=_class_slug(conf.class_name),
+        images_uri=conf.images_uri,
+        layout_uri=conf.layout_uri,
+    )
+    dataset_params = dataset_identity_mlflow_payload(dataset_identity)
+    dataset_artifacts = [
+        str(path)
+        for path in [
+            store.run_dir / "dataset_manifest.json",
+            store.run_dir / "inventory_scenes.json",
+            store.run_dir / "scene_matching_report.json",
+            store.run_dir / "split_summary.json",
+        ]
+        if path.exists() and path.is_file()
+    ]
+    if run_id and not str(run_id).startswith("smoke-"):
+        mlflow_log_params_to_run(pipeline_config, str(run_id), dataset_params)
+        mlflow_log_artifacts_to_run(pipeline_config, str(run_id), dataset_artifacts)
     train_loader = None
     val_loader = None
     tile_bundle = None
@@ -420,7 +457,6 @@ def _run_training_pipeline(conf: PipelineRunConfig, store: Any) -> dict[str, Any
         from ..tile_preparation.api import build_datasets, train_dataloader, val_dataloader
         from ..tile_preparation.contracts import SceneInputContract, TileDatasetRequest
 
-        manifest = read_json(prepared_manifest, default={}) or {}
         annotation_path = store.run_dir / "dataset_annotation.geojson"
         image_paths_by_name = {
             str(row.get("scene_name")): row.get("image_path")
@@ -502,19 +538,21 @@ def _run_training_pipeline(conf: PipelineRunConfig, store: Any) -> dict[str, Any
     result["last_epoch_metrics"] = result_obj.history[-1].metrics if result_obj.history else {}
     result["mode"] = "train"
     result["mlflow"] = mlflow_info
+    result["dataset_identity"] = asdict(dataset_identity)
     params = {
         "experiment_id": conf.experiment_id,
         "task": conf.task,
         "model.name": conf.model.get("name"),
         "preprocess.tile_size": conf.preprocess.get("tile_size"),
         "preprocess.max_scenes": conf.preprocess.get("max_scenes"),
+        **dataset_params,
         **result_obj.mlflow_params,
         **extra_params,
     }
     if run_id and not str(run_id).startswith("smoke-"):
         mlflow_log_params_to_run(pipeline_config, str(run_id), params)
         mlflow_log_metrics_to_run(pipeline_config, str(run_id), result_obj.mlflow_metrics, step=result_obj.epochs_completed)
-        artifact_errors = mlflow_log_artifacts_to_run(pipeline_config, str(run_id), result_obj.mlflow_artifacts)
+        artifact_errors = mlflow_log_artifacts_to_run(pipeline_config, str(run_id), [*result_obj.mlflow_artifacts, *dataset_artifacts])
         if artifact_errors:
             result["warnings"] = list(result.get("warnings") or []) + artifact_errors
         mlflow_set_run_tags(pipeline_config, str(run_id), {"job_status": "training_completed", "pipeline_training_status": "success", **extra_tags})

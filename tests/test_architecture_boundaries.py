@@ -39,6 +39,43 @@ def test_train_module_exists_and_legacy_training_modules_absent() -> None:
     assert not (SRC / "tile_preparation" / "facade.py").exists()
 
 
+def test_legacy_namespaces_and_root_files_absent() -> None:
+    for name in [
+        "config",
+        "contracts",
+        "app",
+        "debug",
+        "vectorization",
+        "postprocessing",
+        "preprocessing",
+        "data",
+    ]:
+        assert not (SRC / name).exists(), name
+    for name in [
+        "io_utils.py",
+        "object_metrics.py",
+        "s3_adapter.py",
+        "preprocess_inventory.py",
+        "pipeline_config.py",
+        "job_schema.py",
+    ]:
+        assert not (SRC / name).exists(), name
+
+
+def test_supporting_modules_are_formalized() -> None:
+    assert (SRC / "dataset_preparing" / "api.py").exists()
+    assert (SRC / "dataset_preparing" / "contracts.py").exists()
+    assert (SRC / "metrics" / "api.py").exists()
+    assert (SRC / "storage" / "api.py").exists()
+    assert (SRC / "storage" / "contracts.py").exists()
+    assert (SRC / "settings" / "api.py").exists()
+    assert (SRC / "settings" / "contracts.py").exists()
+    assert (ARCH / "dataset_preparing_module.md").exists()
+    assert (ARCH / "metrics_module.md").exists()
+    assert (ARCH / "storage_module.md").exists()
+    assert (ARCH / "settings_module.md").exists()
+
+
 def test_pipeline_package_absent_or_formal_module() -> None:
     pipeline = SRC / "pipeline"
     if not pipeline.exists():
@@ -63,6 +100,12 @@ def test_api_app_uses_public_pipeline_apis_only() -> None:
     assert [item for item in forbidden if item in text] == []
 
 
+def test_no_star_import_wrappers() -> None:
+    pattern = re.compile(r"^\s*from\s+[\.\w]+.*import\s+\*", re.MULTILINE)
+    offenders = [path.relative_to(SRC).as_posix() for path in SRC.rglob("*.py") if pattern.search(path.read_text(encoding="utf-8"))]
+    assert offenders == []
+
+
 def test_production_mlflow_imports_stay_inside_adapter() -> None:
     pattern = re.compile(r"^\s*(import\s+mlflow\b|from\s+mlflow\b)|\bMlflowClient\b|mlflow\.artifacts", re.MULTILINE)
     offenders: list[str] = []
@@ -71,6 +114,18 @@ def test_production_mlflow_imports_stay_inside_adapter() -> None:
         if rel.parts and rel.parts[0] == "mlflow_adapter":
             continue
         if pattern.search(path.read_text(encoding="utf-8")):
+            offenders.append(rel.as_posix())
+    assert offenders == []
+
+
+def test_production_does_not_import_inference_engine_internals() -> None:
+    offenders: list[str] = []
+    for path in SRC.rglob("*.py"):
+        rel = path.relative_to(SRC)
+        if rel.parts and rel.parts[0] == "inference_pipeline":
+            continue
+        text = path.read_text(encoding="utf-8")
+        if "InferenceEngine.src." in text:
             offenders.append(rel.as_posix())
     assert offenders == []
 
