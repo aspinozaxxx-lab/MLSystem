@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import threading
 import time
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -15,10 +16,10 @@ from typing import Any
 from ..job_schema import JobSpec
 from ..mlflow_adapter.api import (
     MLFLOW_EXCLUDED_ARTIFACT_NAMES,
-    MLflowJobRun,
     create_run as mlflow_create_run,
     log_artifacts_to_run as mlflow_log_artifacts_to_run,
     log_metrics_to_run as mlflow_log_metrics_to_run,
+    log_params_to_run as mlflow_log_params_to_run,
     mlflow_tuning_metadata,
     mlflow_url_fields,
     set_run_tags as mlflow_set_run_tags,
@@ -26,7 +27,9 @@ from ..mlflow_adapter.api import (
 from ..pipeline_config import load_config
 from ..pipeline_runner.contracts import PipelineRunConfig
 from ..storage.local_io import read_json, write_json
-from .training_pipeline import TrainingPipeline
+from ..storage.s3 import raster_path_for_s3_key
+from ..train.api import train_model
+from ..train.contracts import TrainConfig, TrainRequest
 
 STAGE_POOLS = {
     "inventory_scenes": ("io_light", 1),
@@ -394,7 +397,6 @@ def _run_training_pipeline(conf: PipelineRunConfig, store: Any) -> dict[str, Any
     mlflow_info = summary.get("mlflow") or {}
     run_id = mlflow_info.get("run_id")
     pipeline_config = load_config()
-    experiment_name = conf.mlflow.get("experiment") or pipeline_config.mlflow_default_experiment
     train_pseudolabel = dict(conf.pseudolabel or {})
     train_pseudolabel["enabled"] = False
     train_only_conf = conf.model_copy(update={"pseudolabel": train_pseudolabel})
@@ -412,38 +414,111 @@ def _run_training_pipeline(conf: PipelineRunConfig, store: Any) -> dict[str, Any
     if prepared_manifest.exists():
         job.preprocess.setdefault("prepared_dataset_manifest", str(prepared_manifest))
         job.preprocess.setdefault("use_prepared_dataset_manifest", True)
-    job_log = store.run_dir / "train.log"
-    tags = {
-        "job_id": conf.experiment_id,
-        "pipeline_run_id": store.pipeline_run_id,
-        "orchestrator": "pipeline",
-        "execution_path": "pipeline_api",
-        "task": conf.task,
-        "class_name": conf.class_name or "",
-        "mlsystem.class_name": conf.class_name or "",
-        **extra_tags,
-    }
+    train_loader = None
+    val_loader = None
+    tile_bundle = None
+    if prepared_manifest.exists():
+        from ..tile_preparation.api import build_datasets, train_dataloader, val_dataloader
+        from ..tile_preparation.contracts import SceneInputContract, TileDatasetRequest
+
+        manifest = read_json(prepared_manifest, default={}) or {}
+        annotation_path = store.run_dir / "dataset_annotation.geojson"
+        image_paths_by_name = {
+            str(row.get("scene_name")): row.get("image_path")
+            for row in manifest.get("scene_object_counts") or []
+            if row.get("scene_name") and row.get("image_path")
+        }
+
+        def _scene_contracts(rows: list[dict[str, Any]]) -> list[SceneInputContract]:
+            contracts: list[SceneInputContract] = []
+            for row in rows:
+                name = str(row.get("entry") or row.get("name") or "")
+                image_path = image_paths_by_name.get(name)
+                if not image_path and row.get("key"):
+                    image_path = raster_path_for_s3_key(pipeline_config, str(row.get("key")))
+                if image_path:
+                    contracts.append(SceneInputContract(image_path, name or Path(str(image_path)).stem))
+            return contracts
+
+        tile_size = int(job.preprocess.get("tile_size") or job.train.get("patch_size") or 512)
+        stride = int(job.preprocess.get("stride") or tile_size)
+        augmentation_level = int(job.preprocess.get("augmentation_level") or job.train.get("augmentation_level") or 2)
+        tile_bundle = build_datasets(
+            TileDatasetRequest(
+                train_scenes=_scene_contracts(list(manifest.get("train_scenes") or [])),
+                val_scenes=_scene_contracts(list(manifest.get("val_scenes") or [])),
+                annotation_path=annotation_path,
+                tile_size=tile_size,
+                stride=stride,
+                augmentation_level=augmentation_level,
+                mosaic_enabled=job.preprocess.get("mosaic_enabled"),
+                normalization_mode=str(job.preprocess.get("normalization_mode") or "uint8_255"),
+            )
+        )
+        batch_size = int(job.train.get("batch_size") or 1)
+        train_loader = train_dataloader(tile_bundle, batch_size=batch_size)
+        val_loader = val_dataloader(tile_bundle, batch_size=batch_size)
+    train_cfg = TrainConfig(
+        model_name=str(job.train.get("model_name") or _model_name_from_config(conf.model)),
+        input_channels=len(job.params.get("input_bands") or [1, 2, 3, 4]),
+        output_channels=int(conf.model.get("out_channels") or 1),
+        base_channels=int(job.train.get("base_channels") or 8),
+        epochs=int(job.train.get("epochs") or job.train.get("max_epochs") or 1),
+        learning_rate=float(job.train.get("learning_rate") if job.train.get("learning_rate") is not None else 5e-4),
+        weight_decay=float(job.train.get("weight_decay") if job.train.get("weight_decay") is not None else 0.0),
+        optimizer=str(job.train.get("optimizer") or job.train.get("optimizer_name") or "adamw"),
+        scheduler=job.train.get("scheduler") or job.train.get("scheduler_name"),
+        loss=dict(job.train.get("loss") or {}),
+        metric_threshold=float(job.train.get("metric_threshold") or job.evaluate.get("threshold") or 0.5),
+        require_gpu=bool(job.train.get("require_gpu", True)),
+        max_train_batches=job.train.get("max_train_batches"),
+        max_val_batches=job.train.get("max_val_batches"),
+        early_stopping_patience=(job.train.get("early_stopping") or {}).get("patience")
+        if isinstance(job.train.get("early_stopping"), dict) and (job.train.get("early_stopping") or {}).get("enabled", True)
+        else job.train.get("early_stopping_patience"),
+        initial_checkpoint_path=job.train.get("initial_checkpoint_path") or job.train.get("checkpoint_path"),
+        initial_checkpoint_strict=bool(job.train.get("initial_checkpoint_strict", True)),
+    )
+    request = TrainRequest(
+        config=train_cfg,
+        train_dataloader=train_loader or job.params.get("train_dataloader"),
+        val_dataloader=val_loader or job.params.get("val_dataloader"),
+        output_dir=store.run_dir,
+        experiment_id=conf.experiment_id,
+        metadata={
+            "pipeline_run_id": store.pipeline_run_id,
+            "task": conf.task,
+            "class_name": conf.class_name,
+            "pseudolabeling.enabled": False,
+        },
+    )
+    try:
+        result_obj = train_model(request)
+    finally:
+        if tile_bundle is not None:
+            tile_bundle.train_dataset.close()
+            tile_bundle.val_dataset.close()
+    result = asdict(result_obj)
+    result["checkpoint_path"] = result_obj.checkpoint.path if result_obj.checkpoint else None
+    result["last_epoch_metrics"] = result_obj.history[-1].metrics if result_obj.history else {}
+    result["mode"] = "train"
+    result["mlflow"] = mlflow_info
     params = {
         "experiment_id": conf.experiment_id,
         "task": conf.task,
         "model.name": conf.model.get("name"),
         "preprocess.tile_size": conf.preprocess.get("tile_size"),
         "preprocess.max_scenes": conf.preprocess.get("max_scenes"),
-        "train.epochs": job.train.get("epochs"),
-        "train.time_limit_sec": job.train.get("time_limit_sec"),
+        **result_obj.mlflow_params,
         **extra_params,
     }
-    with MLflowJobRun(
-        pipeline_config,
-        experiment_name=experiment_name,
-        run_name=conf.experiment_id,
-        params=params,
-        tags=tags,
-        run_id=run_id,
-    ) as mlflow_run:
-        result = TrainingPipeline().run(pipeline_config, job, store.run_dir, mlflow_run, job_log, _append_log)
-        result["mlflow"] = mlflow_run.result()
-        mlflow_run.set_tags({"job_status": "training_completed", "pipeline_training_status": "success"})
+    if run_id and not str(run_id).startswith("smoke-"):
+        mlflow_log_params_to_run(pipeline_config, str(run_id), params)
+        mlflow_log_metrics_to_run(pipeline_config, str(run_id), result_obj.mlflow_metrics, step=result_obj.epochs_completed)
+        artifact_errors = mlflow_log_artifacts_to_run(pipeline_config, str(run_id), result_obj.mlflow_artifacts)
+        if artifact_errors:
+            result["warnings"] = list(result.get("warnings") or []) + artifact_errors
+        mlflow_set_run_tags(pipeline_config, str(run_id), {"job_status": "training_completed", "pipeline_training_status": "success", **extra_tags})
     write_json(store.run_dir / "training_result.json", result)
     store.update_summary(training_result=result, mlflow=result.get("mlflow") or mlflow_info)
     return result
@@ -975,7 +1050,7 @@ def _run_dispatcher_stage(stage: str, conf: PipelineRunConfig, store: Any) -> di
             training_result = _run_training_pipeline(conf, store)
             result = _stage_result(
                 "success",
-                summary="TrainingPipeline completed real MLSystem train-only run; pseudolabel is handled by inference_engine_pipeline.",
+                summary="train.api completed MLSystem train-only run; pseudolabel is handled by inference_engine_pipeline.",
                 mode=training_result.get("mode"),
                 epochs_completed=training_result.get("epochs_completed"),
                 best_val_iou=training_result.get("best_val_iou"),
@@ -1324,13 +1399,14 @@ def run_stage(stage: str, config: PipelineRunConfig, store: Any) -> dict[str, An
     from .stages.registry import get_stage_entrypoint
     from .stages.report import StageFailure, StageReport
 
+    if stage in DISPATCHER_STAGE_NAMES:
+        return _run_dispatcher_stage(stage, config, store)
+
     try:
         entrypoint = get_stage_entrypoint(stage)
     except KeyError:
-        if stage not in DISPATCHER_STAGE_NAMES:
-            known = ", ".join(sorted(DISPATCHER_STAGE_NAMES))
-            raise ValueError(f"Unknown Pipeline MLSystem stage: {stage}. Known stages: {known}")
-        return _run_dispatcher_stage(stage, config, store)
+        known = ", ".join(sorted(DISPATCHER_STAGE_NAMES))
+        raise ValueError(f"Unknown Pipeline MLSystem stage: {stage}. Known stages: {known}")
 
     started = time.time()
     resources_before = _resource_snapshot()

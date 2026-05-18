@@ -1043,7 +1043,7 @@ def _sample_group_indices(group: list[int], count: int, rng: random.Random) -> l
 
 # Compatibility API below. The training path uses mlsystem.src.tile_preparation
 # directly; these wrappers keep older debug scripts/tests on the same source of
-# truth without importing this module from real_train.py.
+# truth without importing this module from the train module.
 from ..tile_preparation import (  # noqa: E402
     AnnotationInput as _TPAnnotationInput,
     SceneInput as _TPSceneInput,

@@ -21,7 +21,7 @@ except Exception:  # noqa: BLE001
 
 @unittest.skipUnless(HAS_RASTERIO, "rasterio is required")
 class TilePreparationTrainSmokeTests(unittest.TestCase):
-    def test_facade_smoke_runs_one_training_step_without_fastapi(self) -> None:
+    def test_api_smoke_runs_one_training_step_without_fastapi(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             _write_scene(root / "scene_a.tif", offset=0)
@@ -50,7 +50,7 @@ class TilePreparationTrainSmokeTests(unittest.TestCase):
             )
 
             self.assertEqual(result["status"], "ok")
-            self.assertEqual(result["entrypoint"], "TilePreparationFacade")
+            self.assertEqual(result["entrypoint"], "mlsystem.src.tile_preparation.api")
             self.assertFalse(result["uses_fastapi"])
             self.assertTrue(result["backward_optimizer_step"])
             self.assertTrue(result["train_batches"])

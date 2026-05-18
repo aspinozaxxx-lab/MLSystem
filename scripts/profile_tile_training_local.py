@@ -16,7 +16,8 @@ if str(ROOT) not in sys.path:
 
 import torch  # noqa: E402
 
-from mlsystem.src.tile_preparation import SceneInput, TilePreparationFacade  # noqa: E402
+from mlsystem.src.tile_preparation.api import build_datasets  # noqa: E402
+from mlsystem.src.tile_preparation.contracts import SceneInputContract as SceneInput, TileDatasetRequest  # noqa: E402
 from mlsystem.src.tile_preparation.dataloader import make_tile_dataloader, tile_collate_with_metadata_fn  # noqa: E402
 
 
@@ -112,14 +113,16 @@ def main(argv: list[str] | None = None) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     build_started = time.perf_counter()
-    bundle = TilePreparationFacade.build_datasets(
-        train_scenes=train_scenes,
-        val_scenes=val_scenes,
-        annotation_path=Path(args.annotation),
-        tile_size=int(args.tile_size),
-        stride=int(args.stride),
-        augmentation_level=int(args.augmentation_level),
-        normalization_mode=str(args.normalization_mode),
+    bundle = build_datasets(
+        TileDatasetRequest(
+            train_scenes=train_scenes,
+            val_scenes=val_scenes,
+            annotation_path=Path(args.annotation),
+            tile_size=int(args.tile_size),
+            stride=int(args.stride),
+            augmentation_level=int(args.augmentation_level),
+            normalization_mode=str(args.normalization_mode),
+        )
     )
     build_datasets_sec = time.perf_counter() - build_started
     try:
@@ -509,7 +512,7 @@ def _read_scenes(path: Path, images_root: Path) -> list[SceneInput]:
         if not line or line.startswith("#"):
             continue
         image_path = _resolve_scene_path(line, images_root)
-        scenes.append(SceneInput(image_path=image_path, scene_id=Path(line).stem))
+        scenes.append(SceneInput(image_path, Path(line).stem))
     return scenes
 
 

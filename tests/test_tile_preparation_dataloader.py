@@ -10,7 +10,8 @@ import numpy as np
 try:
     from shapely.geometry import Polygon, mapping
 
-    from mlsystem.src.tile_preparation import SceneInput, TilePreparationFacade
+    from mlsystem.src.tile_preparation.api import build_datasets, train_dataloader
+    from mlsystem.src.tile_preparation.contracts import SceneInputContract, TileDatasetRequest
     import rasterio
     from rasterio.transform import from_origin
 
@@ -25,7 +26,7 @@ class TilePreparationDataloaderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             bundle = _bundle(Path(tmp))
             try:
-                indices, x, y = next(iter(TilePreparationFacade.train_dataloader(bundle, batch_size=2, workers=0)))
+                indices, x, y = next(iter(train_dataloader(bundle, batch_size=2, workers=0)))
                 self.assertIsInstance(indices, list)
                 self.assertEqual(tuple(x.shape[1:]), (3, 128, 128))
                 self.assertEqual(tuple(y.shape[1:]), (1, 128, 128))
@@ -38,7 +39,7 @@ class TilePreparationDataloaderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             bundle = _bundle(Path(tmp))
             try:
-                indices, x, y = next(iter(TilePreparationFacade.train_dataloader(bundle, batch_size=2, workers=2, persistent_workers=False)))
+                indices, x, y = next(iter(train_dataloader(bundle, batch_size=2, workers=2, persistent_workers=False)))
                 self.assertIsInstance(indices, list)
                 self.assertEqual(tuple(x.shape[1:]), (3, 128, 128))
                 self.assertEqual(tuple(y.shape[1:]), (1, 128, 128))
@@ -68,14 +69,16 @@ def _bundle(root: Path, *, augmentation_level: int = 1):
     geojson_path = root / "ann.geojson"
     _write_scene(raster_path)
     _write_geojson(geojson_path)
-    return TilePreparationFacade.build_datasets(
-        train_scenes=[SceneInput(raster_path, "scene")],
-        val_scenes=[SceneInput(raster_path, "scene")],
-        annotation_path=geojson_path,
-        tile_size=128,
-        stride=128,
-        augmentation_level=augmentation_level,
-        mosaic_enabled=False,
+    return build_datasets(
+        TileDatasetRequest(
+            train_scenes=[SceneInputContract(raster_path, "scene")],
+            val_scenes=[SceneInputContract(raster_path, "scene")],
+            annotation_path=geojson_path,
+            tile_size=128,
+            stride=128,
+            augmentation_level=augmentation_level,
+            mosaic_enabled=False,
+        )
     )
 
 

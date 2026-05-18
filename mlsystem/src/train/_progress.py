@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .contracts import TrainProgressEvent, TrainProgressSink
+
 
 @dataclass
 class EarlyStopping:
@@ -18,3 +20,8 @@ class EarlyStopping:
             return False
         self.epochs_without_improvement += 1
         return self.epochs_without_improvement >= self.patience
+
+
+def emit_progress(sink: TrainProgressSink | None, event: TrainProgressEvent) -> None:
+    if sink is not None:
+        sink.emit(event)

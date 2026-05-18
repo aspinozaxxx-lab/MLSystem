@@ -103,7 +103,7 @@ def config_from_augmentation_level(
     )
 
 
-class TilePreparationFacade:
+class TilePreparationBuilder:
     @staticmethod
     def default_config(
         *,
@@ -130,7 +130,7 @@ class TilePreparationFacade:
             annotation_crs=DEFAULT_ANNOTATION_CRS,
             allow_inferred_annotation_crs=DEFAULT_ALLOW_INFERRED_ANNOTATION_CRS,
         )
-        train_config = TilePreparationFacade.default_config(
+        train_config = TilePreparationBuilder.default_config(
             tile_size=tile_size,
             stride=stride,
             augmentation_level=augmentation_level,

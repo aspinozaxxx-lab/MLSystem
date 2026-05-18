@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from mlsystem.src.tiling.windows import origins, tile_insert_slices, window_grid
+from InferenceEngine.src.inference_engine.tiling.windows import origins, tile_insert_slices, window_grid
 
 
 class WindowGenerationTests(unittest.TestCase):

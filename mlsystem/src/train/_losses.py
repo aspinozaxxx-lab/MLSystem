@@ -37,7 +37,11 @@ def _focal_loss(logits: torch.Tensor, target: torch.Tensor, config: dict[str, An
     focal = ((1.0 - pt).clamp_min(0.0) ** gamma) * bce
     if alpha is not None:
         alpha_value = float(alpha)
-        alpha_factor = torch.where(target > 0.5, torch.as_tensor(alpha_value, dtype=logits.dtype, device=logits.device), torch.as_tensor(1.0 - alpha_value, dtype=logits.dtype, device=logits.device))
+        alpha_factor = torch.where(
+            target > 0.5,
+            torch.as_tensor(alpha_value, dtype=logits.dtype, device=logits.device),
+            torch.as_tensor(1.0 - alpha_value, dtype=logits.dtype, device=logits.device),
+        )
         focal = alpha_factor * focal
     return focal.mean()
 

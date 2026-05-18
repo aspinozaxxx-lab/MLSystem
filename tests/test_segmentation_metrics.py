@@ -6,7 +6,9 @@ import unittest
 from pathlib import Path
 
 import numpy as np
-import torch
+import pytest
+
+torch = pytest.importorskip("torch")
 
 from mlsystem.src.metrics.debug_dump import recompute_global_metrics, write_epoch_debug, write_metrics_debug_report
 from mlsystem.src.metrics.segmentation import (
@@ -16,7 +18,7 @@ from mlsystem.src.metrics.segmentation import (
     metrics_from_counts,
     pixel_counts_from_masks,
 )
-from mlsystem.src.training.losses import segmentation_loss_components
+from mlsystem.src.train._losses import segmentation_loss_components
 
 
 class SegmentationMetricsTests(unittest.TestCase):

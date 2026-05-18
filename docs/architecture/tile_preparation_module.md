@@ -2,32 +2,40 @@
 
 ## Назначение
 
-`mlsystem/src/tile_preparation` владеет подготовкой training/validation tile samples из raster и vector annotation. Создан для быстрой выдачи тайлов на обучение, реализуя torch.dataloader и torch.dataset . Проводит аугментацию заданного урвовня. Параллелит обработку для утулизации ресурсов.
+`mlsystem/src/tile_preparation` владеет подготовкой training/validation tile datasets из raster и vector annotation. Модуль строит tile records, torch datasets, torch dataloaders, fixed validation grid и training augmentation.
 
-## Публичный фасад
+## Public API
+
 ```python
-from mlsystem.src.tile_preparation import TilePreparationFacade
+from mlsystem.src.tile_preparation.api import build_datasets, train_dataloader, val_dataloader
 ```
-Public API:
-- `TilePreparationFacade.build_datasets(...)`;
-- `TilePreparationFacade.train_dataloader(...)`;
-- `TilePreparationFacade.val_dataloader(...)`;
 
-## Вход
-- train scenes: список `SceneInput`;
-- val scenes: список `SceneInput`;
-- annotation path;
-- `tile_size`;
-- `stride`;
-- augmentation level;
-- normalization mode;
-- batch size для DataLoader.
+### `build_datasets(request: TileDatasetRequest) -> TilePreparationBundle`
 
-DataLoader workers, prefetch, pin memory и persistent worker policy являются внутренними defaults модуля. Они не должны задаваться как параметры experiment trace. Расширение списка параметров доступных из вне должно быть отдельно согласовано.
+- `request.train_scenes` - список training scenes.
+- `request.val_scenes` - список validation scenes.
+- `request.annotation_path` - путь к annotation GeoJSON.
+- `request.tile_size` - размер tile.
+- `request.stride` - шаг fixed grid.
+- `request.augmentation_level` - уровень train augmentation.
+- `request.mosaic_enabled` - включает mosaic fill, если задано.
+- `request.normalization_mode` - режим нормализации raster batch.
 
-## Выход
+### `train_dataloader(bundle: TilePreparationBundle, *, batch_size: int, **kwargs) -> Any`
 
-DataLoader возвращает batch:
+- `bundle` - результат `build_datasets`.
+- `batch_size` - размер batch.
+- `kwargs` - технические параметры DataLoader.
+
+### `val_dataloader(bundle: TilePreparationBundle, *, batch_size: int, **kwargs) -> Any`
+
+- `bundle` - результат `build_datasets`.
+- `batch_size` - размер batch.
+- `kwargs` - технические параметры DataLoader.
+
+## Выход batch
+
+DataLoader возвращает:
 
 ```python
 indices: list[int]
@@ -35,22 +43,10 @@ x: torch.Tensor  # [B,C,H,W]
 y: torch.Tensor  # [B,1,H,W]
 ```
 
-## Модуль отвечает за:
-- построение scene records;
-- virtual train records;
-- fixed validation grid;
-- lazy rasterio open per worker;
-- raster window read;
-- valid mask read and clipping;
-- mask rasterization;
-- geometry STRtree index and fallback filtering;
-- mosaic fill;
-- train augmentation;
-- normalization;
+## Запрещенные пересечения
 
-## Validation всегда:
-- fixed grid;
-- no augmentation;
-- no random jitter;
-- no virtual repeats;
-- no train-like oversampling.
+- `tile_preparation` не обучает модель.
+- `tile_preparation` не пишет в MLflow.
+- `tile_preparation` не владеет pipeline lifecycle.
+- `tile_preparation` не выполняет inference, pseudolabeling, vectorization или postprocess.
+- Validation всегда fixed grid без augmentation, jitter, virtual repeats и train-like oversampling.

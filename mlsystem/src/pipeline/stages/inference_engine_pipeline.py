@@ -51,7 +51,7 @@ def run(ctx: StageContext) -> StageReport:
     inference_manifest = _ensure_inference_manifest(ctx)
     payload = _build_payload(ctx, inference_manifest)
 
-    from ...orchestration.inference_engine_client import InferenceEngineClient
+    from ...inference.inference_engine_client import InferenceEngineClient
 
     client = InferenceEngineClient()
     created = client.create_job(payload)

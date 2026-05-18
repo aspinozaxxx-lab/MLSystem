@@ -13,7 +13,9 @@ if str(REPO_ROOT) not in sys.path:
 import torch
 
 from mlsystem.src.tile_preparation import SceneInput
-from mlsystem.src.tile_preparation.facade import TilePreparationFacade, bundle_to_jsonable
+from mlsystem.src.tile_preparation._builder import bundle_to_jsonable
+from mlsystem.src.tile_preparation.api import build_datasets, train_dataloader, val_dataloader
+from mlsystem.src.tile_preparation.contracts import SceneInputContract, TileDatasetRequest
 
 
 def _read_scene_list(images_root: Path, scene_list_path: Path) -> list[SceneInput]:
@@ -73,13 +75,15 @@ def run_train_smoke(
     else:
         raise ValueError("provide either --train-scene-list and --val-scene-list, or debug-only --scene-list")
 
-    bundle = TilePreparationFacade.build_datasets(
-        train_scenes=train_scenes,
-        val_scenes=val_scenes,
-        annotation_path=annotation,
-        tile_size=tile_size,
-        stride=stride,
-        augmentation_level=augmentation_level,
+    bundle = build_datasets(
+        TileDatasetRequest(
+            train_scenes=[SceneInputContract(scene.image_path, scene.scene_id) for scene in train_scenes],
+            val_scenes=[SceneInputContract(scene.image_path, scene.scene_id) for scene in val_scenes],
+            annotation_path=annotation,
+            tile_size=tile_size,
+            stride=stride,
+            augmentation_level=augmentation_level,
+        )
     )
     model: torch.nn.Module | None = None
     optimizer: torch.optim.Optimizer | None = None
@@ -88,7 +92,7 @@ def run_train_smoke(
     losses: list[float] = []
     device_obj = torch.device(device)
     try:
-        for batch_index, (_indices, x, y) in enumerate(TilePreparationFacade.train_dataloader(bundle, batch_size=batch_size)):
+        for batch_index, (_indices, x, y) in enumerate(train_dataloader(bundle, batch_size=batch_size)):
             if batch_index >= max_train_batches:
                 break
             x = x.to(device_obj).float()
@@ -106,7 +110,7 @@ def run_train_smoke(
             train_batches.append({"batch": batch_index, "x_shape": list(x.shape), "y_shape": list(y.shape), "y_values": y_unique, "loss": float(loss.detach().cpu())})
             losses.append(float(loss.detach().cpu()))
 
-        for batch_index, (_indices, x, y) in enumerate(TilePreparationFacade.val_dataloader(bundle, batch_size=batch_size)):
+        for batch_index, (_indices, x, y) in enumerate(val_dataloader(bundle, batch_size=batch_size)):
             if batch_index >= max_val_batches:
                 break
             y_unique = sorted(float(item) for item in torch.unique(y).tolist())
@@ -117,7 +121,7 @@ def run_train_smoke(
 
     result = {
         "status": "ok",
-        "entrypoint": "TilePreparationFacade",
+        "entrypoint": "mlsystem.src.tile_preparation.api",
         "uses_fastapi": False,
         "split_source": split_source,
         "train_scenes": [scene.resolved_scene_id() for scene in train_scenes],
@@ -135,7 +139,7 @@ def run_train_smoke(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run a tiny local train smoke test through tile_preparation facade.")
+    parser = argparse.ArgumentParser(description="Run a tiny local train smoke test through tile_preparation api.")
     parser.add_argument("--images-root", required=True)
     parser.add_argument("--train-scene-list")
     parser.add_argument("--val-scene-list")

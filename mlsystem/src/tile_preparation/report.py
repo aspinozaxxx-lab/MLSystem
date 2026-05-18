@@ -86,8 +86,8 @@ def preview_annotated_tile_report(
     base_summary = summarize_tile_records(result.base_records)
     response: dict[str, Any] = {
         "status": "ok",
-        "facade_available": True,
-        "recommended_entrypoint": "TilePreparationFacade",
+        "facade_available": False,
+        "recommended_entrypoint": "mlsystem.src.tile_preparation.api",
         "augmentation_level": 0 if augmentation_level is None else int(augmentation_level),
         "cutout_mask_mode": config.cutout_mask_mode,
         "mask_visualization": dict(MASK_VISUALIZATION),
@@ -198,9 +198,9 @@ def generate_annotated_tile_report(
         "annotation_path": str(annotation.geojson_path),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "git_commit": _git_commit(),
-        "facade": {
+        "api": {
             "available": True,
-            "recommended_entrypoint": "TilePreparationFacade",
+            "recommended_entrypoint": "mlsystem.src.tile_preparation.api",
             "augmentation_level": config.augmentation_level,
         },
         "mask_visualization": dict(MASK_VISUALIZATION),

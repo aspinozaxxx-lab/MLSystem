@@ -77,8 +77,8 @@ class TilePreparationDatasetTests(unittest.TestCase):
                 train_dataset.close()
                 val_dataset.close()
 
-    def test_real_train_does_not_import_legacy_virtual_tile_sampling(self) -> None:
-        text = Path("mlsystem/src/real_train.py").read_text(encoding="utf-8")
+    def test_train_module_does_not_import_legacy_virtual_tile_sampling(self) -> None:
+        text = "\n".join(path.read_text(encoding="utf-8") for path in Path("mlsystem/src/train").glob("*.py"))
         self.assertNotIn("from .data.virtual_tile_sampling import", text)
         self.assertNotIn("def _apply_train_augmentations", text)
         self.assertNotIn("build_virtual_train_records", text)

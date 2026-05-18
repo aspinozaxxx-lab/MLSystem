@@ -17,11 +17,11 @@ def export_segmentation_checkpoint_to_onnx(
     max_batch_size: int,
     instance_count: int = 1,
 ) -> Path:
-    from ..real_train import _build_model
+    from ..train._models import build_model
 
     version_dir = output_repository / triton_model_name / "1"
     version_dir.mkdir(parents=True, exist_ok=True)
-    model = _build_model(model_name, input_bands, 1, 8).eval().cpu()
+    model = build_model(model_name, input_bands, 1, 8).eval().cpu()
     checkpoint = torch.load(str(checkpoint_path), map_location="cpu")
     state = checkpoint.get("model_state_dict") if isinstance(checkpoint, dict) else checkpoint
     if not isinstance(state, dict):
