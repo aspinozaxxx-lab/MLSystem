@@ -1,3 +1,5 @@
+Правила закрепленные в docs\architecture\architecture.md и связанных документах обязательны к исполнению!
+
 # Experiment Tuning Policy
 
 For model tuning, Codex must not create or use tuning supervisor scripts.
