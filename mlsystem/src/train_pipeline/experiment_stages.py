@@ -510,8 +510,9 @@ def _run_training_pipeline(conf: PipelineRunConfig, store: Any) -> dict[str, Any
             )
         )
         batch_size = int(job.train.get("batch_size") or 1)
-        train_loader = train_dataloader(tile_bundle, batch_size=batch_size)
-        val_loader = val_dataloader(tile_bundle, batch_size=batch_size)
+        dataloader_workers = int(job.train.get("dataloader_workers", job.preprocess.get("dataloader_workers", 0)) or 0)
+        train_loader = train_dataloader(tile_bundle, batch_size=batch_size, workers=dataloader_workers)
+        val_loader = val_dataloader(tile_bundle, batch_size=batch_size, workers=dataloader_workers)
     train_cfg = TrainConfig(
         model_name=str(job.train.get("model_name") or _model_name_from_config(conf.model)),
         input_channels=len(job.params.get("input_bands") or [1, 2, 3, 4]),
