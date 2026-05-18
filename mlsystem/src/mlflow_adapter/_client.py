@@ -378,7 +378,7 @@ def log_dataset_input_to_run(config: PipelineConfig, run_id: str, dataset_identi
                 frame,
                 source=str(source),
                 name=dataset_name,
-                digest=str(getattr(dataset_identity, "fingerprint", "") or ""),
+                digest=_dataset_input_digest(dataset_identity),
             )
             tags = {key: "" if value is None else str(value) for key, value in params.items()}
             mlflow.log_input(dataset, context=context, tags=tags)
@@ -514,6 +514,13 @@ def _dataset_input_name(dataset_identity: Any) -> str:
         or "dataset"
     )
     return f"{class_label} [{getattr(dataset_identity, 'objects_count', 0)}, {getattr(dataset_identity, 'scenes_count', 0)}]"
+
+
+def _dataset_input_digest(dataset_identity: Any) -> str | None:
+    fingerprint = str(getattr(dataset_identity, "fingerprint", "") or "")
+    if not fingerprint:
+        return None
+    return fingerprint[:36]
 
 
 def _dataset_identity_params(dataset_identity: Any) -> dict[str, Any]:
