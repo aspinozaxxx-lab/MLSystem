@@ -15,20 +15,14 @@ on:
     paths:
       - "monitoring/**"
       - "ansible/**"
-      - "deploy/**"
-      - "frontend/**"
-      - "InferenceEngine/**"
-      - "tests/**"
+      - "deploy/**"      
       - ".github/workflows/monitoring.yml"
   push:
     branches: [main, master]
     paths:
       - "monitoring/**"
       - "ansible/**"
-      - "deploy/**"
-      - "frontend/**"
-      - "InferenceEngine/**"
-      - "tests/**"
+      - "deploy/**"  
       - ".github/workflows/monitoring.yml"
 
 permissions:

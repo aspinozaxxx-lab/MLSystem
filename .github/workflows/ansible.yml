@@ -28,10 +28,7 @@ on:
     branches: [main, master]
     paths:
       - "ansible/**"
-      - "deploy/**"
-      - "mlsystem/**"
-      - "InferenceEngine/**"
-      - "scripts/**"
+      - "deploy/**"         
       - ".github/workflows/ansible.yml"
 permissions:
   contents: read

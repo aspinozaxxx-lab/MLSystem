@@ -4,14 +4,12 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
-      - "frontend/**"
-      - "docs/frontend.md"
+      - "frontend/**"     
       - ".github/workflows/frontend-site.yml"
   push:
     branches: [main, master]
     paths:
-      - "frontend/**"
-      - "docs/frontend.md"
+      - "frontend/**"      
       - ".github/workflows/frontend-site.yml"
 
 permissions:

@@ -4,19 +4,13 @@ on:
   pull_request:
     paths:
       - "InferenceEngine/**"
-      - "mlsystem/**"
-      - "tests/**"
-      - "scripts/**"
-      - "docs/**"
+      - "mlsystem/**"          
       - ".github/workflows/inference-engine-service.yml"
   push:
     branches: [main, master]
     paths:
       - "InferenceEngine/**"
-      - "mlsystem/**"
-      - "tests/**"
-      - "scripts/**"
-      - "docs/**"
+      - "mlsystem/**"            
       - ".github/workflows/inference-engine-service.yml"
   workflow_dispatch:
 
