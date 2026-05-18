@@ -287,6 +287,7 @@ def create_run(
     import mlflow
 
     mlflow.set_tracking_uri(config.mlflow_tracking_uri_internal)
+    _enable_system_metrics_logging(mlflow)
     experiment_id = get_or_create_experiment_id(config, experiment_name)
     tag_warnings = set_experiment_tags(config, experiment_id, experiment_tags or {}) if experiment_tags else []
     with mlflow.start_run(experiment_id=experiment_id, run_name=run_name) as run:
@@ -339,6 +340,50 @@ def log_params_to_run(config: PipelineConfig, run_id: str, params: dict[str, Any
                 mlflow.log_param(key, value)
             except Exception:
                 continue
+
+
+def log_dataset_input_to_run(config: PipelineConfig, run_id: str, dataset_identity: Any, *, context: str = "training") -> None:
+    import mlflow
+
+    mlflow.set_tracking_uri(config.mlflow_tracking_uri_internal)
+    params = _dataset_identity_params(dataset_identity)
+    dataset_name = _dataset_input_name(dataset_identity)
+    source = (
+        getattr(dataset_identity, "images_uri", None)
+        or getattr(dataset_identity, "layout_uri", None)
+        or getattr(dataset_identity, "annotation_uri", None)
+        or "unknown"
+    )
+    with mlflow.start_run(run_id=run_id):
+        for key, value in flatten_params(params).items():
+            try:
+                mlflow.log_param(key, value)
+            except Exception:
+                continue
+        try:
+            import pandas as pd
+
+            frame = pd.DataFrame(
+                [
+                    {
+                        "dataset_name": dataset_name,
+                        "version": getattr(dataset_identity, "version", None),
+                        "fingerprint": getattr(dataset_identity, "fingerprint", None),
+                        "objects_count": getattr(dataset_identity, "objects_count", None),
+                        "scenes_count": getattr(dataset_identity, "scenes_count", None),
+                    }
+                ]
+            )
+            dataset = mlflow.data.from_pandas(
+                frame,
+                source=str(source),
+                name=dataset_name,
+                digest=str(getattr(dataset_identity, "fingerprint", "") or ""),
+            )
+            tags = {key: "" if value is None else str(value) for key, value in params.items()}
+            mlflow.log_input(dataset, context=context, tags=tags)
+        except Exception as exc:  # noqa: BLE001
+            mlflow.set_tag("dataset.input_log_error", f"{type(exc).__name__}: {exc}"[:500])
 
 
 def log_artifacts_to_run(config: PipelineConfig, run_id: str, artifacts: list[str | Path]) -> list[str]:
@@ -452,6 +497,47 @@ def _is_number(value: Any) -> bool:
         return False
     return number == number and number not in {float("inf"), float("-inf")}
 
+
+def _enable_system_metrics_logging(mlflow_module: Any) -> None:
+    try:
+        enable = getattr(mlflow_module, "enable_system_metrics_logging", None)
+        if callable(enable):
+            enable()
+    except Exception:
+        return
+
+
+def _dataset_input_name(dataset_identity: Any) -> str:
+    class_label = (
+        getattr(dataset_identity, "class_slug", None)
+        or getattr(dataset_identity, "class_name", None)
+        or "dataset"
+    )
+    return f"{class_label} [{getattr(dataset_identity, 'objects_count', 0)}, {getattr(dataset_identity, 'scenes_count', 0)}]"
+
+
+def _dataset_identity_params(dataset_identity: Any) -> dict[str, Any]:
+    payload = {
+        "dataset.version": getattr(dataset_identity, "version", None),
+        "dataset.version_source": getattr(dataset_identity, "version_source", None),
+        "dataset.fingerprint": getattr(dataset_identity, "fingerprint", None),
+        "dataset.git_commit": getattr(dataset_identity, "git_commit", None),
+        "dataset.git_commit_date": getattr(dataset_identity, "git_commit_date", None),
+        "dataset.class_name": getattr(dataset_identity, "class_name", None),
+        "dataset.class_slug": getattr(dataset_identity, "class_slug", None),
+        "dataset.objects": getattr(dataset_identity, "objects_count", None),
+        "dataset.scenes": getattr(dataset_identity, "scenes_count", None),
+        "dataset.selected_scenes": len(getattr(dataset_identity, "selected_scenes", None) or []),
+        "dataset.train_scenes": len(getattr(dataset_identity, "train_scenes", None) or []),
+        "dataset.val_scenes": len(getattr(dataset_identity, "val_scenes", None) or []),
+        "dataset.split_strategy": getattr(dataset_identity, "split_strategy", None),
+        "dataset.annotation_uri": getattr(dataset_identity, "annotation_uri", None),
+        "dataset.scenes_uri": getattr(dataset_identity, "scenes_uri", None),
+        "dataset.images_uri": getattr(dataset_identity, "images_uri", None),
+        "dataset.layout_uri": getattr(dataset_identity, "layout_uri", None),
+    }
+    return {key: value for key, value in payload.items() if value is not None}
+
 def setup_deforest_experiment(config: PipelineConfig, experiment_name: str = "mlsystem-deforest") -> dict[str, Any]:
     import mlflow
     from mlflow.tracking import MlflowClient
@@ -538,6 +624,7 @@ class MLflowJobRun:
         os.environ.pop("MLFLOW_RUN_ID", None)
         os.environ.pop("MLFLOW_EXPERIMENT_ID", None)
         mlflow.set_tracking_uri(self.config.mlflow_tracking_uri_internal)
+        _enable_system_metrics_logging(mlflow)
         experiment = mlflow.set_experiment(self.experiment_name)
         self.experiment_id = experiment.experiment_id
         self.started_at = utc_now()
@@ -772,6 +859,7 @@ __all__ = [
     "get_run",
     "list_artifact_paths",
     "log_artifacts_to_run",
+    "log_dataset_input_to_run",
     "log_lightweight_run",
     "log_metrics_to_run",
     "log_params_to_run",

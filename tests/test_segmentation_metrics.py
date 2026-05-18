@@ -7,12 +7,9 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from mlsystem.src.metrics.api import (
-    WeightedLossAccumulator,
-    binary_segmentation_metrics_from_logits,
-    metrics_from_counts,
-    pixel_counts_from_masks,
-)
+from mlsystem.src.metrics.api import compute_pixel_metrics_from_logits
+from mlsystem.src.metrics.segmentation import metrics_from_counts, pixel_counts_from_masks
+from mlsystem.src.train._trainer import _WeightedLossAccumulator
 from mlsystem.src.train._losses import segmentation_loss_components
 
 
@@ -73,7 +70,7 @@ class SegmentationMetricsTests(unittest.TestCase):
         probs = torch.tensor([[[[0.49, 0.50, 0.51]]]], dtype=torch.float32)
         logits = torch.logit(probs.clamp(1e-5, 1 - 1e-5))
         target = torch.tensor([[[[0.0, 1.0, 1.0]]]], dtype=torch.float32)
-        metrics = binary_segmentation_metrics_from_logits(logits, target, threshold=0.5)
+        metrics = compute_pixel_metrics_from_logits(logits, target, threshold=0.5)
         self.assertEqual(metrics["pixel_tp"], 2)
         self.assertEqual(metrics["pixel_fp"], 0)
 
@@ -82,7 +79,7 @@ class SegmentationMetricsTests(unittest.TestCase):
             pixel_counts_from_masks(np.zeros((4, 4)), np.zeros((8, 8)))
 
     def test_weighted_loss_average_is_not_last_batch(self) -> None:
-        acc = WeightedLossAccumulator()
+        acc = _WeightedLossAccumulator()
         acc.update({"loss_total": 1.0, "loss_bce": 0.25}, weight=1)
         acc.update({"loss_total": 3.0, "loss_bce": 0.75}, weight=3)
         averages = acc.averages("train")

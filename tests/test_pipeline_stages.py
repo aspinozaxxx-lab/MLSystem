@@ -83,9 +83,9 @@ class PipelineStagesTests(unittest.TestCase):
                     self._feature("scene_b.tif"),
                 ],
             }
-            with patch("mlsystem.src.train_pipeline.stages.prepare_dataset.load_config", return_value=SimpleNamespace(storage=SimpleNamespace(heavy_backend="local", s3_bucket="b"), known_data_roots=[])), \
-                patch("mlsystem.src.train_pipeline.stages.prepare_dataset.read_s3_text", return_value=json.dumps(annotation)), \
-                patch("mlsystem.src.train_pipeline.stages.prepare_dataset.raster_path_for_s3_key", side_effect=lambda _cfg, key: str(ctx.store.run_dir / Path(key).name)):
+            with patch("mlsystem.src.dataset_preparing._preparation.load_config", return_value=SimpleNamespace(storage=SimpleNamespace(heavy_backend="local", s3_bucket="b"), known_data_roots=[])), \
+                patch("mlsystem.src.dataset_preparing._preparation.read_s3_text", return_value=json.dumps(annotation)), \
+                patch("mlsystem.src.dataset_preparing._preparation.raster_path_for_s3_key", side_effect=lambda _cfg, key: str(ctx.store.run_dir / Path(key).name)):
                 report = run_prepare_dataset(ctx)
             self.assertEqual(report.status, "success")
             split_summary = json.loads((ctx.store.run_dir / "split_summary.json").read_text(encoding="utf-8"))
@@ -167,9 +167,9 @@ class PipelineStagesTests(unittest.TestCase):
                 "type": "FeatureCollection",
                 "features": [self._feature("scene_a.tif"), self._feature("scene_b.tif")],
             }
-            with patch("mlsystem.src.train_pipeline.stages.prepare_dataset.load_config", return_value=SimpleNamespace(storage=SimpleNamespace(heavy_backend="local", s3_bucket="b"), known_data_roots=[])), \
-                patch("mlsystem.src.train_pipeline.stages.prepare_dataset.read_s3_text", return_value=json.dumps(annotation)), \
-                patch("mlsystem.src.train_pipeline.stages.prepare_dataset.raster_path_for_s3_key", side_effect=lambda _cfg, key: str(ctx.store.run_dir / Path(key).name)):
+            with patch("mlsystem.src.dataset_preparing._preparation.load_config", return_value=SimpleNamespace(storage=SimpleNamespace(heavy_backend="local", s3_bucket="b"), known_data_roots=[])), \
+                patch("mlsystem.src.dataset_preparing._preparation.read_s3_text", return_value=json.dumps(annotation)), \
+                patch("mlsystem.src.dataset_preparing._preparation.raster_path_for_s3_key", side_effect=lambda _cfg, key: str(ctx.store.run_dir / Path(key).name)):
                 report = run_prepare_dataset(ctx)
             self.assertEqual(report.counters["split_strategy"], "legacy_75_25")
 
@@ -181,9 +181,9 @@ class PipelineStagesTests(unittest.TestCase):
                 "type": "FeatureCollection",
                 "features": [self._feature("scene_a.tif"), self._feature("scene_b.tif")],
             }
-            with patch("mlsystem.src.train_pipeline.stages.prepare_dataset.load_config", return_value=SimpleNamespace(storage=SimpleNamespace(heavy_backend="local", s3_bucket="b"), known_data_roots=[])), \
-                patch("mlsystem.src.train_pipeline.stages.prepare_dataset.read_s3_text", return_value=json.dumps(annotation)), \
-                patch("mlsystem.src.train_pipeline.stages.prepare_dataset.raster_path_for_s3_key", side_effect=lambda _cfg, key: str(ctx.store.run_dir / Path(key).name)):
+            with patch("mlsystem.src.dataset_preparing._preparation.load_config", return_value=SimpleNamespace(storage=SimpleNamespace(heavy_backend="local", s3_bucket="b"), known_data_roots=[])), \
+                patch("mlsystem.src.dataset_preparing._preparation.read_s3_text", return_value=json.dumps(annotation)), \
+                patch("mlsystem.src.dataset_preparing._preparation.raster_path_for_s3_key", side_effect=lambda _cfg, key: str(ctx.store.run_dir / Path(key).name)):
                 report = run_prepare_dataset(ctx)
             self.assertEqual(report.counters["split_strategy"], "object_balanced")
             split_summary = json.loads((ctx.store.run_dir / "split_summary.json").read_text(encoding="utf-8"))
@@ -219,7 +219,7 @@ class PipelineStagesTests(unittest.TestCase):
 
     def _inventory_patches(self, images: list[dict], scenes_text: str):
         return patch.multiple(
-            "mlsystem.src.train_pipeline.stages.inventory_scenes",
+            "mlsystem.src.dataset_preparing._inspection",
             load_config=lambda: SimpleNamespace(),
             build_s3_layout_status=lambda _cfg: {"ok": True},
             list_s3_objects=lambda _cfg, _uri, suffixes=None: images,
@@ -256,7 +256,7 @@ class PipelineStagesTests(unittest.TestCase):
 
     def _prepare_dataset_patches(self, ctx: StageContext, annotation: dict):
         return patch.multiple(
-            "mlsystem.src.train_pipeline.stages.prepare_dataset",
+            "mlsystem.src.dataset_preparing._preparation",
             load_config=lambda: SimpleNamespace(storage=SimpleNamespace(heavy_backend="local", s3_bucket="b"), known_data_roots=[]),
             read_s3_text=lambda _cfg, _uri: json.dumps(annotation),
             raster_path_for_s3_key=lambda _cfg, key: str(ctx.store.run_dir / Path(key).name),

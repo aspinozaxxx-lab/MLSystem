@@ -76,6 +76,67 @@ def test_supporting_modules_are_formalized() -> None:
     assert (ARCH / "settings_module.md").exists()
 
 
+def test_dataset_preparing_public_api_is_narrow() -> None:
+    import mlsystem.src.dataset_preparing.api as api
+
+    assert set(api.__all__) == {
+        "DatasetIdentity",
+        "DatasetInspectionRequest",
+        "DatasetInspectionResult",
+        "DatasetPreparingError",
+        "TrainingDatasetPrepareRequest",
+        "TrainingDatasetPrepareResult",
+        "inspect_dataset",
+        "prepare_training_dataset",
+    }
+
+
+def test_metrics_public_api_is_narrow() -> None:
+    import mlsystem.src.metrics.api as api
+
+    assert set(api.__all__) == {
+        "MetricsError",
+        "PixelMetricAccumulator",
+        "compute_pixel_metrics_from_logits",
+    }
+    forbidden = {
+        "clean_geometries",
+        "compute_pairwise_iou",
+        "match_objects_by_iou",
+        "prepare_geometries",
+        "probabilities_from_logits",
+        "safe_divide",
+        "write_object_metrics_artifacts",
+    }
+    assert forbidden.isdisjoint(set(api.__all__))
+
+
+def test_train_pipeline_uses_dataset_preparing_public_api_only() -> None:
+    offenders: list[str] = []
+    forbidden = [
+        "dataset_preparing._dataset_split",
+        "dataset_preparing._scene_matching",
+        "dataset_preparing._identity",
+        "compute_dataset_identity",
+        "dataset_identity_mlflow_payload",
+        "build_scene_matching_report",
+        "split_train_val_by_object_counts",
+        "count_objects_per_scene",
+    ]
+    for path in (SRC / "train_pipeline").rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        hits = [item for item in forbidden if item in text]
+        if hits:
+            offenders.append(f"{path.relative_to(SRC).as_posix()}: {hits}")
+    assert offenders == []
+
+
+def test_mlflow_adapter_dataset_input_helper_exists() -> None:
+    import mlsystem.src.mlflow_adapter.api as api
+
+    assert "log_dataset_input_to_run" in api.__all__
+
+
 def test_pipeline_package_absent_or_formal_module() -> None:
     pipeline = SRC / "pipeline"
     if not pipeline.exists():

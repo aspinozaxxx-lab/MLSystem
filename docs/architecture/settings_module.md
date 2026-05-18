@@ -8,6 +8,7 @@
 - `ensure_storage_layout(config)`: создает runtime storage directories для переданного `PipelineConfig`.
 - `PipelineConfig`: DTO runtime config.
 - `MLflowConfig`, `StorageConfig`, `S3PathsConfig`, `WebConfig`: вложенные DTO.
+- YAML/env loading implementation lives in internal `_loader.py`; `api.py` remains a thin facade.
 
 ## Запрещенные пересечения
 - Не запускает pipeline и не создает runs.

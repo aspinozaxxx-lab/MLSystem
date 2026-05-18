@@ -13,11 +13,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ..dataset_preparing.api import compute_dataset_identity, dataset_identity_mlflow_payload
+from ..dataset_preparing.contracts import DatasetIdentity
 from ..mlflow_adapter.api import (
     MLFLOW_EXCLUDED_ARTIFACT_NAMES,
     create_run as mlflow_create_run,
     log_artifacts_to_run as mlflow_log_artifacts_to_run,
+    log_dataset_input_to_run as mlflow_log_dataset_input_to_run,
     log_metrics_to_run as mlflow_log_metrics_to_run,
     log_params_to_run as mlflow_log_params_to_run,
     mlflow_tuning_metadata,
@@ -58,6 +59,32 @@ DISPATCHER_STAGE_NAMES = {
     "write_codex_api_summary",
     "finalize_mlflow_run",
 }
+MODEL_METRIC_KEYS = {
+    "model_metrics/f1_pixel",
+    "model_metrics/epochs_total",
+    "model_metrics/epoch_time_sec",
+    "model_metrics/training_time_sec",
+}
+DIAGNOSTIC_METRIC_KEYS = {
+    "diagnostics/val_pixel_precision",
+    "diagnostics/val_pixel_recall",
+    "diagnostics/val_pixel_iou",
+    "diagnostics/val_pixel_accuracy",
+    "diagnostics/val_loss_total",
+    "diagnostics/train_loss_total",
+    "diagnostics/train_val_loss_gap",
+    "diagnostics/train_pixel_f1",
+    "diagnostics/train_val_f1_gap",
+    "diagnostics/learning_rate",
+    "diagnostics/best_epoch",
+    "diagnostics/early_stopped",
+    "diagnostics/train_batches",
+    "diagnostics/val_batches",
+    "diagnostics/train_samples",
+    "diagnostics/val_samples",
+    "diagnostics/samples_per_sec",
+    "diagnostics/batches_per_sec",
+}
 
 
 def utc_now() -> str:
@@ -75,16 +102,17 @@ def _model_name_from_config(model_cfg: dict[str, Any]) -> str:
     return "tiny_unet_4ch"
 
 
-def _class_slug(value: str | None) -> str | None:
-    if not value:
+def _dataset_identity_from_summary(payload: Any) -> DatasetIdentity | None:
+    if isinstance(payload, DatasetIdentity):
+        return payload
+    if not isinstance(payload, dict):
         return None
-    import re
-
-    normalized = str(value).strip().casefold()
-    if normalized in {"deforest", "cuttings", "clearcuts", "clear_cuts", "вырубки", "РІС‹СЂСѓР±РєРё".casefold()}:
-        return "deforest"
-    slug = re.sub(r"[^a-z0-9]+", "_", normalized).strip("_")
-    return slug or None
+    fields = DatasetIdentity.__dataclass_fields__
+    clean = {key: value for key, value in payload.items() if key in fields}
+    required = {"fingerprint", "version", "version_source", "objects_count", "scenes_count"}
+    if not required.issubset(clean):
+        return None
+    return DatasetIdentity(**clean)
 
 
 def load_conf(conf_file: str | None = None, conf_json: str | None = None) -> dict[str, Any]:
@@ -424,19 +452,9 @@ def _run_training_pipeline(conf: PipelineRunConfig, store: Any) -> dict[str, Any
     if prepared_manifest.exists():
         job.preprocess.setdefault("prepared_dataset_manifest", str(prepared_manifest))
         job.preprocess.setdefault("use_prepared_dataset_manifest", True)
-    inventory = read_json(store.run_dir / "inventory_scenes.json", default={}) or {}
-    scene_matching = read_json(store.run_dir / "scene_matching_report.json", default={}) or {}
     manifest = read_json(prepared_manifest, default={}) or {}
-    dataset_identity = compute_dataset_identity(
-        dataset_manifest=manifest,
-        inventory=inventory,
-        scene_matching=scene_matching,
-        class_name=conf.class_name,
-        class_slug=_class_slug(conf.class_name),
-        images_uri=conf.images_uri,
-        layout_uri=conf.layout_uri,
-    )
-    dataset_params = dataset_identity_mlflow_payload(dataset_identity)
+    summary = store.read_summary()
+    dataset_identity = _dataset_identity_from_summary(summary.get("dataset_identity"))
     dataset_artifacts = [
         str(path)
         for path in [
@@ -448,7 +466,8 @@ def _run_training_pipeline(conf: PipelineRunConfig, store: Any) -> dict[str, Any
         if path.exists() and path.is_file()
     ]
     if run_id and not str(run_id).startswith("smoke-"):
-        mlflow_log_params_to_run(pipeline_config, str(run_id), dataset_params)
+        if dataset_identity is not None:
+            mlflow_log_dataset_input_to_run(pipeline_config, str(run_id), dataset_identity, context="training")
         mlflow_log_artifacts_to_run(pipeline_config, str(run_id), dataset_artifacts)
     train_loader = None
     val_loader = None
@@ -538,20 +557,20 @@ def _run_training_pipeline(conf: PipelineRunConfig, store: Any) -> dict[str, Any
     result["last_epoch_metrics"] = result_obj.history[-1].metrics if result_obj.history else {}
     result["mode"] = "train"
     result["mlflow"] = mlflow_info
-    result["dataset_identity"] = asdict(dataset_identity)
+    if dataset_identity is not None:
+        result["dataset_identity"] = asdict(dataset_identity)
     params = {
         "experiment_id": conf.experiment_id,
         "task": conf.task,
         "model.name": conf.model.get("name"),
         "preprocess.tile_size": conf.preprocess.get("tile_size"),
         "preprocess.max_scenes": conf.preprocess.get("max_scenes"),
-        **dataset_params,
         **result_obj.mlflow_params,
         **extra_params,
     }
     if run_id and not str(run_id).startswith("smoke-"):
         mlflow_log_params_to_run(pipeline_config, str(run_id), params)
-        mlflow_log_metrics_to_run(pipeline_config, str(run_id), result_obj.mlflow_metrics, step=result_obj.epochs_completed)
+        mlflow_log_metrics_to_run(pipeline_config, str(run_id), _allowed_training_metric_payload(result_obj.mlflow_metrics), step=result_obj.epochs_completed)
         artifact_errors = mlflow_log_artifacts_to_run(pipeline_config, str(run_id), [*result_obj.mlflow_artifacts, *dataset_artifacts])
         if artifact_errors:
             result["warnings"] = list(result.get("warnings") or []) + artifact_errors
@@ -809,15 +828,32 @@ def _log_mlflow_metrics_if_available(store: Any, metrics: dict[str, Any], counte
         return []
     warnings: list[str] = []
     try:
-        payload = {
-            key: number
-            for key, value in {**metrics, **(counters or {})}.items()
-            if (number := _finite_float(value)) is not None
-        }
+        payload = _diagnostic_metric_payload(metrics, counters or {})
         mlflow_log_metrics_to_run(load_config(), str(run_id), payload)
     except Exception as exc:  # noqa: BLE001 - report warning without hiding stage metrics.
         warnings.append(f"Failed to log F1 metrics to MLflow: {type(exc).__name__}: {exc}")
     return warnings
+
+
+def _diagnostic_metric_payload(metrics: dict[str, Any], counters: dict[str, Any]) -> dict[str, float]:
+    source = {**metrics, **counters}
+    mapping = {
+        "pixel_precision": "diagnostics/val_pixel_precision",
+        "pixel_recall": "diagnostics/val_pixel_recall",
+        "pixel_iou": "diagnostics/val_pixel_iou",
+        "pixel_accuracy": "diagnostics/val_pixel_accuracy",
+    }
+    payload: dict[str, float] = {}
+    for source_key, target_key in mapping.items():
+        number = _finite_float(source.get(source_key))
+        if number is not None:
+            payload[target_key] = number
+    return {key: value for key, value in payload.items() if key in DIAGNOSTIC_METRIC_KEYS}
+
+
+def _allowed_training_metric_payload(metrics: dict[str, Any]) -> dict[str, Any]:
+    allowed = MODEL_METRIC_KEYS | DIAGNOSTIC_METRIC_KEYS
+    return {key: value for key, value in metrics.items() if key in allowed}
 
 
 def _finite_float(value: Any) -> float | None:

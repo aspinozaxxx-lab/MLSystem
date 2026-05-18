@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from mlsystem.src.dataset_preparing.api import build_scene_matching_report, norm_scene_name, parse_scene_list_text
+from mlsystem.src.dataset_preparing._scene_matching import build_scene_matching_report, norm_scene_name, parse_scene_list_text
 
 
 class SceneMatchingTests(unittest.TestCase):

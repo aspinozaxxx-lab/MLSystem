@@ -18,6 +18,7 @@
 - `log_metrics_to_run`;
 - `log_params_to_run`;
 - `log_artifacts_to_run`;
+- `log_dataset_input_to_run`;
 - `download_run_artifacts`;
 - `get_run`;
 - `list_artifact_paths`;

@@ -55,7 +55,7 @@ class ApiStageRoutesTests(unittest.TestCase):
             )
             images = [{"bucket": "b", "key": "images/scene_a.tif", "name": "scene_a.tif", "size": 1}]
             with patch.multiple(
-                "mlsystem.src.train_pipeline.stages.inventory_scenes",
+                "mlsystem.src.dataset_preparing._inspection",
                 load_config=lambda: SimpleNamespace(),
                 build_s3_layout_status=lambda _cfg: {"ok": True},
                 list_s3_objects=lambda _cfg, _uri, suffixes=None: images,

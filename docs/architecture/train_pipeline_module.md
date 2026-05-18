@@ -79,6 +79,16 @@ python -m mlsystem.src.train_pipeline.cli
 - `train_pipeline` не является deprecated wrapper вокруг старого имени модуля.
 ## Dataset metadata
 
-После `prepare_dataset` и до/во время `train_model` pipeline вычисляет `dataset_preparing.compute_dataset_identity(...)` и логирует в MLflow через `mlflow_adapter` параметры `dataset.version`, `dataset.version_source`, `dataset.fingerprint`, `dataset.git_commit`, `dataset.git_commit_date`, `dataset.class_name`, `dataset.class_slug`, `dataset.objects`, `dataset.scenes`, `dataset.selected_scenes`, `dataset.train_scenes`, `dataset.val_scenes`, `dataset.split_strategy`, `dataset.annotation_uri`, `dataset.scenes_uri`, `dataset.images_uri`, `dataset.layout_uri`.
+После `prepare_dataset` и до/во время `train_model` pipeline использует `TrainingDatasetPrepareResult.dataset_identity` и логирует dataset input в MLflow через `mlflow_adapter.log_dataset_input_to_run(...)`. Adapter также сохраняет параметры `dataset.version`, `dataset.version_source`, `dataset.fingerprint`, `dataset.git_commit`, `dataset.git_commit_date`, `dataset.class_name`, `dataset.class_slug`, `dataset.objects`, `dataset.scenes`, `dataset.selected_scenes`, `dataset.train_scenes`, `dataset.val_scenes`, `dataset.split_strategy`, `dataset.annotation_uri`, `dataset.scenes_uri`, `dataset.images_uri`, `dataset.layout_uri`.
 
 Pipeline также логирует dataset artifacts, если они существуют: `dataset_manifest.json`, `inventory_scenes.json`, `scene_matching_report.json`, `split_summary.json`.
+
+## MLflow metrics
+
+Основная таблица модели использует только:
+- `model_metrics/f1_pixel`;
+- `model_metrics/epochs_total`;
+- `model_metrics/epoch_time_sec`;
+- `model_metrics/training_time_sec`.
+
+Diagnostics metrics логируются только из whitelist `diagnostics/*`; pixel counters, threshold sweeps and debug/microtiming payloads остаются artifacts.

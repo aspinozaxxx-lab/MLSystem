@@ -144,23 +144,6 @@ class PixelMetricAccumulator:
         return payload
 
 
-class WeightedLossAccumulator:
-    def __init__(self) -> None:
-        self.sums: dict[str, float] = {}
-        self.weight = 0
-
-    def update(self, values: dict[str, Any], weight: int) -> None:
-        weight = int(weight)
-        self.weight += weight
-        for key, value in values.items():
-            self.sums[key] = self.sums.get(key, 0.0) + float(value) * weight
-
-    def averages(self, prefix: str) -> dict[str, float]:
-        if self.weight <= 0:
-            return {f"{prefix}/{key}": 0.0 for key in sorted(self.sums)}
-        return {f"{prefix}/{key}": float(value / self.weight) for key, value in self.sums.items()}
-
-
 def _to_numpy_array(value: torch.Tensor | np.ndarray) -> np.ndarray:
     if isinstance(value, torch.Tensor):
         return value.detach().cpu().numpy()

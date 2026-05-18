@@ -28,7 +28,12 @@ class TrainingReportMLflowReaderTests(unittest.TestCase):
                     "status": "FINISHED",
                 },
                 "data": {
-                    "metrics": [{"key": "best_val_pixel_f1", "value": 0.55, "step": 11}],
+                    "metrics": [
+                        {"key": "model_metrics/f1_pixel", "value": 0.55, "step": 11},
+                        {"key": "diagnostics/best_epoch", "value": 11, "step": 11},
+                        {"key": "model_metrics/epochs_total", "value": 12, "step": 11},
+                        {"key": "model_metrics/training_time_sec", "value": 123.0, "step": 11},
+                    ],
                     "params": [
                         {"key": "model_name", "value": "segformer_b2"},
                         {"key": "train.epochs", "value": 12},
@@ -145,6 +150,7 @@ class TrainingReportMLflowReaderTests(unittest.TestCase):
         )
         lakes = next(item for item in rows if item["class_slug"] == "lakes")
         self.assertEqual(lakes["dataset_versions"][0]["dataset_version"], "inventory-fp")
+        self.assertEqual(lakes["dataset_versions"][0]["dataset_version_source"], "fallback")
 
     def test_runs_before_cutoff_or_before_epoch_10_are_excluded(self) -> None:
         collector = object.__new__(TrainingReportCollector)

@@ -7,7 +7,7 @@ from typing import Any
 
 import torch
 
-from ..metrics.api import PixelMetricAccumulator, WeightedLossAccumulator
+from ..metrics.api import PixelMetricAccumulator
 from ._checkpoints import load_initial_checkpoint, save_checkpoint
 from ._device import resolve_device
 from ._history import write_history
@@ -17,6 +17,23 @@ from ._optimizers import build_optimizer
 from ._progress import EarlyStopping, emit_progress
 from ._schedulers import build_scheduler
 from .contracts import CheckpointArtifact, EpochMetrics, TrainError, TrainProgressEvent, TrainProgressSink, TrainRequest, TrainResult
+
+
+class _WeightedLossAccumulator:
+    def __init__(self) -> None:
+        self.sums: dict[str, float] = {}
+        self.weight = 0
+
+    def update(self, values: dict[str, Any], weight: int) -> None:
+        weight = int(weight)
+        self.weight += weight
+        for key, value in values.items():
+            self.sums[key] = self.sums.get(key, 0.0) + float(value) * weight
+
+    def averages(self, prefix: str) -> dict[str, float]:
+        if self.weight <= 0:
+            return {f"{prefix}/{key}": 0.0 for key in sorted(self.sums)}
+        return {f"{prefix}/{key}": float(value / self.weight) for key, value in self.sums.items()}
 
 
 def run_training(request: TrainRequest, progress_sink: TrainProgressSink | None = None) -> TrainResult:
@@ -48,6 +65,7 @@ def run_training(request: TrainRequest, progress_sink: TrainProgressSink | None 
     best_epoch = 0
     best_f1 = float("-inf")
     best_iou = float("-inf")
+    early_stopped = False
     started = time.time()
 
     emit_progress(progress_sink, TrainProgressEvent(stage="started", message="training started"))
@@ -88,6 +106,7 @@ def run_training(request: TrainRequest, progress_sink: TrainProgressSink | None 
         if scheduler is not None:
             scheduler.step()
         if stopper is not None and stopper.update(current_f1, epoch):
+            early_stopped = True
             break
 
     artifacts: list[str] = []
@@ -118,7 +137,9 @@ def run_training(request: TrainRequest, progress_sink: TrainProgressSink | None 
         )
         artifacts.append(str(checkpoint_path))
 
+    total_duration_sec = round(time.time() - started, 4)
     last = history_rows[-1] if history_rows else {}
+    best_row = max(history_rows, key=lambda row: float(row.get("val/pixel_f1", 0.0)), default={})
     mlflow_params = {
         "train.model_name": cfg.model_name,
         "train.epochs": cfg.epochs,
@@ -127,13 +148,14 @@ def run_training(request: TrainRequest, progress_sink: TrainProgressSink | None 
         "train.weight_decay": cfg.weight_decay,
         "train.metric_threshold": cfg.metric_threshold,
     }
-    mlflow_metrics = {
-        "train/epochs_completed": len(history_rows),
-        "train/duration_sec": round(time.time() - started, 4),
-        "val/best_pixel_f1": best_f1 if best_f1 != float("-inf") else 0.0,
-        "val/best_iou": best_iou if best_iou != float("-inf") else 0.0,
-        "val/last_pixel_f1": float(last.get("val/pixel_f1", 0.0)),
-    }
+    mlflow_metrics = _canonical_mlflow_metrics(
+        history_rows=history_rows,
+        best_row=best_row,
+        last_row=last,
+        best_f1=best_f1 if best_f1 != float("-inf") else 0.0,
+        total_duration_sec=total_duration_sec,
+        early_stopped=early_stopped,
+    )
     emit_progress(progress_sink, TrainProgressEvent(stage="completed", metrics=mlflow_metrics))
     return TrainResult(
         status="done",
@@ -161,6 +183,59 @@ def result_to_dict(result: TrainResult) -> dict[str, Any]:
     return payload
 
 
+def _canonical_mlflow_metrics(
+    *,
+    history_rows: list[dict[str, Any]],
+    best_row: dict[str, Any],
+    last_row: dict[str, Any],
+    best_f1: float,
+    total_duration_sec: float,
+    early_stopped: bool,
+) -> dict[str, float | int]:
+    epochs_total = len(history_rows)
+    epoch_time_sec = (
+        sum(float(row.get("epoch_duration_sec", 0.0)) for row in history_rows) / epochs_total
+        if epochs_total
+        else 0.0
+    )
+    train_loss = _float_or_none(last_row.get("train/loss_total"))
+    val_loss = _float_or_none(best_row.get("val/loss_total"))
+    train_f1 = _float_or_none(last_row.get("train/pixel_f1"))
+    payload: dict[str, float | int | None] = {
+        "model_metrics/f1_pixel": best_f1,
+        "model_metrics/epochs_total": epochs_total,
+        "model_metrics/epoch_time_sec": round(epoch_time_sec, 4),
+        "model_metrics/training_time_sec": total_duration_sec,
+        "diagnostics/val_pixel_precision": _float_or_none(best_row.get("val/pixel_precision") or best_row.get("val/precision")),
+        "diagnostics/val_pixel_recall": _float_or_none(best_row.get("val/pixel_recall") or best_row.get("val/recall")),
+        "diagnostics/val_pixel_iou": _float_or_none(best_row.get("val/pixel_iou") or best_row.get("val/iou")),
+        "diagnostics/val_pixel_accuracy": _float_or_none(best_row.get("val/pixel_accuracy") or best_row.get("val/accuracy")),
+        "diagnostics/val_loss_total": val_loss,
+        "diagnostics/train_loss_total": train_loss,
+        "diagnostics/train_val_loss_gap": (train_loss - val_loss) if train_loss is not None and val_loss is not None else None,
+        "diagnostics/train_pixel_f1": train_f1,
+        "diagnostics/train_val_f1_gap": (train_f1 - best_f1) if train_f1 is not None else None,
+        "diagnostics/learning_rate": _float_or_none(last_row.get("learning_rate")),
+        "diagnostics/best_epoch": _float_or_none(best_row.get("epoch")),
+        "diagnostics/early_stopped": 1 if early_stopped else 0,
+        "diagnostics/train_batches": _float_or_none(last_row.get("train/batches")),
+        "diagnostics/val_batches": _float_or_none(best_row.get("val/batches")),
+        "diagnostics/train_samples": _float_or_none(last_row.get("train/samples")),
+        "diagnostics/val_samples": _float_or_none(best_row.get("val/samples")),
+        "diagnostics/samples_per_sec": (
+            (_float_or_none(last_row.get("train/samples")) or 0.0) / total_duration_sec
+            if total_duration_sec > 0
+            else None
+        ),
+        "diagnostics/batches_per_sec": (
+            (_float_or_none(last_row.get("train/batches")) or 0.0) / total_duration_sec
+            if total_duration_sec > 0
+            else None
+        ),
+    }
+    return {key: value for key, value in payload.items() if value is not None}
+
+
 def _run_train_epoch(
     model: torch.nn.Module,
     loader: Any,
@@ -171,7 +246,7 @@ def _run_train_epoch(
     max_batches: int | None,
 ) -> dict[str, float]:
     model.train()
-    losses = WeightedLossAccumulator()
+    losses = _WeightedLossAccumulator()
     batches = 0
     samples = 0
     for batch in loader:
@@ -203,7 +278,7 @@ def _run_val_epoch(
     max_batches: int | None,
 ) -> dict[str, float | int]:
     model.eval()
-    losses = WeightedLossAccumulator()
+    losses = _WeightedLossAccumulator()
     metrics = PixelMetricAccumulator(threshold=threshold)
     batches = 0
     samples = 0
@@ -242,3 +317,11 @@ def _batch_xy(batch: Any) -> tuple[torch.Tensor, torch.Tensor]:
 
 def _numeric_metrics(row: dict[str, Any]) -> dict[str, float | int]:
     return {key: value for key, value in row.items() if isinstance(value, (int, float))}
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number == number and number not in {float("inf"), float("-inf")} else None

@@ -30,7 +30,8 @@ class TrainLoopSmokeTests(unittest.TestCase):
         self.assertEqual(result.status, "done")
         self.assertEqual(result.epochs_completed, 1)
         self.assertIsNotNone(result.checkpoint)
-        self.assertIn("val/best_pixel_f1", result.mlflow_metrics)
+        self.assertIn("model_metrics/f1_pixel", result.mlflow_metrics)
+        self.assertIn("model_metrics/epochs_total", result.mlflow_metrics)
 
 
 if __name__ == "__main__":

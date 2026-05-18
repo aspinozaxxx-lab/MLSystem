@@ -7,7 +7,7 @@ import pytest
 shapely_geometry = pytest.importorskip("shapely.geometry")
 box = shapely_geometry.box
 
-from mlsystem.src.metrics.api import compute_object_f1
+from mlsystem.src.metrics.object_metrics import compute_object_f1
 
 
 class ObjectMetricsTests(unittest.TestCase):

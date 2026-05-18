@@ -253,7 +253,7 @@ def _enrich_run(run: dict[str, Any], inventory: dict[str, Any]) -> dict[str, Any
         {
             "dataset_date": _date_only(dataset_date) or inventory.get("dataset_date"),
             "dataset_version": dataset_version or dataset_fingerprint or inventory.get("dataset_fingerprint") or "unknown",
-            "dataset_version_source": dataset_version_source or ("fallback_inventory" if not dataset_version and inventory.get("dataset_fingerprint") else None),
+            "dataset_version_source": dataset_version_source or ("fallback" if not dataset_version and (dataset_fingerprint or inventory.get("dataset_fingerprint")) else None),
             "dataset_fingerprint": dataset_fingerprint or inventory.get("dataset_fingerprint"),
             "dataset_objects": dataset_objects if dataset_objects is not None else inventory.get("objects_count", 0),
             "dataset_scenes": dataset_scenes if dataset_scenes is not None else inventory.get("scenes_count", 0),
