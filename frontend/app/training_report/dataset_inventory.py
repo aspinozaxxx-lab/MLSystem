@@ -35,6 +35,7 @@ SUPPORTED_CLASSES: tuple[ClassSpec, ...] = (
     ClassSpec("Вырубки", "deforest", ("deforestation", "cuttings", "deforest")),
     ClassSpec("Гари", "burnt_forests", ("burnt_forests", "burned", "fire")),
     ClassSpec("Границы леса", "forest_boundaries", ("forest", "forest_boundaries")),
+    ClassSpec("Засоления", "salty", ("salty", "salinization")),
     ClassSpec("Карьеры", "quarries", ("careers", "quarries")),
     ClassSpec("Опустынивание", "desertification", ("desertification",)),
     ClassSpec("Пашни", "arable_land", ("areas_of_used_arable_land", "arable_land", "pashni")),

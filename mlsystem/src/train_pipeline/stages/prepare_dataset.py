@@ -55,6 +55,43 @@ def _class_slug(value: str | None) -> str | None:
     import re
 
     normalized = str(value).strip().casefold()
+    known = {
+        "абразия": "abrasion",
+        "abrasion": "abrasion",
+        "ветровая эрозия": "wind_erosion",
+        "wind_erosion": "wind_erosion",
+        "водная эрозия": "water_erosion",
+        "water_erosion": "water_erosion",
+        "вырубки": "deforest",
+        "deforest": "deforest",
+        "deforestation": "deforest",
+        "cuttings": "deforest",
+        "clearcuts": "deforest",
+        "clear_cuts": "deforest",
+        "гари": "burnt_forests",
+        "burnt_forests": "burnt_forests",
+        "границы леса": "forest_boundaries",
+        "forest": "forest_boundaries",
+        "forest_boundaries": "forest_boundaries",
+        "засоления": "salty",
+        "salty": "salty",
+        "карьеры": "quarries",
+        "careers": "quarries",
+        "quarries": "quarries",
+        "обвально-оползневые и осыпные": "obval_opolz_osyp",
+        "landslide": "obval_opolz_osyp",
+        "landslides": "obval_opolz_osyp",
+        "озера": "lakes",
+        "озёра": "lakes",
+        "lakes": "lakes",
+        "опустынивание": "desertification",
+        "desertification": "desertification",
+        "пашни": "arable_land",
+        "areas_of_used_arable_land": "arable_land",
+        "arable_land": "arable_land",
+    }
+    if normalized in known:
+        return known[normalized]
     if normalized in {"deforest", "cuttings", "clearcuts", "clear_cuts", "вырубки", "РІС‹СЂСѓР±РєРё".casefold()}:
         return "deforest"
     slug = re.sub(r"[^a-z0-9]+", "_", normalized).strip("_")
