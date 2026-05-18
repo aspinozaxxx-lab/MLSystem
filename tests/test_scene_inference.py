@@ -3,10 +3,12 @@ from __future__ import annotations
 import unittest
 
 import numpy as np
-import torch
+import pytest
+
+torch = pytest.importorskip("torch")
 
 from mlsystem.src.debug.pseudolabel_debug import ConstantProbabilityModel
-from mlsystem.src.inference.scene_inference import run_synthetic_scene_inference
+from InferenceEngine.src.inference_engine.workers.scene_inference import run_synthetic_scene_inference
 
 
 class SceneInferenceTests(unittest.TestCase):

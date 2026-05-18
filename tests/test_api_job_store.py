@@ -4,8 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mlsystem.src.pipeline_runner.api import StageJobStore as JobStore
-from mlsystem.src.pipeline_runner.api import StageStartRequest
+from mlsystem.src.train_pipeline.api import StageJobStore as JobStore
+from mlsystem.src.train_pipeline.api import StageStartRequest
 
 
 class ApiJobStoreTests(unittest.TestCase):

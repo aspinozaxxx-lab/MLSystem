@@ -33,7 +33,7 @@ class InventoryScenesArtifact(ArtifactBase):
 class DatasetManifestArtifact(ArtifactBase):
     experiment_id: str
     created_by: str = "prepare_dataset"
-    source: str = "pipeline_runner"
+    source: str = "train_pipeline"
     split_strategy: str
     object_count_mode: str
     selected_scene_count: int
@@ -45,7 +45,7 @@ class DatasetManifestArtifact(ArtifactBase):
 
 
 class InferenceManifestArtifact(ArtifactBase):
-    stage: str = "inference_engine_pipeline"
+    stage: str = "inference_pipeline"
     experiment_id: str
     run_on: str
     bad_scene_policy: str = "skip"

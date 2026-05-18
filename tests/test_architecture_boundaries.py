@@ -6,16 +6,23 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "mlsystem" / "src"
+ARCH = ROOT / "docs" / "architecture"
 
 
-def test_pipeline_runner_api_exists_and_facade_absent() -> None:
-    assert (SRC / "pipeline_runner" / "api.py").exists()
-    assert not (SRC / "pipeline_runner" / "facade.py").exists()
+def test_train_pipeline_rename_is_complete() -> None:
+    assert (SRC / "train_pipeline" / "api.py").exists()
+    assert not (SRC / "pipeline_runner").exists()
+    assert not (ARCH / "pipeline_runner_module.md").exists()
+    assert (ARCH / "train_pipeline_module.md").exists()
+    assert "pipeline_runner" not in (ARCH / "architecture.md").read_text(encoding="utf-8")
 
 
-def test_mlflow_adapter_api_exists_and_facade_absent() -> None:
-    assert (SRC / "mlflow_adapter" / "api.py").exists()
-    assert not (SRC / "mlflow_adapter" / "facade.py").exists()
+def test_inference_pipeline_module_exists() -> None:
+    assert (SRC / "inference_pipeline" / "api.py").exists()
+    assert (SRC / "inference_pipeline" / "contracts.py").exists()
+    doc = (ARCH / "inference_pipeline_module.md").read_text(encoding="utf-8")
+    assert "Public API" in doc
+    assert "Запрещ" in doc or "Forbidden" in doc
 
 
 def test_train_module_exists_and_legacy_training_modules_absent() -> None:
@@ -26,8 +33,34 @@ def test_train_module_exists_and_legacy_training_modules_absent() -> None:
     assert not (SRC / "workflow").exists()
     assert not (SRC / "orchestration").exists()
     assert not (SRC / "real_train.py").exists()
+    assert not (SRC / "models").exists()
+    assert not (SRC / "inference").exists()
     assert not (SRC / "pipeline" / "training_pipeline.py").exists()
     assert not (SRC / "tile_preparation" / "facade.py").exists()
+
+
+def test_pipeline_package_absent_or_formal_module() -> None:
+    pipeline = SRC / "pipeline"
+    if not pipeline.exists():
+        return
+    assert (pipeline / "api.py").exists()
+    assert (pipeline / "contracts.py").exists()
+    assert any(path.name == "pipeline_module.md" for path in ARCH.glob("*pipeline_module.md"))
+
+
+def test_api_app_uses_public_pipeline_apis_only() -> None:
+    text = (SRC / "api" / "app.py").read_text(encoding="utf-8")
+    assert "from ..train_pipeline.api import" in text
+    assert "from ..inference_pipeline.api import" in text
+    assert "from ..mlflow_adapter.api import" in text
+    forbidden = [
+        "train_pipeline.config",
+        "train_pipeline.run_store",
+        "train_pipeline.runner",
+        "train_pipeline.stages",
+        "inference_pipeline._",
+    ]
+    assert [item for item in forbidden if item in text] == []
 
 
 def test_production_mlflow_imports_stay_inside_adapter() -> None:
@@ -42,35 +75,21 @@ def test_production_mlflow_imports_stay_inside_adapter() -> None:
     assert offenders == []
 
 
-def test_api_app_uses_pipeline_runner_public_api() -> None:
-    text = (SRC / "api" / "app.py").read_text(encoding="utf-8")
-    assert "from ..pipeline_runner.api import" in text
-    assert "from ..mlflow_adapter.api import" in text
+def test_inference_pipeline_does_not_import_forbidden_boundaries() -> None:
     forbidden = [
-        "pipeline_runner.config",
-        "pipeline_runner.run_store",
-        "pipeline_runner.runner",
-        "pipeline_runner.stages",
+        "FastAPI",
+        "from fastapi",
+        "from ..train._",
+        "from ..train_pipeline.",
+        "train_pipeline._",
     ]
-    assert [item for item in forbidden if item in text] == []
-
-
-def test_deprecated_api_lifecycle_wrappers_absent() -> None:
-    for name in ["job_runner.py", "job_store.py", "stage_job_worker.py", "stage_routes.py"]:
-        assert not (SRC / "api" / name).exists()
-
-
-def test_experiment_stages_does_not_own_lifecycle_models() -> None:
-    text = (SRC / "pipeline" / "experiment_stages.py").read_text(encoding="utf-8")
-    forbidden = [
-        "class ExperimentStageStore",
-        "class ExperimentStageConfig",
-        "PipelineRunStore(",
-        "StageJobStore(",
-        "StageJobRunner(",
-        "subprocess.Popen",
-    ]
-    assert [item for item in forbidden if item in text] == []
+    offenders: dict[str, list[str]] = {}
+    for path in (SRC / "inference_pipeline").rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        hits = [item for item in forbidden if item in text]
+        if hits:
+            offenders[path.relative_to(SRC).as_posix()] = hits
+    assert offenders == {}
 
 
 def test_train_module_does_not_import_forbidden_boundaries() -> None:
@@ -79,8 +98,10 @@ def test_train_module_does_not_import_forbidden_boundaries() -> None:
         "from mlflow",
         "MlflowClient",
         "mlflow.artifacts",
-        "pipeline_runner.",
-        "from ..pipeline_runner",
+        "train_pipeline.",
+        "from ..train_pipeline",
+        "inference_pipeline._",
+        "from ..inference_pipeline._",
         "FastAPI",
         "status.json",
         "run.json",
@@ -94,33 +115,6 @@ def test_train_module_does_not_import_forbidden_boundaries() -> None:
         if hits:
             offenders[path.relative_to(SRC).as_posix()] = hits
     assert offenders == {}
-
-
-def test_train_contracts_are_pure_contracts() -> None:
-    path = SRC / "train" / "contracts.py"
-    text = path.read_text(encoding="utf-8")
-    forbidden_tokens = [
-        "open(",
-        ".read_text(",
-        ".write_text(",
-        ".mkdir(",
-        "subprocess",
-        "import mlflow",
-        "from mlflow",
-        "MlflowClient",
-        "mlflow.artifacts",
-        "from ._",
-    ]
-    assert [item for item in forbidden_tokens if item in text] == []
-
-
-def test_pipeline_train_stage_uses_train_api_boundary() -> None:
-    text = (SRC / "pipeline" / "experiment_stages.py").read_text(encoding="utf-8")
-    assert "from ..train.api import train_model" in text
-    assert "train_model(" in text
-    assert "from ..train._" not in text
-    assert "TrainingPipeline" not in text
-    assert "real_train" not in text
 
 
 def test_contracts_files_are_pure_contracts() -> None:
@@ -142,3 +136,11 @@ def test_contracts_files_are_pure_contracts() -> None:
         assert [item for item in forbidden_tokens if item in text] == [], path
         assert not forbidden_internal_import.search(text), path
         assert not forbidden_private_import.search(text), path
+
+
+def test_train_pipeline_train_stage_uses_train_api_boundary() -> None:
+    text = (SRC / "train_pipeline" / "experiment_stages.py").read_text(encoding="utf-8")
+    assert "from ..train.api import train_model" in text
+    assert "train_model(" in text
+    assert "from ..train._" not in text
+    assert "real_train" not in text

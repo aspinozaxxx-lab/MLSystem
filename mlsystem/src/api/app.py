@@ -10,23 +10,33 @@ try:
 except Exception as exc:  # noqa: BLE001
     raise RuntimeError("FastAPI is required for mlsystem-api. Install fastapi and uvicorn.") from exc
 
-from ..pipeline_runner.api import (
+from ..train_pipeline.api import (
     DEFAULT_PIPELINE_STAGES,
     JobStatusResponse,
     PipelineRunConfig,
-    PipelineRunner,
     StageStartRequest,
     StageStartResponse,
+    cancel_train_pipeline_run,
     create_run_store,
     create_stage_job_runner,
     create_stage_job_store,
     debug_run_stage_sync,
+    get_train_pipeline_run,
     job_status,
     load_trace_payload,
     parse_pipeline_run_config,
     run_summary,
     stages_payload,
+    start_train_pipeline_run,
     start_stage,
+    tail_train_pipeline_log,
+)
+from ..inference_pipeline.api import (
+    PseudolabelRunRequest,
+    cancel_pseudolabel_run,
+    get_pseudolabel_run,
+    start_pseudolabel_run,
+    tail_pseudolabel_log,
 )
 from . import __version__
 from .security import mask_text, masked_env_snapshot, verify_token_header
@@ -137,7 +147,7 @@ def run_summary_endpoint(run_id: str) -> dict[str, Any]:
 async def start_pipeline_run_endpoint(request: Request) -> dict[str, Any]:
     try:
         config = await _pipeline_config_from_request(request)
-        run = PipelineRunner(create_run_store()).start_run(config, source="api")
+        run = start_train_pipeline_run(config, source="api")
         return {
             "run_id": run.run_id,
             "state": run.state,
@@ -153,23 +163,21 @@ async def start_pipeline_run_endpoint(request: Request) -> dict[str, Any]:
 
 @app.get("/api/v1/pipeline-runs/{run_id}", dependencies=[Depends(require_api_token)])
 def pipeline_run_status_endpoint(run_id: str) -> dict[str, Any]:
-    store = create_run_store()
     try:
-        run = PipelineRunner(store).refresh_run(run_id).model_dump()
+        run = get_train_pipeline_run(run_id).model_dump()
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=f"Pipeline run not found: {run_id}") from exc
-    run["log_tail"] = store.tail_log(run_id, max_chars=20000)
+    run["log_tail"] = tail_train_pipeline_log(run_id, max_chars=20000)
     return run
 
 
 @app.get("/api/v1/pipeline-runs/{run_id}/log", dependencies=[Depends(require_api_token)])
 def pipeline_run_log_endpoint(run_id: str, tail: int = 20000) -> dict[str, Any]:
-    store = create_run_store()
     try:
-        run = store.read_run(run_id)
+        run = get_train_pipeline_run(run_id).model_dump()
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=f"Pipeline run not found: {run_id}") from exc
-    return {"run_id": run_id, "log_tail": store.tail_log(run_id, max_chars=max(1, min(int(tail), 1_000_000))), "updated_at": run.get("updated_at")}
+    return {"run_id": run_id, "log_tail": tail_train_pipeline_log(run_id, max_chars=max(1, min(int(tail), 1_000_000))), "updated_at": run.get("updated_at")}
 
 
 @app.get("/api/v1/pipeline-runs/{run_id}/stages", dependencies=[Depends(require_api_token)])
@@ -193,9 +201,51 @@ def pipeline_run_stages_endpoint(run_id: str) -> dict[str, Any]:
 @app.post("/api/v1/pipeline-runs/{run_id}/cancel", dependencies=[Depends(require_api_token)])
 def pipeline_run_cancel_endpoint(run_id: str) -> dict[str, Any]:
     try:
-        return PipelineRunner(create_run_store()).cancel_run(run_id).model_dump()
+        return cancel_train_pipeline_run(run_id).model_dump()
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=f"Pipeline run not found: {run_id}") from exc
+
+
+@app.post("/api/v1/pseudolabel-runs", dependencies=[Depends(require_api_token)])
+def start_pseudolabel_run_endpoint(request: PseudolabelRunRequest) -> dict[str, Any]:
+    try:
+        run = start_pseudolabel_run(request)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {
+        "run_id": run.run_id,
+        "state": run.state,
+        "status_url": f"/api/v1/pseudolabel-runs/{run.run_id}",
+        "log_url": f"/api/v1/pseudolabel-runs/{run.run_id}/log",
+        "created_at": run.created_at,
+    }
+
+
+@app.get("/api/v1/pseudolabel-runs/{run_id}", dependencies=[Depends(require_api_token)])
+def pseudolabel_run_status_endpoint(run_id: str) -> dict[str, Any]:
+    try:
+        return get_pseudolabel_run(run_id).model_dump()
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Pseudolabel run not found: {run_id}") from exc
+
+
+@app.get("/api/v1/pseudolabel-runs/{run_id}/log", dependencies=[Depends(require_api_token)])
+def pseudolabel_run_log_endpoint(run_id: str, tail: int = 20000) -> dict[str, Any]:
+    try:
+        run = get_pseudolabel_run(run_id).model_dump()
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Pseudolabel run not found: {run_id}") from exc
+    return {"run_id": run_id, "log_tail": tail_pseudolabel_log(run_id, max_chars=max(1, min(int(tail), 1_000_000))), "updated_at": run.get("updated_at")}
+
+
+@app.post("/api/v1/pseudolabel-runs/{run_id}/cancel", dependencies=[Depends(require_api_token)])
+def pseudolabel_run_cancel_endpoint(run_id: str) -> dict[str, Any]:
+    try:
+        return cancel_pseudolabel_run(run_id).model_dump()
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Pseudolabel run not found: {run_id}") from exc
 
 
 async def _pipeline_config_from_request(request: Request) -> PipelineRunConfig:

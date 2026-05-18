@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from mlsystem.src.pipeline.stages.registry import get_stage_entrypoint
+from mlsystem.src.train_pipeline.stages.registry import get_stage_entrypoint
 
 
 class StageRegistryTests(unittest.TestCase):

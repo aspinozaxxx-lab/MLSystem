@@ -33,11 +33,6 @@ def export_mlflow_run_to_triton(
         raise RuntimeError(f"No checkpoint artifact found for MLflow run {run_id}. Top-level artifacts: {artifacts}")
     if backend in {"auto", "onnx"}:
         try:
-            try:
-                from mlsystem.src.inference.triton_export import export_segmentation_checkpoint_to_onnx
-            except ImportError:
-                from src.inference.triton_export import export_segmentation_checkpoint_to_onnx
-
             return export_segmentation_checkpoint_to_onnx(
                 checkpoint_path=checkpoint,
                 model_name=model_name,
@@ -61,6 +56,68 @@ def export_mlflow_run_to_triton(
         max_batch_size=max_batch_size,
         instance_count=instance_count,
     )
+
+
+def export_segmentation_checkpoint_to_onnx(
+    *,
+    checkpoint_path: Path,
+    model_name: str,
+    output_repository: Path,
+    triton_model_name: str,
+    input_bands: int,
+    tile_size: int,
+    max_batch_size: int,
+    instance_count: int = 1,
+) -> Path:
+    import torch
+
+    try:
+        from mlsystem.src.train._models import build_model
+    except ImportError:
+        from src.train._models import build_model
+
+    version_dir = output_repository / triton_model_name / "1"
+    version_dir.mkdir(parents=True, exist_ok=True)
+    model = build_model(model_name, input_bands, 1, 8).eval().cpu()
+    checkpoint = torch.load(str(checkpoint_path), map_location="cpu")
+    state = checkpoint.get("model_state_dict") if isinstance(checkpoint, dict) else checkpoint
+    if not isinstance(state, dict):
+        raise RuntimeError(f"Unsupported checkpoint payload: {checkpoint_path}")
+    model.load_state_dict(state)
+    dummy = torch.randn(1, input_bands, tile_size, tile_size, dtype=torch.float32)
+    onnx_path = version_dir / "model.onnx"
+    with torch.no_grad():
+        torch.onnx.export(
+            model,
+            dummy,
+            str(onnx_path),
+            input_names=["INPUT__0"],
+            output_names=["OUTPUT__0"],
+            dynamic_axes={"INPUT__0": {0: "batch"}, "OUTPUT__0": {0: "batch", 2: "height", 3: "width"}},
+            opset_version=17,
+            do_constant_folding=True,
+            dynamo=False,
+        )
+    config_path = output_repository / triton_model_name / "config.pbtxt"
+    config_path.write_text(
+        f'''name: "{triton_model_name}"
+platform: "onnxruntime_onnx"
+max_batch_size: {int(max_batch_size)}
+input [
+  {{ name: "INPUT__0" data_type: TYPE_FP32 dims: [ {input_bands}, {tile_size}, {tile_size} ] }}
+]
+output [
+  {{ name: "OUTPUT__0" data_type: TYPE_FP32 dims: [ 1, -1, -1 ] }}
+]
+instance_group [ {{ kind: KIND_GPU count: {max(1, int(instance_count))} }} ]
+dynamic_batching {{
+  preferred_batch_size: [ 4, 8, {int(max_batch_size)} ]
+  max_queue_delay_microseconds: 1000
+}}
+''',
+        encoding="utf-8",
+    )
+    return onnx_path
 
 
 def export_python_backend(

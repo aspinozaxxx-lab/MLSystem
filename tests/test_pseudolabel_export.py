@@ -7,7 +7,7 @@ from pathlib import Path
 from shapely.geometry import box, mapping
 
 from mlsystem.src.mlflow_adapter.api import MLFLOW_EXCLUDED_ARTIFACT_NAMES
-from mlsystem.src.pipeline.contracts import PostprocessResult
+from mlsystem.src.contracts.prediction import PostprocessResult
 from mlsystem.src.postprocessing.pseudolabel_export import export_pseudolabel_artifacts
 
 

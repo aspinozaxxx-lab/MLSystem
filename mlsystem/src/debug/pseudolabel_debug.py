@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 import torch
 
-from ..inference.scene_inference import run_synthetic_scene_inference
+from InferenceEngine.src.inference_engine.workers.scene_inference import run_synthetic_scene_inference
 from ..postprocessing.filtering import postprocess_vectorization_result
 from ..postprocessing.pseudolabel_export import export_pseudolabel_artifacts
 from ..postprocessing.vectorization import vectorize_probability_map

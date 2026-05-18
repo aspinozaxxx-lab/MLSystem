@@ -9,12 +9,11 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from mlsystem.src.storage.local_io import write_json
-from mlsystem.src.pipeline_runner.api import PipelineRunStore
-from mlsystem.src.pipeline.stages.context import StageContext
-from mlsystem.src.pipeline.stages.inventory_scenes import run as run_inventory_scenes
-from mlsystem.src.pipeline.stages.inference_engine_pipeline import _shared_run_dir_for_inference_engine, run as run_inference_engine_pipeline
-from mlsystem.src.pipeline.stages.prepare_dataset import run as run_prepare_dataset
-from mlsystem.src.pipeline.stages.report import StageFailure
+from mlsystem.src.train_pipeline.api import TrainPipelineRunStore
+from mlsystem.src.train_pipeline.stages.context import StageContext
+from mlsystem.src.train_pipeline.stages.inventory_scenes import run as run_inventory_scenes
+from mlsystem.src.train_pipeline.stages.prepare_dataset import run as run_prepare_dataset
+from mlsystem.src.train_pipeline.stages.report import StageFailure
 
 
 class PipelineStagesTests(unittest.TestCase):
@@ -84,9 +83,9 @@ class PipelineStagesTests(unittest.TestCase):
                     self._feature("scene_b.tif"),
                 ],
             }
-            with patch("mlsystem.src.pipeline.stages.prepare_dataset.load_config", return_value=SimpleNamespace(storage=SimpleNamespace(heavy_backend="local", s3_bucket="b"), known_data_roots=[])), \
-                patch("mlsystem.src.pipeline.stages.prepare_dataset.read_s3_text", return_value=json.dumps(annotation)), \
-                patch("mlsystem.src.pipeline.stages.prepare_dataset.raster_path_for_s3_key", side_effect=lambda _cfg, key: str(ctx.store.run_dir / Path(key).name)):
+            with patch("mlsystem.src.train_pipeline.stages.prepare_dataset.load_config", return_value=SimpleNamespace(storage=SimpleNamespace(heavy_backend="local", s3_bucket="b"), known_data_roots=[])), \
+                patch("mlsystem.src.train_pipeline.stages.prepare_dataset.read_s3_text", return_value=json.dumps(annotation)), \
+                patch("mlsystem.src.train_pipeline.stages.prepare_dataset.raster_path_for_s3_key", side_effect=lambda _cfg, key: str(ctx.store.run_dir / Path(key).name)):
                 report = run_prepare_dataset(ctx)
             self.assertEqual(report.status, "success")
             split_summary = json.loads((ctx.store.run_dir / "split_summary.json").read_text(encoding="utf-8"))
@@ -168,9 +167,9 @@ class PipelineStagesTests(unittest.TestCase):
                 "type": "FeatureCollection",
                 "features": [self._feature("scene_a.tif"), self._feature("scene_b.tif")],
             }
-            with patch("mlsystem.src.pipeline.stages.prepare_dataset.load_config", return_value=SimpleNamespace(storage=SimpleNamespace(heavy_backend="local", s3_bucket="b"), known_data_roots=[])), \
-                patch("mlsystem.src.pipeline.stages.prepare_dataset.read_s3_text", return_value=json.dumps(annotation)), \
-                patch("mlsystem.src.pipeline.stages.prepare_dataset.raster_path_for_s3_key", side_effect=lambda _cfg, key: str(ctx.store.run_dir / Path(key).name)):
+            with patch("mlsystem.src.train_pipeline.stages.prepare_dataset.load_config", return_value=SimpleNamespace(storage=SimpleNamespace(heavy_backend="local", s3_bucket="b"), known_data_roots=[])), \
+                patch("mlsystem.src.train_pipeline.stages.prepare_dataset.read_s3_text", return_value=json.dumps(annotation)), \
+                patch("mlsystem.src.train_pipeline.stages.prepare_dataset.raster_path_for_s3_key", side_effect=lambda _cfg, key: str(ctx.store.run_dir / Path(key).name)):
                 report = run_prepare_dataset(ctx)
             self.assertEqual(report.counters["split_strategy"], "legacy_75_25")
 
@@ -182,89 +181,13 @@ class PipelineStagesTests(unittest.TestCase):
                 "type": "FeatureCollection",
                 "features": [self._feature("scene_a.tif"), self._feature("scene_b.tif")],
             }
-            with patch("mlsystem.src.pipeline.stages.prepare_dataset.load_config", return_value=SimpleNamespace(storage=SimpleNamespace(heavy_backend="local", s3_bucket="b"), known_data_roots=[])), \
-                patch("mlsystem.src.pipeline.stages.prepare_dataset.read_s3_text", return_value=json.dumps(annotation)), \
-                patch("mlsystem.src.pipeline.stages.prepare_dataset.raster_path_for_s3_key", side_effect=lambda _cfg, key: str(ctx.store.run_dir / Path(key).name)):
+            with patch("mlsystem.src.train_pipeline.stages.prepare_dataset.load_config", return_value=SimpleNamespace(storage=SimpleNamespace(heavy_backend="local", s3_bucket="b"), known_data_roots=[])), \
+                patch("mlsystem.src.train_pipeline.stages.prepare_dataset.read_s3_text", return_value=json.dumps(annotation)), \
+                patch("mlsystem.src.train_pipeline.stages.prepare_dataset.raster_path_for_s3_key", side_effect=lambda _cfg, key: str(ctx.store.run_dir / Path(key).name)):
                 report = run_prepare_dataset(ctx)
             self.assertEqual(report.counters["split_strategy"], "object_balanced")
             split_summary = json.loads((ctx.store.run_dir / "split_summary.json").read_text(encoding="utf-8"))
             self.assertGreater(split_summary["val_objects"], 0)
-
-    def test_inference_engine_pipeline_submits_and_polls_http(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            ctx = self._context(
-                tmp,
-                pseudolabel={"enabled": True, "source": "inference_engine", "run_on": "dataset_scenes", "max_scenes": 2},
-            )
-            self._write_inventory(ctx)
-            self._write_inference_engine_compat_artifacts(ctx)
-            calls: list[dict[str, object]] = []
-
-            class FakeResponse:
-                def __init__(self, payload: dict) -> None:
-                    self.payload = json.dumps(payload).encode("utf-8")
-
-                def __enter__(self):
-                    return self
-
-                def __exit__(self, *_args):
-                    return None
-
-                def read(self) -> bytes:
-                    return self.payload
-
-            states = [
-                {"job_id": "job-unit", "status": "running", "metrics": {"tiles_done": 1}},
-                {
-                    "job_id": "job-unit",
-                    "status": "success",
-                    "metrics": {
-                        "tiles_total": 4,
-                        "tiles_done": 4,
-                        "blocks_total": 2,
-                        "blocks_done": 2,
-                        "triton_batches": 2,
-                        "streaming_overlap_sec": 1.5,
-                    },
-                    "artifacts": {"accepted_geojson": str(ctx.store.run_dir / "unit_stage.accepted.geojson")},
-                },
-            ]
-
-            def fake_urlopen(request, timeout=30):
-                method = request.get_method()
-                url = request.full_url
-                body = json.loads(request.data.decode("utf-8")) if getattr(request, "data", None) else None
-                calls.append({"method": method, "url": url, "body": body, "timeout": timeout})
-                if method == "POST" and url == "http://ie.local/api/v1/jobs":
-                    return FakeResponse({"job_id": "job-unit", "status": "queued"})
-                if method == "GET" and url == "http://ie.local/api/v1/jobs/job-unit":
-                    return FakeResponse(states.pop(0))
-                if method == "GET" and url == "http://ie.local/api/v1/jobs/job-unit/artifacts":
-                    return FakeResponse({"job_id": "job-unit", "artifacts": {"accepted_geojson": "ok"}})
-                raise AssertionError(f"unexpected request {method} {url}")
-
-            with patch.dict("os.environ", {"INFERENCE_ENGINE_API_URL": "http://ie.local", "INFERENCE_ENGINE_PIPELINE_POLL_SEC": "0"}), \
-                patch("urllib.request.urlopen", side_effect=fake_urlopen):
-                report = run_inference_engine_pipeline(ctx)
-
-            self.assertEqual(report.status, "success")
-            self.assertTrue((ctx.store.run_dir / "inference_manifest.json").exists())
-            self.assertTrue(any(call["method"] == "POST" and call["url"] == "http://ie.local/api/v1/jobs" for call in calls))
-            self.assertTrue(any(call["method"] == "GET" and call["url"] == "http://ie.local/api/v1/jobs/job-unit" for call in calls))
-            post_body = next(call["body"] for call in calls if call["method"] == "POST")
-            self.assertEqual(post_body["source"], "inference_engine")
-            self.assertEqual(len(post_body["scenes"]), 3)
-            self.assertEqual(report.details["inference_engine_api_url"], "http://ie.local")
-            self.assertEqual(report.details["inference_engine_job_id"], "job-unit")
-            self.assertTrue(report.details["request_submitted_via_http"])
-            self.assertEqual(report.counters["backend"], "inference_engine")
-            self.assertEqual(report.counters["inference_engine_http_submitted"], 1)
-
-    def test_inference_engine_payload_uses_shared_pipeline_run_path(self) -> None:
-        mapped = _shared_run_dir_for_inference_engine(Path("/data/mlsystem/runs/unit_run"))
-        self.assertEqual(mapped, Path("/data/mlsystem/runs/unit_run"))
-        unchanged = _shared_run_dir_for_inference_engine(Path("/tmp/unit_run"))
-        self.assertEqual(unchanged, Path("/tmp/unit_run"))
 
     def _context(
         self,
@@ -290,13 +213,13 @@ class PipelineStagesTests(unittest.TestCase):
             preprocess=preprocess,
             pseudolabel=pseudolabel,
         )
-        store = PipelineRunStore(Path(tmp), "manual__unit", {"experiment_id": "unit_stage"})
+        store = TrainPipelineRunStore(Path(tmp), "manual__unit", {"experiment_id": "unit_stage"})
         raw_conf = {"experiment_id": "unit_stage", "annotations": dict(annotations), "preprocess": dict(preprocess), "pseudolabel": dict(pseudolabel)}
         return StageContext("unit_stage", "manual__unit", conf, raw_conf, Path(tmp), store, logging.getLogger("test"))
 
     def _inventory_patches(self, images: list[dict], scenes_text: str):
         return patch.multiple(
-            "mlsystem.src.pipeline.stages.inventory_scenes",
+            "mlsystem.src.train_pipeline.stages.inventory_scenes",
             load_config=lambda: SimpleNamespace(),
             build_s3_layout_status=lambda _cfg: {"ok": True},
             list_s3_objects=lambda _cfg, _uri, suffixes=None: images,
@@ -331,21 +254,9 @@ class PipelineStagesTests(unittest.TestCase):
         write_json(ctx.store.run_dir / "scene_matching_report.json", {"matched_count": len(matched), "matched": matched})
         (ctx.store.run_dir / "matched_scenes.txt").write_text("\n".join(item["entry"] for item in matched) + "\n", encoding="utf-8")
 
-    def _write_inference_engine_compat_artifacts(self, ctx: StageContext) -> None:
-        write_json(ctx.store.run_dir / "coverage_report.json", {"scenes_processed": 2, "scenes_failed": 0, "total_predicted_windows": 4})
-        write_json(ctx.store.run_dir / "pseudolabel_summary.json", {"metrics": {"accepted_objects": 1}})
-        write_json(ctx.store.run_dir / "postprocess_summary.json", {"final_objects": 1})
-        write_json(ctx.store.run_dir / "vectorization_summary.json", {"blocks_total": 2, "blocks_done": 2})
-        write_json(ctx.store.run_dir / "pseudolabel_scene_results_manifest.json", {"scenes": ["scene_a.tif", "scene_b.tif"]})
-        write_json(ctx.store.run_dir / "inference_timing_report.json", {"streaming_overlap_sec": 1.5})
-        (ctx.store.run_dir / "pseudolabel_scenes.txt").write_text("scene_a.tif\nscene_b.tif\n", encoding="utf-8")
-        (ctx.store.run_dir / "prediction_examples.html").write_text("<html></html>", encoding="utf-8")
-        (ctx.store.run_dir / "accepted.geojson.gz").write_bytes(b"gz")
-        (ctx.store.run_dir / "unit_stage.accepted.geojson").write_text('{"type":"FeatureCollection","features":[]}', encoding="utf-8")
-
     def _prepare_dataset_patches(self, ctx: StageContext, annotation: dict):
         return patch.multiple(
-            "mlsystem.src.pipeline.stages.prepare_dataset",
+            "mlsystem.src.train_pipeline.stages.prepare_dataset",
             load_config=lambda: SimpleNamespace(storage=SimpleNamespace(heavy_backend="local", s3_bucket="b"), known_data_roots=[]),
             read_s3_text=lambda _cfg, _uri: json.dumps(annotation),
             raster_path_for_s3_key=lambda _cfg, key: str(ctx.store.run_dir / Path(key).name),

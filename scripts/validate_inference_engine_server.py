@@ -17,6 +17,7 @@ from typing import Any
 DEFAULT_RUN_ID = "a7838f91528a47e1931b685c2ea06686"
 DEFAULT_MODEL = "segformer_b2"
 STATUS_ROOT = Path("/data/mlsystem/runs")
+PSEUDOLABEL_STATUS_ROOT = Path("/data/mlsystem/pseudolabel-runs")
 REQUIRED_ARTIFACTS = [
     "accepted.geojson.gz",
     "coverage_report.json",
@@ -164,48 +165,53 @@ def _run_two_scene_via_pipeline(
     run_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(manifest, run_dir / "inference_manifest.json")
     _make_tree_container_writable(run_dir)
-    config = _mlsystem_config(experiment_id, max_scenes=2)
-    config["run_id"] = run_id
-    config["pipeline"] = {"stages": ["inference_engine_pipeline"], "stop_on_failure": True, "dry_run": False, "log_mlflow": False}
-    (run_dir / "pipeline_trace.json").write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
-    created = _submit_pipeline_run(mlsystem_api=mlsystem_api, token=mlsystem_token, trace=config)
+    request = {
+        "run_id": run_id,
+        "experiment_id": experiment_id,
+        "model_ref": DEFAULT_RUN_ID,
+        "images_uri": "s3://mlsystems/images/",
+        "layout_uri": "s3://mlsystems/layouts/deforest/",
+        "scenes": _manifest_scene_names(manifest, limit=2),
+    }
+    (run_dir / "pseudolabel_request.json").write_text(json.dumps(request, ensure_ascii=False, indent=2), encoding="utf-8")
+    created = _submit_pseudolabel_run(mlsystem_api=mlsystem_api, token=mlsystem_token, request=request)
     samples: list[dict[str, Any]] = []
     deadline = time.time() + timeout_sec
     final: dict[str, Any] = {}
     while time.time() < deadline:
-        snapshot = _safe_get_json(mlsystem_api + f"/api/v1/pipeline-runs/{run_id}", token=mlsystem_token)
+        snapshot = _safe_get_json(mlsystem_api + f"/api/v1/pseudolabel-runs/{run_id}", token=mlsystem_token)
         samples.append(
             {
                 "at": datetime.now(timezone.utc).isoformat(),
-                "pipeline": snapshot,
+                "pseudolabel_run": snapshot,
                 "rabbitmq": _rabbitmq_queues(),
                 "gpu": _nvidia_smi(),
                 "docker_stats": _docker_stats(),
             }
         )
-        print(f"Pipeline run {run_id} state={snapshot.get('state')} progress={snapshot.get('progress_percent')}", flush=True)
+        print(f"Pseudolabel run {run_id} state={snapshot.get('state')} progress={snapshot.get('progress_percent')}", flush=True)
         if snapshot.get("state") in {"succeeded", "failed", "cancelled"}:
             final = snapshot
             break
         time.sleep(20)
     if not final:
-        raise TimeoutError(f"Pipeline run {run_id} did not finish in {timeout_sec}s")
+        raise TimeoutError(f"Pseudolabel run {run_id} did not finish in {timeout_sec}s")
     if final.get("state") != "succeeded":
-        raise RuntimeError(f"Pipeline run {run_id} failed: {final}")
-    summary_path = run_dir / "summary.json"
-    stage_report = _read_json(run_dir / "stages" / "inference_engine_pipeline.json", default={}) or {}
-    artifacts = _check_run_dir_artifacts(run_dir, experiment_id)
-    ie_job = ((stage_report.get("stage_report") or {}).get("details") or {}).get("inference_engine_job") or (stage_report.get("details") or {}).get("inference_engine_job") or {}
+        raise RuntimeError(f"Pseudolabel run {run_id} failed: {final}")
+    pseudolabel_dir = PSEUDOLABEL_STATUS_ROOT / run_id
+    summary_path = pseudolabel_dir / "summary.json"
+    artifacts = _check_run_dir_artifacts(pseudolabel_dir, experiment_id)
+    summary = _read_json(summary_path, default={}) or final.get("summary") or {}
+    ie_job = summary.get("inference_engine_job") or {}
     return {
         "run_id": run_id,
         "experiment_id": experiment_id,
         "status": "success",
-        "validation_mode": "pipeline_runner",
-        "pipeline_run": final,
-        "pipeline_created": created,
-        "run_dir": str(run_dir),
-        "summary": _read_json(summary_path, default={}),
-        "stage_report": stage_report,
+        "validation_mode": "inference_pipeline",
+        "pseudolabel_run": final,
+        "pseudolabel_created": created,
+        "run_dir": str(pseudolabel_dir),
+        "summary": summary,
         "artifacts_checked": artifacts,
         "inference_engine_job": ie_job,
         "samples": _compact_samples(samples),
@@ -223,41 +229,13 @@ def _run_two_scene_via_mlsystem_api(
     mlsystem_token: str,
     timeout_sec: int,
 ) -> dict[str, Any]:
-    started = int(time.time())
-    experiment_id = f"ie_real_2_{started}"
-    run_id = experiment_id
-    run_dir = STATUS_ROOT / run_id
-    run_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(manifest, run_dir / "inference_manifest.json")
-    _make_tree_container_writable(run_dir)
-    config = _mlsystem_config(experiment_id, max_scenes=2)
-    stage_results = []
-    for stage in ["inference_engine_pipeline"]:
-        stage_results.append(
-            _run_mlsystem_stage(
-                mlsystem_api=mlsystem_api,
-                token=mlsystem_token,
-                run_id=run_id,
-                stage=stage,
-                config=config,
-                timeout_sec=timeout_sec,
-            )
-        )
-    summary_path = run_dir / "summary.json"
-    artifacts = _check_run_dir_artifacts(run_dir, experiment_id)
-    ie_job = ((stage_results[0].get("report") or {}).get("details") or {}).get("inference_engine_job") or {}
-    return {
-        "run_id": run_id,
-        "experiment_id": experiment_id,
-        "status": "success",
-        "stage_results": stage_results,
-        "run_dir": str(run_dir),
-        "summary": _read_json(summary_path, default={}),
-        "artifacts_checked": artifacts,
-        "inference_engine_job": ie_job,
-        "queues_after": _safe_get_json(api + "/queues", token=ie_token),
-        "metrics_after": _safe_get_json(api + "/metrics", token=ie_token),
-    }
+    return _run_two_scene_via_pipeline(
+        mlsystem_api=mlsystem_api,
+        manifest=manifest,
+        mlsystem_token=mlsystem_token,
+        ie_token=ie_token,
+        timeout_sec=timeout_sec,
+    )
 
 
 def _run_direct_ie_job(
@@ -335,49 +313,8 @@ def _cancel_stale_validation_jobs(api: str, token: str) -> dict[str, Any]:
     return {"jobs_seen": len(jobs or {}), "cancelled": cancelled}
 
 
-def _run_mlsystem_stage(*, mlsystem_api: str, token: str, run_id: str, stage: str, config: dict[str, Any], timeout_sec: int) -> dict[str, Any]:
-    request = {"experiment_config": config, "pipeline_run_id": run_id, "status_root": str(STATUS_ROOT), "source": "ci-server-validation"}
-    started = _post_json(mlsystem_api + f"/api/v1/runs/{run_id}/stages/{stage}/start", request, token=token)
-    job_id = started["job_id"]
-    deadline = time.time() + timeout_sec
-    while time.time() < deadline:
-        status = _get_json(mlsystem_api + f"/api/v1/jobs/{job_id}", token=token)
-        print(f"MLSystem stage {stage} job={job_id} state={status.get('state')}", flush=True)
-        if status.get("state") in {"succeeded", "failed", "cancelled", "timed_out"}:
-            if status.get("state") != "succeeded":
-                raise RuntimeError(f"MLSystem stage {stage} failed: {status}")
-            return status
-        time.sleep(10)
-    raise TimeoutError(f"MLSystem stage {stage} did not finish in {timeout_sec}s")
-
-
-def _submit_pipeline_run(*, mlsystem_api: str, token: str, trace: dict[str, Any], dry_run: bool = False) -> dict[str, Any]:
-    return _post_json(mlsystem_api.rstrip("/") + "/api/v1/pipeline-runs", {"trace": trace, "dry_run": dry_run}, token=token)
-
-
-def _mlsystem_config(experiment_id: str, *, max_scenes: int) -> dict[str, Any]:
-    return {
-        "schema_version": 1,
-        "experiment_id": experiment_id,
-        "task": "train_predict_pseudolabel",
-        "smoke": False,
-        "images_uri": "s3://mlsystems/images/",
-        "layout_uri": "s3://mlsystems/layouts/deforest/",
-        "model": {"mlflow_run_id": DEFAULT_RUN_ID, "model_name": DEFAULT_MODEL, "architecture": DEFAULT_MODEL},
-        "train": {"enabled": False},
-        "predict": {"enabled": False},
-        "preprocess": {"patch_size": 1024, "stride": 768, "input_bands": [1, 2, 3, 4]},
-        "inference": {"triton_model_name": DEFAULT_MODEL, "triton_batch_size": 8, "batches_ahead": 8, "max_scenes_inflight": 2},
-        "pseudolabel": {
-            "enabled": True,
-            "source": "inference_engine",
-            "mlflow_run_id": DEFAULT_RUN_ID,
-            "triton_model_name": DEFAULT_MODEL,
-            "max_scenes": max_scenes,
-            "vectorization": {"threshold": 0.5, "core_size_px": 4096, "halo_px": 512, "local_min_area": 0, "final_min_area": 0, "merge_epsilon": 1.0},
-        },
-        "postprocess": {"threshold": 0.5, "min_area_m2": 0, "simplify_tolerance_m": 0},
-    }
+def _submit_pseudolabel_run(*, mlsystem_api: str, token: str, request: dict[str, Any]) -> dict[str, Any]:
+    return _post_json(mlsystem_api.rstrip("/") + "/api/v1/pseudolabel-runs", request, token=token)
 
 
 def _ie_payload(experiment_id: str, manifest: Path, *, max_scenes: int, resource: dict[str, Any]) -> dict[str, Any]:
@@ -420,9 +357,8 @@ def _assert_success(summary: dict[str, Any]) -> None:
         raise RuntimeError(f"InferenceEngine OpenAPI is missing endpoints: {missing_endpoints}")
     stages = _first_successful_payload(summary.get("mlsystem_stages_after"), summary.get("mlsystem_stages"))
     main_stages = set(stages.get("pipeline_stages") or [])
-    if "inference_engine_pipeline" not in main_stages:
-        raise RuntimeError(f"mlsystem-api /api/v1/stages does not expose inference_engine_pipeline: {stages}")
     old_stages = {
+        "inference_engine_pipeline",
         "prepare_inference_scenes",
         "run_pseudolabel_inference",
         "validate_probability_maps",
@@ -482,47 +418,7 @@ def _export_model_via_compose(model: str) -> str:
 if [ -f /opt/mlsystem-scripts/export_mlflow_run_to_triton.py ]; then
   python /opt/mlsystem-scripts/export_mlflow_run_to_triton.py --run-id {DEFAULT_RUN_ID} --repository /data/mlsystem/triton/model_repository --triton-model-name {model} --model-name {model} --input-bands 4 --tile-size 1024 --max-batch-size 8 --backend onnx
 else
-  python - <<'PY'
-import subprocess
-from pathlib import Path
-from src.mlflow_adapter.api import download_run_artifacts, get_run, list_artifact_paths, search_child_runs
-from src.inference.triton_export import export_segmentation_checkpoint_to_onnx
-
-run_id = "{DEFAULT_RUN_ID}"
-local_dir = download_run_artifacts(None, run_id)
-candidates = []
-for suffix in ("*.pt", "*.pth", "*.ckpt"):
-    candidates.extend(local_dir.rglob(suffix))
-if not candidates:
-    run = get_run(None, run_id)
-    for child in search_child_runs(None, run.info.experiment_id, run_id, max_results=200):
-        child_dir = download_run_artifacts(None, child.info.run_id)
-        for suffix in ("*.pt", "*.pth", "*.ckpt"):
-            candidates.extend(child_dir.rglob(suffix))
-    if not candidates:
-        roots = [Path("/data/mlsystem/models"), Path("/data/mlsystem/artifacts"), Path("/data/mlsystem/mlflow"), Path("/data/mlsystem/minio")]
-        for root in roots:
-            if not root.exists():
-                continue
-            try:
-                output = subprocess.check_output(f"find {{root}} -type f \\( -name '*.pt' -o -name '*.pth' -o -name '*.ckpt' \\) 2>/dev/null | head -2000", shell=True, text=True, timeout=120)
-            except Exception:
-                continue
-            candidates.extend(Path(line.strip()) for line in output.splitlines() if line.strip())
-    if not candidates:
-        raise RuntimeError(f"No checkpoint artifact found for MLflow run {{run_id}}. Top-level artifacts: {{list_artifact_paths(None, run_id)}}")
-preferred = [path for path in candidates if "best" in path.name.lower() or "checkpoint" in path.name.lower()]
-checkpoint = sorted(preferred or candidates, key=lambda item: ((100 if run_id[:12].lower() in str(item).lower() else 0) + (30 if "b2" in str(item).lower() or "segformer" in str(item).lower() else 0), item.stat().st_mtime if item.exists() else 0), reverse=True)[0]
-print(export_segmentation_checkpoint_to_onnx(
-    checkpoint_path=checkpoint,
-    model_name="{model}",
-    output_repository=Path("/data/mlsystem/triton/model_repository"),
-    triton_model_name="{model}",
-    input_bands=4,
-    tile_size=1024,
-    max_batch_size=8,
-))
-PY
+  python /opt/mlsystem/repo/scripts/export_mlflow_run_to_triton.py --run-id {DEFAULT_RUN_ID} --repository /data/mlsystem/triton/model_repository --triton-model-name {model} --model-name {model} --input-bands 4 --tile-size 1024 --max-batch-size 8 --backend onnx
 fi"""
     cmd = f"{compose} exec -T mlsystem-api bash -lc {shlex.quote(shell_script)}"
     try:
@@ -582,6 +478,20 @@ def _resolve_manifest(value: str) -> Path:
 def _manifest_scene_count(path: Path) -> int:
     payload = _read_json(path, default={}) or {}
     return len(payload.get("scenes") or payload.get("scene_results") or [])
+
+
+def _manifest_scene_names(path: Path, *, limit: int) -> list[str]:
+    payload = _read_json(path, default={}) or {}
+    scenes = payload.get("scenes") or payload.get("scene_results") or []
+    names: list[str] = []
+    for item in scenes[:limit]:
+        if isinstance(item, dict):
+            value = item.get("entry") or item.get("name") or item.get("scene") or item.get("scene_id")
+        else:
+            value = item
+        if value:
+            names.append(str(value))
+    return names
 
 
 def _check_run_dir_artifacts(run_dir: Path, experiment_id: str) -> dict[str, Any]:

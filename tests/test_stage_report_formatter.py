@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import unittest
 
-from mlsystem.src.pipeline.stage_report_formatter import compact_xcom_summary, format_stage_report, path_views
+from mlsystem.src.train_pipeline.stage_report_formatter import compact_xcom_summary, format_stage_report, path_views
 
 
 class StageReportFormatterTests(unittest.TestCase):

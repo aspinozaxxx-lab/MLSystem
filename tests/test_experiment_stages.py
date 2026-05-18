@@ -5,8 +5,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from mlsystem.src.pipeline.experiment_stages import run_stage
-from mlsystem.src.pipeline_runner.api import PipelineRunStore, parse_pipeline_run_config
+from mlsystem.src.train_pipeline.experiment_stages import run_stage
+from mlsystem.src.train_pipeline.api import TrainPipelineRunStore, parse_pipeline_run_config
 
 
 class ExperimentStagesTests(unittest.TestCase):
@@ -20,9 +20,9 @@ class ExperimentStagesTests(unittest.TestCase):
                 "mlflow": {"run_id": "mlflow-run-1", "experiment_id": "40"},
             }
             conf = parse_pipeline_run_config({"experiment_id": "unit", "train": {"enabled": True}})
-            store = PipelineRunStore(Path(tmp), "unit_run", conf)
+            store = TrainPipelineRunStore(Path(tmp), "unit_run", conf)
 
-            with patch("mlsystem.src.pipeline.experiment_stages._run_training_pipeline", return_value=training_result):
+            with patch("mlsystem.src.train_pipeline.experiment_stages._run_training_pipeline", return_value=training_result):
                 payload = run_stage("train_model", conf, store)
 
             self.assertEqual(payload["status"], "success")

@@ -6,7 +6,7 @@ from pathlib import Path
 
 class NoAirflowDependencyTests(unittest.TestCase):
     def test_new_runner_and_api_do_not_import_removed_stage_wrapper(self) -> None:
-        files = list(Path("mlsystem/src/pipeline_runner").glob("*.py")) + [
+        files = list(Path("mlsystem/src/train_pipeline").glob("*.py")) + [
             Path("mlsystem/src/api/app.py"),
         ]
         for path in files:
@@ -14,8 +14,8 @@ class NoAirflowDependencyTests(unittest.TestCase):
             self.assertNotIn("pipeline.airflow_tasks", text, path)
             self.assertNotIn("airflow_tasks", text, path)
 
-    def test_pipeline_runner_package_has_no_airflow_terms(self) -> None:
-        for path in Path("mlsystem/src/pipeline_runner").glob("*.py"):
+    def test_train_pipeline_package_has_no_airflow_terms(self) -> None:
+        for path in Path("mlsystem/src/train_pipeline").glob("*.py"):
             text = path.read_text(encoding="utf-8").lower()
             self.assertNotIn("airflow", text, path)
 

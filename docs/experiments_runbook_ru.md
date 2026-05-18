@@ -2,7 +2,7 @@
 
 ## Контур запуска
 
-Эксперименты запускаются через `mlsystem-api` и `pipeline_runner`.
+Эксперименты запускаются через `mlsystem-api` и `train_pipeline`.
 Airflow для tuning/loader smoke не используется.
 
 Основной поток:
@@ -104,9 +104,9 @@ curl -fsS http://127.0.0.1:8088/api/v1/pipeline-runs/<run_id>/stages \
 ## Запуск через CLI
 
 ```bash
-python -m mlsystem.src.pipeline_runner.cli run --trace trace.yaml
-python -m mlsystem.src.pipeline_runner.cli status --run-id <run_id>
-python -m mlsystem.src.pipeline_runner.cli log --run-id <run_id>
+python -m mlsystem.src.train_pipeline.cli run --trace trace.yaml
+python -m mlsystem.src.train_pipeline.cli status --run-id <run_id>
+python -m mlsystem.src.train_pipeline.cli log --run-id <run_id>
 ```
 
 CLI удобен для локальной отладки. Серверные tuning runs предпочтительно запускать через API, чтобы состояние было видно в общем run store.

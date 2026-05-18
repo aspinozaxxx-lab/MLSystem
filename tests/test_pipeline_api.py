@@ -9,7 +9,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from mlsystem.src.api.app import app
-from mlsystem.src.pipeline_runner.api import PipelineRun, PipelineRunConfig, PipelineRunStore
+from mlsystem.src.train_pipeline.api import PipelineRun, PipelineRunConfig, TrainPipelineRunStore
 
 
 class PipelineApiTests(unittest.TestCase):
@@ -23,8 +23,7 @@ class PipelineApiTests(unittest.TestCase):
                     "updated_at": "2026-01-01T00:00:00+00:00",
                 }
             )
-            with patch("mlsystem.src.api.app.PipelineRunner") as runner_cls:
-                runner_cls.return_value.start_run.return_value = run
+            with patch("mlsystem.src.api.app.start_train_pipeline_run", return_value=run):
                 response = TestClient(app).post(
                     "/api/v1/pipeline-runs",
                     headers={"Authorization": "Bearer token"},
@@ -36,7 +35,7 @@ class PipelineApiTests(unittest.TestCase):
 
     def test_status_log_stages_and_cancel_endpoints(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"MLSYSTEM_RUN_ROOT": tmp, "MLSYSTEM_API_TOKEN": "token"}, clear=False):
-            store = PipelineRunStore(Path(tmp))
+            store = TrainPipelineRunStore(Path(tmp))
             store.create_run(PipelineRunConfig.model_validate({"run_id": "api_status", "experiment_id": "api_unit", "pipeline": {"stages": ["inventory_scenes"], "dry_run": True}}))
             store.append_log("api_status", "line1\n")
             store.write_stage_report("api_status", "inventory_scenes", {"status": "success", "summary": "ok"})

@@ -4,7 +4,7 @@ import unittest
 
 import numpy as np
 
-from mlsystem.src.inference.probability_map import ProbabilityMapAccumulator, ProbabilityMapConfig, coverage_stats
+from InferenceEngine.src.inference_engine.probability.map import ProbabilityMapAccumulator, ProbabilityMapConfig, coverage_stats
 from InferenceEngine.src.inference_engine.tiling.windows import window_grid
 
 

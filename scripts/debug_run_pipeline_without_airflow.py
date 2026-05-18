@@ -10,7 +10,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from mlsystem.src.pipeline_runner.api import PipelineRunStore, PipelineRunner, load_trace_file
+from mlsystem.src.train_pipeline.api import TrainPipelineRunStore, TrainPipelineRunner, load_trace_file
 
 
 def main() -> int:
@@ -21,8 +21,8 @@ def main() -> int:
     parser.add_argument("--poll-sec", type=float, default=2.0)
     args = parser.parse_args()
 
-    store = PipelineRunStore(args.run_root)
-    runner = PipelineRunner(store)
+    store = TrainPipelineRunStore(args.run_root)
+    runner = TrainPipelineRunner(store)
     run = runner.start_run(load_trace_file(args.trace), source="debug-script")
     print(json.dumps(run.model_dump(), ensure_ascii=False, indent=2, sort_keys=True, default=str))
     if not args.wait:

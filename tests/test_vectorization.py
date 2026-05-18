@@ -5,7 +5,7 @@ import unittest
 import numpy as np
 from rasterio.transform import from_origin
 
-from mlsystem.src.pipeline.contracts import ProbabilityMap
+from mlsystem.src.contracts.prediction import ProbabilityMap
 from mlsystem.src.postprocessing.vectorization import vectorize_probability_map
 
 

@@ -1,6 +1,6 @@
 # InferenceEngine
 
-InferenceEngine is a separate FastAPI service for pseudolabel inference. The MLSystem pipeline runner calls its API and receives ready artifacts instead of running pseudolabel domain logic inside `mlsystem`.
+InferenceEngine is a separate FastAPI service for pseudolabel inference. MLSystem `inference_pipeline` calls its API and receives ready artifacts instead of running pseudolabel domain logic inside `mlsystem`.
 
 ## Architecture
 
@@ -110,11 +110,11 @@ The finalizer writes the pipeline compatibility artifact names into `run_dir`. R
 
 Prometheus metrics include job status counters, active jobs, tiles/blocks done, Triton batch totals and latency, streaming overlap, spool bytes, preprocess pause/resume counters, per-queue ready/unacked/consumer counts, and dead-letter depth.
 
-## Pipeline Runner Integration
+## MLSystem Integration
 
-The MLSystem runner does not model internal InferenceEngine stages. The only pseudolabel stage is `inference_engine_pipeline`; it calls `POST /api/v1/jobs`, polls `GET /api/v1/jobs/{job_id}`, reads `GET /api/v1/jobs/{job_id}/artifacts`, and validates the final artifacts in the pipeline run directory.
+MLSystem does not model internal InferenceEngine stages. `inference_pipeline` calls `POST /api/v1/jobs`, polls `GET /api/v1/jobs/{job_id}`, reads `GET /api/v1/jobs/{job_id}/artifacts`, and records the final artifact payload.
 
-For production runs, `mlsystem-api` passes `/data/mlsystem/runs/<run_id>` as `run_dir`, so InferenceEngine writes compatibility artifacts directly where validators and summary stages expect them.
+For production runs, `mlsystem-api` delegates to `inference_pipeline`, which passes a pseudolabel run directory as `run_dir`.
 
 The InferenceEngine job itself fans out through RabbitMQ queues and worker containers. Stage transitions are visible through job events and queue metrics.
 

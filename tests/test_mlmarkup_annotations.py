@@ -5,9 +5,9 @@ import unittest
 from pathlib import Path
 
 from mlsystem.src.mlflow_adapter.api import _is_excluded_metric_key
-from mlsystem.src.pipeline.experiment_stages import _build_pipeline_job
-from mlsystem.src.pipeline_runner.api import parse_pipeline_run_config
-from mlsystem.src.pipeline_runner.config import _git_output
+from mlsystem.src.train_pipeline.experiment_stages import _build_pipeline_job
+from mlsystem.src.train_pipeline.api import parse_pipeline_run_config
+from mlsystem.src.train_pipeline.config import _git_output
 from mlsystem.src.pipeline_config import PipelineConfig
 from mlsystem.src.storage.s3 import find_layout_files, read_s3_text
 

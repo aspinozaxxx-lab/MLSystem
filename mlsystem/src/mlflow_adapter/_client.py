@@ -678,7 +678,7 @@ def mlflow_tuning_metadata(params: dict[str, Any] | None) -> tuple[dict[str, str
         "validation.",
         "mlmarkup.",
         "tile_preparation.",
-        "pipeline_runner.",
+        "train_pipeline.",
         "validity.",
         "checkpoint.",
     )

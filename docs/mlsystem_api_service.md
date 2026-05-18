@@ -1,6 +1,6 @@
 # MLSystem API Service
 
-`mlsystem-api` is the production pipeline execution endpoint used by the MLSystem pipeline runner and frontend tools. It owns MLSystem orchestration, run persistence, training dispatch, MLflow lifecycle, dataset preparation, and metric summaries. It does not own pseudolabel inference domain logic.
+`mlsystem-api` is the production execution endpoint used by MLSystem train/pseudolabel orchestration and frontend tools. It owns API auth/request handling and delegates training orchestration to `train_pipeline` and pseudolabel orchestration to `inference_pipeline`.
 
 ## Endpoints
 
@@ -13,6 +13,10 @@
 | `GET /api/v1/pipeline-runs/{run_id}` | Returns run status, progress, stages, artifacts, MLflow info, and log tail. |
 | `GET /api/v1/pipeline-runs/{run_id}/log` | Returns the current pipeline log tail. |
 | `POST /api/v1/pipeline-runs/{run_id}/cancel` | Requests cancellation before the next stage. |
+| `POST /api/v1/pseudolabel-runs` | Starts a pseudolabel run through `inference_pipeline`. |
+| `GET /api/v1/pseudolabel-runs/{run_id}` | Returns pseudolabel run status. |
+| `GET /api/v1/pseudolabel-runs/{run_id}/log` | Returns the current pseudolabel log tail. |
+| `POST /api/v1/pseudolabel-runs/{run_id}/cancel` | Requests pseudolabel run cancellation. |
 | `POST /api/v1/runs/{run_id}/stages/{stage}/start` | Creates a persisted API job for a stage. |
 | `GET /api/v1/jobs/{job_id}` | Returns job state, stage report, artifacts, and error details. |
 | `GET /api/v1/runs/{run_id}/summary` | Reads run summary from status artifacts. |
@@ -20,13 +24,7 @@
 
 ## Pseudolabel Boundary
 
-The production pseudolabel stage is:
-
-```text
-inference_engine_pipeline
-```
-
-It is implemented by `mlsystem.src.pipeline.stages.inference_engine_pipeline.run` and calls InferenceEngine over HTTP:
+Pseudolabel runs are implemented by `mlsystem.src.inference_pipeline.api` and call InferenceEngine over HTTP:
 
 ```text
 POST /api/v1/jobs
@@ -34,22 +32,15 @@ GET  /api/v1/jobs/{job_id}
 GET  /api/v1/jobs/{job_id}/artifacts
 ```
 
-The stage report records:
+The run summary records:
 
 - `inference_engine_api_url`
 - `inference_engine_job_id`
 - `inference_engine_status_url`
 - `source=inference_engine`
-- `request_submitted_via_http=true`
+- `submitted_via=inference_pipeline`
 
-The old internal pseudolabel stages are no longer production stages and should not appear in `/api/v1/stages` production output:
-
-- `prepare_inference_scenes`
-- `run_pseudolabel_inference`
-- `validate_probability_maps`
-- `vectorize_pseudolabel`
-- `postprocess_pseudolabel`
-- `export_pseudolabel_artifacts`
+The old internal pseudolabel stages are no longer production stages and should not appear in `/api/v1/stages` output.
 
 ## Required Environment
 

@@ -4,9 +4,9 @@ import json
 import shutil
 from pathlib import Path
 
-from mlsystem.src.pipeline_runner.api import StageJobRunner as JobRunner
-from mlsystem.src.pipeline_runner.api import StageJobStore as JobStore
-from mlsystem.src.pipeline_runner.api import StageStartRequest, stages_payload, start_stage
+from mlsystem.src.train_pipeline.api import StageJobRunner as JobRunner
+from mlsystem.src.train_pipeline.api import StageJobStore as JobStore
+from mlsystem.src.train_pipeline.api import StageStartRequest, stages_payload, start_stage
 
 
 def main() -> int:

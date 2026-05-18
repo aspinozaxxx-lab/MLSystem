@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from mlsystem.src.pipeline.stages.report import StageCheck, StageReport
+from mlsystem.src.train_pipeline.stages.report import StageCheck, StageReport
 
 
 class StageReportTests(unittest.TestCase):

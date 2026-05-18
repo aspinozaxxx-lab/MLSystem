@@ -40,7 +40,7 @@ from mlsystem.src.train.api import list_supported_models, train_model
 
 - `train` не подготавливает dataset input и split. Это зона `dataset_preparing`.
 - `train` не создает tile datasets, dataloaders и augmentation. Это зона `tile_preparation`.
-- `train` не запускает pipeline lifecycle, не пишет run/status/stage файлы и не владеет orchestration. Это зона `pipeline_runner`.
-- `train` не импортирует и не вызывает MLflow. Он возвращает payload, который логирует `pipeline_runner` через `mlflow_adapter`.
+- `train` не запускает pipeline lifecycle, не пишет run/status/stage файлы и не владеет orchestration. Это зона `train_pipeline`.
+- `train` не импортирует и не вызывает MLflow. Он возвращает payload, который логирует `train_pipeline` через `mlflow_adapter`.
 - `train` не выполняет pseudolabeling, inference, vectorization и postprocess.
-- `train` не импортирует FastAPI и pipeline runner internals.
+- `train` не импортирует FastAPI и `train_pipeline` internals.

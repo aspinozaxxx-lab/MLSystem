@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from mlsystem.src.pipeline_runner.api import (
+from mlsystem.src.train_pipeline.api import (
     StageJobRunner as JobRunner,
     StageJobStore as JobStore,
     StageStartRequest,
@@ -21,9 +21,9 @@ class ApiStageRoutesTests(unittest.TestCase):
     def test_stages_payload_contains_main_stages(self) -> None:
         payload = stages_payload()
         self.assertIn("inventory_scenes", payload["pipeline_stages"])
-        self.assertIn("inference_engine_pipeline", payload["pipeline_stages"])
+        self.assertIn("train_model", payload["pipeline_stages"])
+        self.assertNotIn("inference_engine_pipeline", payload["pipeline_stages"])
         self.assertNotIn("run_pseudolabel_inference", payload["pipeline_stages"])
-        self.assertNotIn("prepare_inference_scenes", payload["registry_stages"])
         self.assertEqual(payload["aliases"]["inventory"], "inventory_scenes")
 
     def test_unknown_stage_fails_validation(self) -> None:
@@ -38,20 +38,6 @@ class ApiStageRoutesTests(unittest.TestCase):
             self.assertEqual(response.state, "succeeded")
             status = runner.store.read_job(response.job_id)
             self.assertEqual(status.state, "succeeded")
-
-    def test_debug_sync_failed_stage_returns_failed_job(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            store = JobStore(Path(tmp) / "jobs")
-            request = StageStartRequest(
-                experiment_config={
-                    "experiment_id": "unit_api_failure",
-                    "pseudolabel": {"enabled": True, "source": "inference_engine", "run_on": "explicit_scene_list", "scene_list": ["missing.tif"]},
-                },
-                status_root=str(Path(tmp) / "status"),
-            )
-            status = debug_run_stage_sync("unit_api_failure", "inference_engine_pipeline", request, store)
-            self.assertEqual(status.state, "failed")
-            self.assertIn("missing", status.error.message.lower())
 
     def test_debug_sync_inventory_missing_scene_persists_report_and_missing_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -69,7 +55,7 @@ class ApiStageRoutesTests(unittest.TestCase):
             )
             images = [{"bucket": "b", "key": "images/scene_a.tif", "name": "scene_a.tif", "size": 1}]
             with patch.multiple(
-                "mlsystem.src.pipeline.stages.inventory_scenes",
+                "mlsystem.src.train_pipeline.stages.inventory_scenes",
                 load_config=lambda: SimpleNamespace(),
                 build_s3_layout_status=lambda _cfg: {"ok": True},
                 list_s3_objects=lambda _cfg, _uri, suffixes=None: images,

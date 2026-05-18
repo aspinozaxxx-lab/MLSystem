@@ -17,22 +17,15 @@ Source of truth for pseudolabel domain logic is now under `InferenceEngine/src/i
 | `mlsystem/src/postprocessing/thresholding.py` | `postprocessing/thresholding.py` | Probability thresholding. |
 | `mlsystem/src/postprocessing/pseudolabel_export.py` | `postprocessing/pseudolabel_export.py`, `workers/finalizer.py` | GeoJSON/GZip compatibility artifacts. |
 
-## Thin Wrappers Remaining In mlsystem
+## MLSystem Boundary
 
-These modules now re-export InferenceEngine implementations for backwards compatibility:
-
-- `mlsystem/src/tiling/windows.py`
-- `mlsystem/src/inference/probability_map.py`
-- `mlsystem/src/inference/triton_client.py`
-- `mlsystem/src/inference/scene_inference.py`
-- `mlsystem/src/vectorization/*.py`
-- `mlsystem/src/postprocessing/*.py`
+`mlsystem/src/inference` and `mlsystem/src/tiling` are not production modules. `inference_pipeline` calls InferenceEngine through API/client and does not re-export InferenceEngine internals.
 
 Training, MLflow run creation/finalization, pixel/object metrics, dataset preparation, and validation prediction semantics remain in `mlsystem`.
 
 ## Compatibility Artifacts
 
-InferenceEngine finalizer writes artifacts expected by the MLSystem pipeline runner into `run_dir`:
+InferenceEngine finalizer writes artifacts expected by MLSystem pseudolabel orchestration into `run_dir`:
 
 - `<experiment_id>.accepted.geojson`
 - `accepted.geojson.gz`
@@ -50,13 +43,13 @@ InferenceEngine finalizer writes artifacts expected by the MLSystem pipeline run
 Runtime arrays and intermediate queue artifacts stay under `/data/mlsystem/inference-engine/...` and are not committed.
 Probability tile artifacts remain tile-backed in the InferenceEngine job directory. The scene-level `npz_path` entries kept for legacy validators are compact placeholders in `source=inference_engine` mode; mlsystem downstream stages validate summaries and accepted vectors instead of rebuilding probability mosaics.
 
-## Production Pipeline Boundary
+## Production Boundary
 
-The production pipeline runner has one pseudolabel stage:
+The production MLSystem boundary for pseudolabeling is `inference_pipeline`:
 
-- `inference_engine_pipeline` starts an InferenceEngine job over HTTP, polls it, and validates compatibility artifacts.
+- `inference_pipeline` starts an InferenceEngine job over HTTP, polls it, and records the returned artifact payload.
 
-The old stage modules are not registered in `DEFAULT_PIPELINE_STAGES` or the production stage registry:
+The old internal pseudolabel stage modules are not registered in `train_pipeline.DEFAULT_PIPELINE_STAGES` or the production stage registry:
 
 - `prepare_inference_scenes`
 - `run_pseudolabel_inference`
@@ -65,7 +58,7 @@ The old stage modules are not registered in `DEFAULT_PIPELINE_STAGES` or the pro
 - `postprocess_pseudolabel`
 - `export_pseudolabel_artifacts`
 
-The retired `run/validate/vectorize/postprocess/export` stage modules have been removed. `prepare_inference_scenes.py` remains only as a small manifest helper used by `inference_engine_pipeline` before HTTP submission.
+The retired train-pipeline pseudolabel stage modules have been removed. `inference_pipeline` uses InferenceEngine as the external executor and does not copy its implementations.
 
 ## Deferred From Training
 
