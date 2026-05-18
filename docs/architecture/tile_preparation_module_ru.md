@@ -19,7 +19,6 @@ Public API:
 - `TilePreparationFacade.build_datasets(...)`;
 - `TilePreparationFacade.train_dataloader(...)`;
 - `TilePreparationFacade.val_dataloader(...)`;
-- compatibility wrapper для старого sync iterator, если нужен старому коду.
 
 Расширение public API требует согласования.
 
@@ -34,7 +33,7 @@ Public API:
 - normalization mode;
 - batch size для DataLoader.
 
-DataLoader workers, prefetch, pin memory и persistent worker policy являются внутренними defaults модуля. Они не должны задаваться как параметры experiment trace.
+DataLoader workers, prefetch, pin memory и persistent worker policy являются внутренними defaults модуля. Они не должны задаваться как параметры experiment trace. Расширение списка параметров доступных из вне должно быть отдельно согласовано.
 
 ## Выход
 
@@ -50,6 +49,7 @@ y: torch.Tensor  # [B,1,H,W]
 
 Модуль отвечает за:
 
+Быструю выдачу тайлов на обучение, реализуя torch.dataloader и torch.dataset . Проводит аугментацию заданного урвовня. Параллелит обработку для утулизации ресурсов.
 - построение scene records;
 - virtual train records;
 - fixed validation grid;
