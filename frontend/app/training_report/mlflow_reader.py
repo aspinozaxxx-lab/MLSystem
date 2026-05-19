@@ -11,6 +11,7 @@ from .dataset_inventory import SUPPORTED_CLASSES, class_slug_for_text
 
 
 PIXEL_F1_PRIORITY = (
+    "f1_pixel",
     "model_metrics/f1_pixel",
     "best_val_pixel_f1",
     "val_pixel_f1",
@@ -141,9 +142,10 @@ def normalize_run(run: dict[str, Any]) -> dict[str, Any]:
     dataset_git_commit_date = _first_value((tags, params), "dataset.git_commit_date", "dataset_git_commit_date", "mlmarkup_commit_date")
     dataset_date = _date_from_iso(dataset_git_commit_date)
     train_date = _date_from_ms(info.get("start_time")) or _date_from_iso(tags.get("mlsystem.train_date") or tags.get("train_date"))
-    duration_sec = _first_float((metrics, params), "model_metrics/training_time_sec", "training_time_sec") or _duration_sec(info.get("start_time"), info.get("end_time"))
+    duration_sec = _first_float((metrics, params), "training_time_sec", "model_metrics/training_time_sec") or _duration_sec(info.get("start_time"), info.get("end_time"))
     epochs_completed = _first_float(
         (metrics, params),
+        "epochs_total",
         "model_metrics/epochs_total",
         "epochs_completed",
         "object_safe_scene_group/epoch",

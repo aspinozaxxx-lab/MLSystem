@@ -100,11 +100,16 @@ class TrainingReportCollector:
         rows: list[dict[str, Any]] = []
         for spec in SUPPORTED_CLASSES:
             inventory = inventories.get(spec.class_slug) or {}
-            class_runs = [
-                run
-                for run in (_enrich_run(run, inventory) for run in runs_by_class.get(spec.class_slug, []))
-                if _is_trusted_training_run(run)
-            ]
+            enriched_runs = [_enrich_run(run, inventory) for run in runs_by_class.get(spec.class_slug, [])]
+            version_windows = _dataset_version_windows(enriched_runs, inventory)
+            exclusion_reasons: dict[str, int] = {}
+            class_runs: list[dict[str, Any]] = []
+            for run in enriched_runs:
+                reason = _training_run_exclusion_reason(run, version_windows)
+                if reason:
+                    exclusion_reasons[reason] = exclusion_reasons.get(reason, 0) + 1
+                    continue
+                class_runs.append(run)
             dataset_versions = []
             for index, run in enumerate(_best_runs_by_dataset_version(class_runs), start=1):
                 run = dict(run)
@@ -139,15 +144,15 @@ class TrainingReportCollector:
                     "validation_kind": validation_kind,
                     "warning": warning,
                     "quality_filter": {
-                        "excluded_runs": sum(
-                            1
-                            for run in (_enrich_run(run, inventory) for run in runs_by_class.get(spec.class_slug, []))
-                            if not _is_trusted_training_run(run)
-                        ),
+                        "excluded_runs": sum(exclusion_reasons.values()),
+                        "reasons": exclusion_reasons,
                         "rules": [
                             "exclude missing or perfect pixel F1",
                             f"exclude runs before {MIN_TRUSTED_TRAIN_DATE}",
                             f"exclude runs with fewer than {int(MIN_TRUSTED_BEST_EPOCH)} completed epochs",
+                            "exclude runs without explicit dataset.version or dataset.fingerprint",
+                            "exclude runs outside their dataset version publication window",
+                            "exclude runs without reliable dataset scene/object counts",
                         ],
                     },
                     "dataset_versions": dataset_versions,
@@ -250,15 +255,23 @@ def _enrich_run(run: dict[str, Any], inventory: dict[str, Any]) -> dict[str, Any
     split_strategy = run.get("split_strategy") or _first_text(dicts, "validation.split_strategy", "split_strategy", "preprocess.split_strategy")
     validation_kind = run.get("validation_kind") or _first_text(dicts, "validation.kind", "validation_kind") or validation_kind_from_split(split_strategy)
     model_name = run.get("model_name") or _first_text(dicts, "model.name", "model_name", "architecture", "model")
+    explicit_version = dataset_version or dataset_fingerprint
+    inventory_matches = _inventory_matches_dataset_version(inventory, dataset_version, dataset_fingerprint)
+    if dataset_objects is None and inventory_matches:
+        dataset_objects = _int_or_none(inventory.get("objects_count"))
+    if dataset_scenes is None and inventory_matches:
+        dataset_scenes = _int_or_none(inventory.get("scenes_count"))
+    if dataset_date is None and inventory_matches:
+        dataset_date = inventory.get("dataset_date")
     enriched = dict(run)
     enriched.update(
         {
-            "dataset_date": _date_only(dataset_date) or inventory.get("dataset_date"),
-            "dataset_version": dataset_version or dataset_fingerprint or inventory.get("dataset_fingerprint") or "unknown",
-            "dataset_version_source": dataset_version_source or ("fallback" if not dataset_version and (dataset_fingerprint or inventory.get("dataset_fingerprint")) else None),
-            "dataset_fingerprint": dataset_fingerprint or inventory.get("dataset_fingerprint"),
-            "dataset_objects": dataset_objects if dataset_objects is not None else inventory.get("objects_count", 0),
-            "dataset_scenes": dataset_scenes if dataset_scenes is not None else inventory.get("scenes_count", 0),
+            "dataset_date": _date_only(dataset_date),
+            "dataset_version": explicit_version,
+            "dataset_version_source": dataset_version_source or ("fingerprint" if dataset_fingerprint and not dataset_version else None),
+            "dataset_fingerprint": dataset_fingerprint or (inventory.get("dataset_fingerprint") if inventory_matches else None),
+            "dataset_objects": dataset_objects,
+            "dataset_scenes": dataset_scenes,
             "dataset_train_scenes": dataset_train_scenes,
             "dataset_val_scenes": dataset_val_scenes,
             "dataset_git_commit_date": dataset_git_commit_date,
@@ -522,29 +535,96 @@ def _sort_f1(value: Any) -> float:
     return float("inf") if numeric is None else -numeric
 
 
-def _is_perfect_pixel_f1(value: Any) -> bool:
-    numeric = _float_or_none(value)
-    return numeric is not None and abs(numeric - 1.0) <= 1e-12
+def _inventory_matches_dataset_version(inventory: dict[str, Any], *versions: Any) -> bool:
+    inventory_version = str(inventory.get("dataset_fingerprint") or "")
+    if not inventory_version:
+        return False
+    return any(str(value or "") == inventory_version for value in versions)
 
 
-def _is_trusted_training_run(run: dict[str, Any]) -> bool:
+def _dataset_version_windows(runs: list[dict[str, Any]], inventory: dict[str, Any]) -> dict[str, dict[str, str | None]]:
+    version_dates: dict[str, str] = {}
+    inventory_version = str(inventory.get("dataset_fingerprint") or "")
+    inventory_date = _date_only(inventory.get("dataset_date"))
+    if inventory_version and inventory_date:
+        version_dates[inventory_version] = inventory_date
+    for run in runs:
+        version = str(run.get("dataset_version") or run.get("dataset_fingerprint") or "")
+        date_value = _date_only(run.get("dataset_date"))
+        if not version or not date_value:
+            continue
+        current = version_dates.get(version)
+        if current is None or date_value < current:
+            version_dates[version] = date_value
+    ordered = sorted(version_dates.items(), key=lambda item: item[1])
+    windows: dict[str, dict[str, str | None]] = {}
+    for index, (version, start) in enumerate(ordered):
+        next_start = ordered[index + 1][1] if index + 1 < len(ordered) else None
+        windows[version] = {"start": start, "end": next_start}
+    return windows
+
+
+def _report_exclude_tag(run: dict[str, Any]) -> bool:
+    tags = run.get("tags") if isinstance(run.get("tags"), dict) else {}
+    params = run.get("params") if isinstance(run.get("params"), dict) else {}
+    value = tags.get("mlsystem.report.exclude") or params.get("mlsystem.report.exclude")
+    return str(value or "").strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def _basic_training_exclusion_reason(run: dict[str, Any]) -> str | None:
     f1 = _float_or_none(run.get("pixel_f1"))
     if f1 is None or f1 < 0.0 or f1 > 1.0 or _is_perfect_pixel_f1(f1):
-        return False
+        return "invalid_pixel_f1"
     status = str(run.get("run_status") or "").upper()
     if status and status not in {"FINISHED", "SUCCEEDED", "SUCCESS", "OK", "KILLED"}:
-        return False
+        return "non_terminal_run_status"
     train_date = _date_only(run.get("train_date"))
     if not train_date or train_date < MIN_TRUSTED_TRAIN_DATE:
-        return False
+        return "train_date_before_cutoff"
     epochs_completed = _float_or_none(run.get("epochs_completed"))
     if epochs_completed is None:
         epochs_completed = _float_or_none(run.get("epochs_planned"))
     if epochs_completed is None:
         epochs_completed = _float_or_none(run.get("best_epoch"))
     if epochs_completed is None or epochs_completed < MIN_TRUSTED_BEST_EPOCH:
-        return False
+        return "insufficient_epochs"
     metric_source = str(run.get("metric_name_source") or "").casefold()
     if metric_source and "object" in metric_source:
-        return False
-    return True
+        return "object_metric_source"
+    return None
+
+
+def _training_run_exclusion_reason(run: dict[str, Any], version_windows: dict[str, dict[str, str | None]]) -> str | None:
+    if _report_exclude_tag(run):
+        return "report_excluded"
+    basic = _basic_training_exclusion_reason(run)
+    if basic:
+        return basic
+    version = str(run.get("dataset_version") or run.get("dataset_fingerprint") or "")
+    if not version:
+        return "missing_dataset_version"
+    train_date = _date_only(run.get("train_date"))
+    window = version_windows.get(version)
+    if train_date and window:
+        start = window.get("start")
+        end = window.get("end")
+        if start and train_date < start:
+            return "train_date_before_dataset_date"
+        if end and train_date >= end:
+            return "train_date_after_next_dataset_version"
+    scenes = _int_or_none(run.get("dataset_scenes"))
+    if scenes is None or scenes <= 0:
+        return "missing_dataset_scene_count"
+    objects = _int_or_none(run.get("dataset_objects"))
+    if objects is None or objects <= 0:
+        return "missing_dataset_object_count"
+    return None
+
+
+def _is_perfect_pixel_f1(value: Any) -> bool:
+    numeric = _float_or_none(value)
+    return numeric is not None and abs(numeric - 1.0) <= 1e-12
+
+
+def _is_trusted_training_run(run: dict[str, Any]) -> bool:
+    return _basic_training_exclusion_reason(run) is None

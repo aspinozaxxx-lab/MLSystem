@@ -124,11 +124,14 @@ def finish_stage_job(
 
 def stage_job_worker_module_name() -> str:
     configured = os.getenv("MLSYSTEM_API_WORKER_MODULE")
+    module_prefix = "src" if Path("/opt/mlsystem/src").exists() else "mlsystem.src"
     if configured:
+        if configured in {"src.api.stage_job_worker", "mlsystem.src.api.stage_job_worker"}:
+            return f"{module_prefix}.train_pipeline.stage_job_worker"
+        if configured in {"src.pipeline_runner.stage_job_worker", "mlsystem.src.pipeline_runner.stage_job_worker"}:
+            return f"{module_prefix}.train_pipeline.stage_job_worker"
         return configured
-    if Path("/opt/mlsystem/src").exists():
-        return "src.train_pipeline.stage_job_worker"
-    return "mlsystem.src.train_pipeline.stage_job_worker"
+    return f"{module_prefix}.train_pipeline.stage_job_worker"
 
 
 class StageJobRunner:

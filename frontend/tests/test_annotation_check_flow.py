@@ -7,9 +7,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from frontend.app.config import FrontendConfig
+
+pytest.importorskip("itsdangerous")
+
 from frontend.app.main import create_app
 from frontend.app.upload_store import StoredUploads, UploadValidationError, parse_scene_names, sanitize_filename
 
@@ -26,6 +30,7 @@ class InlineThread:
 
 class FakeApiClient:
     calls: list[str] = []
+    statuses: dict[str, dict] = {}
 
     def __init__(self, base_url: str, token: str | None = None) -> None:
         self.base_url = base_url
@@ -38,6 +43,9 @@ class FakeApiClient:
     def wait_for_job(self, job_id: str):
         stage = job_id.replace("_job", "")
         return {"job_id": job_id, "stage": stage, "state": "succeeded", "report": {"status": "success"}}
+
+    def job_status(self, job_id: str):
+        return self.statuses.get(job_id, {"job_id": job_id, "stage": job_id.replace("_job", ""), "state": "running"})
 
 
 def cfg(tmp: Path) -> FrontendConfig:
@@ -157,6 +165,114 @@ class AnnotationCheckFlowTests(unittest.TestCase):
             self.assertIn("connection refused", status["error"])
             self.assertEqual(status["stages"][0]["name"], "inventory_scenes")
             self.assertEqual(status["stages"][0]["status"], "failed")
+
+    def test_terminal_artifacts_are_not_overridden_by_stale_running_status(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            config = cfg(root)
+            run_id = "run_terminal"
+            upload_dir = config.upload_root / run_id
+            status_dir = config.status_root / run_id / "stages"
+            upload_dir.mkdir(parents=True)
+            status_dir.mkdir(parents=True)
+            (config.status_root / run_id / "dataset_manifest.json").write_text(
+                json.dumps({"train_scenes": [{"entry": "a.tif"}], "val_scenes": []}),
+                encoding="utf-8",
+            )
+            (status_dir / "prepare_dataset.json").write_text(json.dumps({"status": "success"}), encoding="utf-8")
+            (upload_dir / "frontend_status.json").write_text(
+                json.dumps({"status": "running", "run_id": run_id, "jobs": []}),
+                encoding="utf-8",
+            )
+            client = TestClient(create_app(config))
+            client.post("/login", data={"username": "mluser", "password": "qazwsxedc"})
+            response = client.get(f"/api/annotation-check/{run_id}")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["status"], "succeeded")
+            saved = json.loads((upload_dir / "frontend_status.json").read_text(encoding="utf-8"))
+            self.assertEqual(saved["status"], "succeeded")
+
+    def test_status_endpoint_repairs_stale_running_status_to_succeeded(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            config = cfg(root)
+            run_id = "run_repair"
+            upload_dir = config.upload_root / run_id
+            upload_dir.mkdir(parents=True)
+            (upload_dir / "frontend_status.json").write_text(
+                json.dumps(
+                    {
+                        "status": "running",
+                        "run_id": run_id,
+                        "jobs": [
+                            {"stage": "inventory_scenes", "job_id": "inventory_scenes_job", "state": "running"},
+                            {"stage": "prepare_dataset", "job_id": "prepare_dataset_job", "state": "running"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            FakeApiClient.statuses = {
+                "inventory_scenes_job": {"job_id": "inventory_scenes_job", "stage": "inventory_scenes", "state": "succeeded"},
+                "prepare_dataset_job": {"job_id": "prepare_dataset_job", "stage": "prepare_dataset", "state": "succeeded"},
+            }
+            client = TestClient(create_app(config))
+            client.post("/login", data={"username": "mluser", "password": "qazwsxedc"})
+            with patch("frontend.app.main.MLSystemApiClient", FakeApiClient):
+                response = client.get(f"/api/annotation-check/{run_id}")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["status"], "succeeded")
+
+    def test_failed_prepare_dataset_refresh_shows_failed_step_and_error(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            config = cfg(root)
+            run_id = "run_failed_prepare"
+            upload_dir = config.upload_root / run_id
+            upload_dir.mkdir(parents=True)
+            (upload_dir / "frontend_status.json").write_text(
+                json.dumps(
+                    {
+                        "status": "running",
+                        "run_id": run_id,
+                        "jobs": [{"stage": "prepare_dataset", "job_id": "prepare_dataset_job", "state": "running"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            FakeApiClient.statuses = {
+                "prepare_dataset_job": {
+                    "job_id": "prepare_dataset_job",
+                    "stage": "prepare_dataset",
+                    "state": "failed",
+                    "error": {"message": "No scenes were matched"},
+                }
+            }
+            client = TestClient(create_app(config))
+            client.post("/login", data={"username": "mluser", "password": "qazwsxedc"})
+            with patch("frontend.app.main.MLSystemApiClient", FakeApiClient):
+                payload = client.get(f"/api/annotation-check/{run_id}").json()
+            self.assertEqual(payload["status"], "failed")
+            self.assertEqual(payload["failed_step"], "prepare_dataset")
+            self.assertIn("No scenes were matched", payload["error"])
+
+    def test_stale_running_status_becomes_failed(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            config = cfg(root)
+            run_id = "run_stale"
+            upload_dir = config.upload_root / run_id
+            upload_dir.mkdir(parents=True)
+            (upload_dir / "frontend_status.json").write_text(
+                json.dumps({"status": "running", "run_id": run_id, "updated_at": 1.0, "current_stage": "prepare_dataset", "jobs": []}),
+                encoding="utf-8",
+            )
+            client = TestClient(create_app(config))
+            client.post("/login", data={"username": "mluser", "password": "qazwsxedc"})
+            payload = client.get(f"/api/annotation-check/{run_id}").json()
+            self.assertEqual(payload["status"], "failed")
+            self.assertEqual(payload["failed_step"], "prepare_dataset")
+            self.assertIn("stale", payload["error"])
 
 
 if __name__ == "__main__":

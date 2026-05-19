@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -156,6 +157,27 @@ def run_training(request: TrainRequest, progress_sink: TrainProgressSink | None 
         total_duration_sec=total_duration_sec,
         early_stopped=early_stopped,
     )
+    if output_dir is not None:
+        diagnostics_path = output_dir / "training_diagnostics.json"
+        diagnostics_path.write_text(
+            json.dumps(
+                _training_diagnostics(
+                    history_rows=history_rows,
+                    best_row=best_row,
+                    last_row=last,
+                    best_f1=best_f1 if best_f1 != float("-inf") else 0.0,
+                    total_duration_sec=total_duration_sec,
+                    early_stopped=early_stopped,
+                ),
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+                default=str,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        artifacts.append(str(diagnostics_path))
     emit_progress(progress_sink, TrainProgressEvent(stage="completed", metrics=mlflow_metrics))
     return TrainResult(
         status="done",
@@ -198,36 +220,50 @@ def _canonical_mlflow_metrics(
         if epochs_total
         else 0.0
     )
+    payload: dict[str, float | int] = {
+        "f1_pixel": best_f1,
+        "epochs_total": epochs_total,
+        "epoch_time_sec": round(epoch_time_sec, 4),
+        "training_time_sec": total_duration_sec,
+    }
+    return {key: value for key, value in payload.items() if value is not None}
+
+
+def _training_diagnostics(
+    *,
+    history_rows: list[dict[str, Any]],
+    best_row: dict[str, Any],
+    last_row: dict[str, Any],
+    best_f1: float,
+    total_duration_sec: float,
+    early_stopped: bool,
+) -> dict[str, float | int]:
     train_loss = _float_or_none(last_row.get("train/loss_total"))
     val_loss = _float_or_none(best_row.get("val/loss_total"))
     train_f1 = _float_or_none(last_row.get("train/pixel_f1"))
     payload: dict[str, float | int | None] = {
-        "model_metrics/f1_pixel": best_f1,
-        "model_metrics/epochs_total": epochs_total,
-        "model_metrics/epoch_time_sec": round(epoch_time_sec, 4),
-        "model_metrics/training_time_sec": total_duration_sec,
-        "diagnostics/val_pixel_precision": _float_or_none(best_row.get("val/pixel_precision") or best_row.get("val/precision")),
-        "diagnostics/val_pixel_recall": _float_or_none(best_row.get("val/pixel_recall") or best_row.get("val/recall")),
-        "diagnostics/val_pixel_iou": _float_or_none(best_row.get("val/pixel_iou") or best_row.get("val/iou")),
-        "diagnostics/val_pixel_accuracy": _float_or_none(best_row.get("val/pixel_accuracy") or best_row.get("val/accuracy")),
-        "diagnostics/val_loss_total": val_loss,
-        "diagnostics/train_loss_total": train_loss,
-        "diagnostics/train_val_loss_gap": (train_loss - val_loss) if train_loss is not None and val_loss is not None else None,
-        "diagnostics/train_pixel_f1": train_f1,
-        "diagnostics/train_val_f1_gap": (train_f1 - best_f1) if train_f1 is not None else None,
-        "diagnostics/learning_rate": _float_or_none(last_row.get("learning_rate")),
-        "diagnostics/best_epoch": _float_or_none(best_row.get("epoch")),
-        "diagnostics/early_stopped": 1 if early_stopped else 0,
-        "diagnostics/train_batches": _float_or_none(last_row.get("train/batches")),
-        "diagnostics/val_batches": _float_or_none(best_row.get("val/batches")),
-        "diagnostics/train_samples": _float_or_none(last_row.get("train/samples")),
-        "diagnostics/val_samples": _float_or_none(best_row.get("val/samples")),
-        "diagnostics/samples_per_sec": (
+        "val_pixel_precision": _float_or_none(best_row.get("val/pixel_precision") or best_row.get("val/precision")),
+        "val_pixel_recall": _float_or_none(best_row.get("val/pixel_recall") or best_row.get("val/recall")),
+        "val_pixel_iou": _float_or_none(best_row.get("val/pixel_iou") or best_row.get("val/iou")),
+        "val_pixel_accuracy": _float_or_none(best_row.get("val/pixel_accuracy") or best_row.get("val/accuracy")),
+        "val_loss_total": val_loss,
+        "train_loss_total": train_loss,
+        "train_val_loss_gap": (train_loss - val_loss) if train_loss is not None and val_loss is not None else None,
+        "train_pixel_f1": train_f1,
+        "train_val_f1_gap": (train_f1 - best_f1) if train_f1 is not None else None,
+        "learning_rate": _float_or_none(last_row.get("learning_rate")),
+        "best_epoch": _float_or_none(best_row.get("epoch")),
+        "early_stopped": 1 if early_stopped else 0,
+        "train_batches": _float_or_none(last_row.get("train/batches")),
+        "val_batches": _float_or_none(best_row.get("val/batches")),
+        "train_samples": _float_or_none(last_row.get("train/samples")),
+        "val_samples": _float_or_none(best_row.get("val/samples")),
+        "samples_per_sec": (
             (_float_or_none(last_row.get("train/samples")) or 0.0) / total_duration_sec
             if total_duration_sec > 0
             else None
         ),
-        "diagnostics/batches_per_sec": (
+        "batches_per_sec": (
             (_float_or_none(last_row.get("train/batches")) or 0.0) / total_duration_sec
             if total_duration_sec > 0
             else None

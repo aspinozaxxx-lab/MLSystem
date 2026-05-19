@@ -30,6 +30,8 @@ from .upload_store import UploadValidationError, store_uploads, uploads_diagnost
 BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 logger = logging.getLogger("mlsystem.frontend")
+ANNOTATION_RUNNING_STALE_SEC = 45 * 60
+TERMINAL_ANNOTATION_STATUSES = {"succeeded", "failed"}
 
 
 def create_app(config: FrontendConfig | None = None) -> FastAPI:
@@ -274,9 +276,25 @@ def create_app(config: FrontendConfig | None = None) -> FastAPI:
     @app.get("/api/annotation-check/{run_id}")
     def annotation_check_status(run_id: str, _user: str = Depends(require_user)) -> dict[str, Any]:
         status = _read_frontend_status(config, run_id)
+        status = _refresh_annotation_status_if_running(config, run_id, status)
+        status = _mark_annotation_stale_if_needed(config, run_id, status)
         report = build_annotation_report(run_id, config.status_root, jobs=status.get("jobs") or [], frontend_status=status)
-        if status.get("status") in {"queued", "running", "failed", "succeeded"}:
-            report["status"] = status["status"] if status["status"] != "succeeded" else report["status"]
+        if report.get("status") in TERMINAL_ANNOTATION_STATUSES:
+            if status.get("status") != report.get("status"):
+                _merge_frontend_status(
+                    config,
+                    run_id,
+                    {
+                        "status": report.get("status"),
+                        "failed_step": report.get("failed_step"),
+                        "error": report.get("error"),
+                        "jobs": report.get("jobs") or status.get("jobs") or [],
+                    },
+                )
+            status = _read_frontend_status(config, run_id)
+            report["jobs"] = status.get("jobs") or report.get("jobs") or []
+        elif status.get("status") in {"queued", "running", "failed", "succeeded"}:
+            report["status"] = status["status"]
         if status.get("error"):
             report["error"] = status["error"]
         return report
@@ -522,6 +540,117 @@ def _job_error_message(status: dict[str, Any]) -> str:
     return f"MLSystem API job {status.get('job_id')} ended with state={status.get('state')}"
 
 
+def _refresh_annotation_status_if_running(config: FrontendConfig, run_id: str, status: dict[str, Any]) -> dict[str, Any]:
+    if status.get("status") not in {"queued", "running"}:
+        return status
+    jobs = [dict(item) for item in (status.get("jobs") or []) if isinstance(item, dict)]
+    if not jobs:
+        return status
+    client = MLSystemApiClient(config.api_base_url, config.api_token)
+    changed = False
+    failed_step = None
+    error = None
+    for job in jobs:
+        job_id = job.get("job_id")
+        if not job_id:
+            continue
+        try:
+            job_status = client.job_status(str(job_id))
+        except Exception as exc:  # noqa: BLE001
+            logger.info("annotation_check job refresh failed run_id=%s job_id=%s error=%s", run_id, job_id, exc)
+            continue
+        state = job_status.get("state") or job.get("state")
+        if state != job.get("state"):
+            changed = True
+            job["state"] = state
+        job["report"] = job_status.get("report") or job.get("report")
+        if state in {"failed", "cancelled", "timed_out"} and failed_step is None:
+            failed_step = job.get("stage") or job_status.get("stage") or status.get("current_stage")
+            error = _job_error_message(job_status)
+    updates: dict[str, Any] = {"jobs": jobs}
+    stage_statuses = _annotation_stage_statuses_from_jobs(status.get("stage_statuses") or [], jobs)
+    if stage_statuses:
+        updates["stage_statuses"] = stage_statuses
+    prepare = next((job for job in jobs if job.get("stage") == "prepare_dataset"), None)
+    if failed_step:
+        updates.update({"status": "failed", "failed_step": failed_step, "error": error, "finished_at": time.time()})
+    elif prepare and prepare.get("state") == "succeeded":
+        updates.update({"status": "succeeded", "finished_at": time.time()})
+    elif changed:
+        updates["status"] = "running"
+    else:
+        return status
+    _merge_frontend_status(config, run_id, updates)
+    return _read_frontend_status(config, run_id)
+
+
+def _annotation_stage_statuses_from_jobs(existing: list[dict[str, Any]], jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_name = {
+        str(item.get("name")): dict(item)
+        for item in existing
+        if isinstance(item, dict) and item.get("name")
+    }
+    for job in jobs:
+        stage = job.get("stage")
+        if not stage:
+            continue
+        state = str(job.get("state") or "")
+        if state == "succeeded":
+            status = "success"
+            summary = f"{stage} completed"
+        elif state in {"failed", "cancelled", "timed_out"}:
+            status = "failed"
+            summary = f"{stage} failed"
+        elif state:
+            status = "running"
+            summary = f"{stage} {state}"
+        else:
+            continue
+        current = by_name.get(str(stage), {"name": stage})
+        current.update({"status": status, "summary": summary})
+        by_name[str(stage)] = current
+    return list(by_name.values())
+
+
+def _mark_annotation_stale_if_needed(config: FrontendConfig, run_id: str, status: dict[str, Any]) -> dict[str, Any]:
+    if status.get("status") not in {"queued", "running"}:
+        return status
+    age = _annotation_status_age_sec(config, run_id, status)
+    if age is None or age < ANNOTATION_RUNNING_STALE_SEC:
+        return status
+    failed_step = status.get("current_stage") or "annotation_check"
+    error = f"Annotation check is stale: no status update for {int(age)} seconds."
+    _merge_frontend_status(
+        config,
+        run_id,
+        {
+            "status": "failed",
+            "failed_step": failed_step,
+            "error": error,
+            "finished_at": time.time(),
+            "stage_statuses": [
+                *list(status.get("stage_statuses") or []),
+                {"name": failed_step, "status": "failed", "summary": error},
+            ],
+        },
+    )
+    return _read_frontend_status(config, run_id)
+
+
+def _annotation_status_age_sec(config: FrontendConfig, run_id: str, status: dict[str, Any]) -> float | None:
+    timestamp = status.get("updated_at") or status.get("started_at")
+    if timestamp is not None:
+        try:
+            return max(0.0, time.time() - float(timestamp))
+        except (TypeError, ValueError):
+            pass
+    path = _status_path(config, run_id)
+    try:
+        return max(0.0, time.time() - path.stat().st_mtime)
+    except OSError:
+        return None
+
+
 def _public_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in payload.items() if k not in {"token", "password", "secret"}}
 
@@ -534,6 +663,8 @@ def _status_path(config: FrontendConfig, run_id: str) -> Path:
 def _write_frontend_status(config: FrontendConfig, run_id: str, payload: dict[str, Any]) -> None:
     path = _status_path(config, run_id)
     path.parent.mkdir(parents=True, exist_ok=True)
+    payload = dict(payload)
+    payload["updated_at"] = time.time()
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 

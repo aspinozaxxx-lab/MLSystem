@@ -287,10 +287,13 @@ def create_run(
     import mlflow
 
     mlflow.set_tracking_uri(config.mlflow_tracking_uri_internal)
-    _enable_system_metrics_logging(mlflow)
     experiment_id = get_or_create_experiment_id(config, experiment_name)
     tag_warnings = set_experiment_tags(config, experiment_id, experiment_tags or {}) if experiment_tags else []
-    with mlflow.start_run(experiment_id=experiment_id, run_name=run_name) as run:
+    with mlflow.start_run(
+        experiment_id=experiment_id,
+        run_name=run_name,
+        **_start_run_options(mlflow, log_system_metrics=False),
+    ) as run:
         mlflow.set_tags({key: "" if value is None else str(value) for key, value in (tags or {}).items()})
         clean_params = flatten_params(params or {})
         if clean_params:
@@ -323,7 +326,7 @@ def log_metrics_to_run(config: PipelineConfig, run_id: str, metrics: dict[str, A
     }
     if not clean:
         return
-    with mlflow.start_run(run_id=run_id):
+    with mlflow.start_run(run_id=run_id, **_start_run_options(mlflow, log_system_metrics=False)):
         mlflow.log_metrics(clean, step=step)
 
 
@@ -334,7 +337,7 @@ def log_params_to_run(config: PipelineConfig, run_id: str, params: dict[str, Any
     clean = flatten_params(params)
     if not clean:
         return
-    with mlflow.start_run(run_id=run_id):
+    with mlflow.start_run(run_id=run_id, **_start_run_options(mlflow, log_system_metrics=False)):
         for key, value in clean.items():
             try:
                 mlflow.log_param(key, value)
@@ -354,7 +357,7 @@ def log_dataset_input_to_run(config: PipelineConfig, run_id: str, dataset_identi
         or getattr(dataset_identity, "annotation_uri", None)
         or "unknown"
     )
-    with mlflow.start_run(run_id=run_id):
+    with mlflow.start_run(run_id=run_id, **_start_run_options(mlflow, log_system_metrics=False)):
         for key, value in flatten_params(params).items():
             try:
                 mlflow.log_param(key, value)
@@ -391,7 +394,7 @@ def log_artifacts_to_run(config: PipelineConfig, run_id: str, artifacts: list[st
 
     mlflow.set_tracking_uri(config.mlflow_tracking_uri_internal)
     errors: list[str] = []
-    with mlflow.start_run(run_id=run_id):
+    with mlflow.start_run(run_id=run_id, **_start_run_options(mlflow, log_system_metrics=False)):
         for artifact in artifacts:
             path = Path(artifact)
             try:
@@ -406,8 +409,25 @@ def set_run_tags(config: PipelineConfig, run_id: str, tags: dict[str, Any]) -> N
     import mlflow
 
     mlflow.set_tracking_uri(config.mlflow_tracking_uri_internal)
-    with mlflow.start_run(run_id=run_id):
+    with mlflow.start_run(run_id=run_id, **_start_run_options(mlflow, log_system_metrics=False)):
         mlflow.set_tags({key: "" if value is None else str(value) for key, value in tags.items()})
+
+
+def run_with_active_mlflow_run(
+    config: PipelineConfig,
+    run_id: str,
+    fn: Any,
+    *,
+    log_system_metrics: bool = True,
+) -> Any:
+    import mlflow
+
+    mlflow.set_tracking_uri(config.mlflow_tracking_uri_internal)
+    options = _start_run_options(mlflow, log_system_metrics=log_system_metrics)
+    if log_system_metrics and not options:
+        _enable_system_metrics_logging(mlflow)
+    with mlflow.start_run(run_id=run_id, **options):
+        return fn()
 
 
 def download_run_artifacts(config: PipelineConfig | None, run_id: str) -> Path:
@@ -505,6 +525,17 @@ def _enable_system_metrics_logging(mlflow_module: Any) -> None:
             enable()
     except Exception:
         return
+
+
+def _start_run_options(mlflow_module: Any, *, log_system_metrics: bool) -> dict[str, Any]:
+    try:
+        import inspect
+
+        if "log_system_metrics" in inspect.signature(mlflow_module.start_run).parameters:
+            return {"log_system_metrics": bool(log_system_metrics)}
+    except Exception:
+        return {}
+    return {}
 
 
 def _dataset_input_name(dataset_identity: Any) -> str:

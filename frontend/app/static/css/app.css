@@ -222,6 +222,18 @@ code { background: var(--blue-2); padding: 2px 4px; border-radius: 4px; }
   padding: 5px 9px;
   font-size: 13px;
 }
+.mlflow-icon-link {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--blue-2);
+  color: var(--blue);
+  text-decoration: none;
+  font-weight: 700;
+}
 @media (max-width: 720px) {
   .report-toolbar { align-items: stretch; flex-direction: column; }
   .compact-hero h1 { font-size: 28px; }

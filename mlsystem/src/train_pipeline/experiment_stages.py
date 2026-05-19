@@ -9,9 +9,10 @@ import subprocess
 import threading
 import time
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from ..dataset_preparing.contracts import DatasetIdentity
 from ..mlflow_adapter.api import (
@@ -23,6 +24,8 @@ from ..mlflow_adapter.api import (
     log_params_to_run as mlflow_log_params_to_run,
     mlflow_tuning_metadata,
     mlflow_url_fields,
+    run_with_active_mlflow_run as mlflow_run_with_active_mlflow_run,
+    search_runs as mlflow_search_runs,
     set_run_tags as mlflow_set_run_tags,
 )
 from ..settings.api import load_config
@@ -60,35 +63,105 @@ DISPATCHER_STAGE_NAMES = {
     "finalize_mlflow_run",
 }
 MODEL_METRIC_KEYS = {
-    "model_metrics/f1_pixel",
-    "model_metrics/epochs_total",
-    "model_metrics/epoch_time_sec",
-    "model_metrics/training_time_sec",
-}
-DIAGNOSTIC_METRIC_KEYS = {
-    "diagnostics/val_pixel_precision",
-    "diagnostics/val_pixel_recall",
-    "diagnostics/val_pixel_iou",
-    "diagnostics/val_pixel_accuracy",
-    "diagnostics/val_loss_total",
-    "diagnostics/train_loss_total",
-    "diagnostics/train_val_loss_gap",
-    "diagnostics/train_pixel_f1",
-    "diagnostics/train_val_f1_gap",
-    "diagnostics/learning_rate",
-    "diagnostics/best_epoch",
-    "diagnostics/early_stopped",
-    "diagnostics/train_batches",
-    "diagnostics/val_batches",
-    "diagnostics/train_samples",
-    "diagnostics/val_samples",
-    "diagnostics/samples_per_sec",
-    "diagnostics/batches_per_sec",
+    "f1_pixel",
+    "epochs_total",
+    "epoch_time_sec",
+    "training_time_sec",
 }
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _amsterdam_today() -> date:
+    try:
+        return datetime.now(ZoneInfo("Europe/Amsterdam")).date()
+    except Exception:
+        return datetime.now().date()
+
+
+def _slug_for_run_name(value: str | None) -> str:
+    text = str(value or "").strip().casefold()
+    aliases = {
+        "deforestation": "deforest",
+        "cuttings": "deforest",
+        "deforest": "deforest",
+        "вырубки": "deforest",
+        "lakes": "lakes",
+        "озера": "lakes",
+        "abrasion": "abrasion",
+        "абразия": "abrasion",
+        "wind_erosion": "wind_erosion",
+        "ветровая эрозия": "wind_erosion",
+        "water_erosion": "water_erosion",
+        "водная эрозия": "water_erosion",
+        "burnt_forests": "burnt_forests",
+        "burnt": "burnt_forests",
+        "burned": "burnt_forests",
+        "гари": "burnt_forests",
+        "forest": "forest_boundaries",
+        "forest_boundary": "forest_boundaries",
+        "forest_boundaries": "forest_boundaries",
+        "границы леса": "forest_boundaries",
+        "salty": "salty",
+        "salty_soils": "salty",
+        "salinization": "salty",
+        "засоления": "salty",
+        "landslide": "obval_opolz_osyp",
+        "obval_opolz_osyp": "obval_opolz_osyp",
+        "оползневые": "obval_opolz_osyp",
+        "desertification": "desertification",
+        "desert": "desertification",
+        "опустынивание": "desertification",
+        "arable": "arable_land",
+        "arable_land": "arable_land",
+        "pashni": "arable_land",
+        "пашни": "arable_land",
+        "quarries": "quarries",
+        "карьеры": "quarries",
+    }
+    for candidate, slug in aliases.items():
+        if candidate in text:
+            return slug
+    chars = []
+    for ch in text.replace("-", "_"):
+        if ch.isascii() and (ch.isalnum() or ch == "_"):
+            chars.append(ch)
+        elif chars and chars[-1] != "_":
+            chars.append("_")
+    slug = "".join(chars).strip("_")
+    return slug or "run"
+
+
+def _select_short_mlflow_run_name(class_slug: str, started_on: date, existing_run_names: list[str]) -> str:
+    base = f"{class_slug}_{started_on.strftime('%m%d')}"
+    suffixes = [1 if name == base else None for name in existing_run_names]
+    prefix = f"{base}_"
+    for name in existing_run_names:
+        if not name.startswith(prefix):
+            continue
+        tail = name[len(prefix):]
+        if tail.isdigit():
+            suffixes.append(int(tail))
+    used = [item for item in suffixes if item is not None]
+    if not used:
+        return base
+    return f"{base}_{max(used) + 1}"
+
+
+def _existing_mlflow_run_names(pipeline_config: Any, experiment_name: str) -> list[str]:
+    try:
+        runs = mlflow_search_runs(pipeline_config, experiment_name=experiment_name, max_results=1000)
+    except Exception:
+        return []
+    names: list[str] = []
+    for run in runs:
+        tags = run.get("tags") if isinstance(run.get("tags"), dict) else {}
+        name = tags.get("mlflow.runName") or run.get("run_name")
+        if name:
+            names.append(str(name))
+    return names
 
 
 def _model_name_from_config(model_cfg: dict[str, Any]) -> str:
@@ -430,6 +503,50 @@ def _build_pipeline_job(conf: PipelineRunConfig) -> JobSpec:
     )
 
 
+def _requires_explicit_training_epochs(conf: PipelineRunConfig) -> bool:
+    if conf.smoke or conf.pipeline.dry_run:
+        return False
+    if str(conf.task or "").casefold() in {"annotation_check", "status_check", "inventory", "prepare"}:
+        return False
+    train_cfg = dict(conf.train or {})
+    params_cfg = dict(conf.params or {})
+    return not bool(train_cfg.get("debug") or params_cfg.get("debug") or params_cfg.get("smoke"))
+
+
+def _validate_explicit_training_epochs(conf: PipelineRunConfig) -> None:
+    # Production runs must not inherit short debug epoch counts from historical tuning notes.
+    if not _requires_explicit_training_epochs(conf):
+        return
+    train_cfg = dict(conf.train or {})
+    if train_cfg.get("epochs") is None and train_cfg.get("max_epochs") is None:
+        raise ValueError("train.epochs or train.max_epochs is required for non-smoke training runs.")
+
+
+def _history_mlflow_metric_rows(result: Any) -> list[tuple[int, dict[str, float | int]]]:
+    rows: list[tuple[int, dict[str, float | int]]] = []
+    cumulative_sec = 0.0
+    for epoch in result.history or []:
+        metrics = epoch.metrics or {}
+        duration = _finite_float(metrics.get("epoch_duration_sec")) or 0.0
+        cumulative_sec += duration
+        payload: dict[str, float | int] = {
+            "epochs_total": int(epoch.epoch),
+            "training_time_sec": round(cumulative_sec, 4),
+        }
+        f1 = _finite_float(metrics.get("val/pixel_f1"))
+        if f1 is not None:
+            payload["f1_pixel"] = f1
+        if duration > 0:
+            payload["epoch_time_sec"] = round(duration, 4)
+        rows.append((int(epoch.epoch), payload))
+    return rows
+
+
+def _log_training_history_metrics(pipeline_config: Any, run_id: str, result: Any) -> None:
+    for epoch, metrics in _history_mlflow_metric_rows(result):
+        mlflow_log_metrics_to_run(pipeline_config, run_id, _allowed_training_metric_payload(metrics), step=epoch)
+
+
 def _run_training_pipeline(conf: PipelineRunConfig, store: Any) -> dict[str, Any]:
     summary = store.read_summary()
     mlflow_info = summary.get("mlflow") or {}
@@ -513,6 +630,7 @@ def _run_training_pipeline(conf: PipelineRunConfig, store: Any) -> dict[str, Any
         dataloader_workers = int(job.train.get("dataloader_workers", job.preprocess.get("dataloader_workers", 0)) or 0)
         train_loader = train_dataloader(tile_bundle, batch_size=batch_size, workers=dataloader_workers)
         val_loader = val_dataloader(tile_bundle, batch_size=batch_size, workers=dataloader_workers)
+    _validate_explicit_training_epochs(conf)
     train_cfg = TrainConfig(
         model_name=str(job.train.get("model_name") or _model_name_from_config(conf.model)),
         input_channels=len(job.params.get("input_bands") or [1, 2, 3, 4]),
@@ -548,7 +666,18 @@ def _run_training_pipeline(conf: PipelineRunConfig, store: Any) -> dict[str, Any
         },
     )
     try:
-        result_obj = train_model(request)
+        def _call_train_model() -> Any:
+            return train_model(request)
+
+        if run_id and not str(run_id).startswith("smoke-"):
+            result_obj = mlflow_run_with_active_mlflow_run(
+                pipeline_config,
+                str(run_id),
+                _call_train_model,
+                log_system_metrics=True,
+            )
+        else:
+            result_obj = _call_train_model()
     finally:
         if tile_bundle is not None:
             tile_bundle.train_dataset.close()
@@ -571,7 +700,14 @@ def _run_training_pipeline(conf: PipelineRunConfig, store: Any) -> dict[str, Any
     }
     if run_id and not str(run_id).startswith("smoke-"):
         mlflow_log_params_to_run(pipeline_config, str(run_id), params)
-        mlflow_log_metrics_to_run(pipeline_config, str(run_id), _allowed_training_metric_payload(result_obj.mlflow_metrics), step=result_obj.epochs_completed)
+        _log_training_history_metrics(pipeline_config, str(run_id), result_obj)
+        final_metrics = _allowed_training_metric_payload(result_obj.mlflow_metrics)
+        final_f1 = {"f1_pixel": final_metrics["f1_pixel"]} if "f1_pixel" in final_metrics else {}
+        final_rest = {key: value for key, value in final_metrics.items() if key != "f1_pixel"}
+        if final_f1:
+            mlflow_log_metrics_to_run(pipeline_config, str(run_id), final_f1, step=result_obj.best_epoch or result_obj.epochs_completed)
+        if final_rest:
+            mlflow_log_metrics_to_run(pipeline_config, str(run_id), final_rest, step=result_obj.epochs_completed)
         artifact_errors = mlflow_log_artifacts_to_run(pipeline_config, str(run_id), [*result_obj.mlflow_artifacts, *dataset_artifacts])
         if artifact_errors:
             result["warnings"] = list(result.get("warnings") or []) + artifact_errors
@@ -822,39 +958,15 @@ def _object_metric_summary(training_result: dict[str, Any]) -> tuple[dict[str, A
 
 
 def _log_mlflow_metrics_if_available(store: Any, metrics: dict[str, Any], counters: dict[str, Any] | None = None) -> list[str]:
-    summary = store.read_summary()
-    mlflow_info = summary.get("mlflow") or _read_training_result(store).get("mlflow") or {}
-    run_id = mlflow_info.get("run_id")
-    if not run_id or str(run_id).startswith("smoke-"):
-        return []
-    warnings: list[str] = []
-    try:
-        payload = _diagnostic_metric_payload(metrics, counters or {})
-        mlflow_log_metrics_to_run(load_config(), str(run_id), payload)
-    except Exception as exc:  # noqa: BLE001 - report warning without hiding stage metrics.
-        warnings.append(f"Failed to log F1 metrics to MLflow: {type(exc).__name__}: {exc}")
-    return warnings
+    return []
 
 
 def _diagnostic_metric_payload(metrics: dict[str, Any], counters: dict[str, Any]) -> dict[str, float]:
-    source = {**metrics, **counters}
-    mapping = {
-        "pixel_precision": "diagnostics/val_pixel_precision",
-        "pixel_recall": "diagnostics/val_pixel_recall",
-        "pixel_iou": "diagnostics/val_pixel_iou",
-        "pixel_accuracy": "diagnostics/val_pixel_accuracy",
-    }
-    payload: dict[str, float] = {}
-    for source_key, target_key in mapping.items():
-        number = _finite_float(source.get(source_key))
-        if number is not None:
-            payload[target_key] = number
-    return {key: value for key, value in payload.items() if key in DIAGNOSTIC_METRIC_KEYS}
+    return {}
 
 
 def _allowed_training_metric_payload(metrics: dict[str, Any]) -> dict[str, Any]:
-    allowed = MODEL_METRIC_KEYS | DIAGNOSTIC_METRIC_KEYS
-    return {key: value for key, value in metrics.items() if key in allowed}
+    return {key: value for key, value in metrics.items() if key in MODEL_METRIC_KEYS}
 
 
 def _finite_float(value: Any) -> float | None:
@@ -879,6 +991,12 @@ def _create_mlflow_run(conf: PipelineRunConfig, store: Any) -> dict[str, Any]:
         pipeline_config = load_config()
         experiment_name = conf.mlflow.get("experiment") or pipeline_config.mlflow_default_experiment
         extra_tags, extra_params = mlflow_tuning_metadata(conf.params)
+        class_slug = _slug_for_run_name(conf.class_name or conf.experiment_id)
+        run_name = _select_short_mlflow_run_name(
+            class_slug,
+            _amsterdam_today(),
+            _existing_mlflow_run_names(pipeline_config, experiment_name),
+        )
         experiment_tags = {}
         if conf.class_name:
             experiment_tags = {
@@ -889,10 +1007,13 @@ def _create_mlflow_run(conf: PipelineRunConfig, store: Any) -> dict[str, Any]:
         created = mlflow_create_run(
             pipeline_config,
             experiment_name=experiment_name,
-            run_name=conf.experiment_id,
+            run_name=run_name,
             tags={
                 "job_id": conf.experiment_id,
                 "pipeline_run_id": store.pipeline_run_id,
+                "mlsystem.pipeline_run_id": store.pipeline_run_id,
+                "mlsystem.full_experiment_id": conf.experiment_id,
+                "mlsystem.class_slug": class_slug,
                 "orchestrator": "pipeline",
                 "job_status": "running",
                 "execution_path": "pipeline_api",
@@ -935,6 +1056,7 @@ def _create_mlflow_run(conf: PipelineRunConfig, store: Any) -> dict[str, Any]:
                 "run_id": run_id,
                 "run_url_external": run_url,
                 "experiment_url_external": experiment_url,
+                "run_name": run_name,
                 "tracking_uri": pipeline_config.mlflow_tracking_uri_internal,
                 "artifact_uri": artifact_uri,
             }
@@ -953,7 +1075,7 @@ def _create_mlflow_run(conf: PipelineRunConfig, store: Any) -> dict[str, Any]:
                     "experiment_name": experiment_name,
                     "experiment_id": experiment_id,
                     "run_id": run_id,
-                    "run_name": conf.experiment_id,
+                    "run_name": run_name,
                     "tracking_uri": pipeline_config.mlflow_tracking_uri_internal,
                     "artifact_uri": artifact_uri,
                     "run_url": run_url,

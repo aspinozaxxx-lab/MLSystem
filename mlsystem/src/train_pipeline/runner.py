@@ -14,11 +14,12 @@ from .run_store import TrainPipelineRunStore, utc_now
 
 def worker_module_name() -> str:
     configured = os.getenv("MLSYSTEM_PIPELINE_WORKER_MODULE")
+    module_prefix = "src" if Path("/opt/mlsystem/src").exists() else "mlsystem.src"
     if configured:
+        if configured in {"src.pipeline_runner.worker", "mlsystem.src.pipeline_runner.worker"}:
+            return f"{module_prefix}.train_pipeline.worker"
         return configured
-    if Path("/opt/mlsystem/src").exists():
-        return "src.train_pipeline.worker"
-    return "mlsystem.src.train_pipeline.worker"
+    return f"{module_prefix}.train_pipeline.worker"
 
 
 class TrainPipelineRunner:

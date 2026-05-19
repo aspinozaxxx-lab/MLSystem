@@ -22,19 +22,15 @@
       <thead>
         <tr>
           <th>class</th>
-          <th>dataset_version</th>
           <th>dataset_date</th>
           <th>objects</th>
           <th>scenes</th>
           <th>best_pixel_f1</th>
-          <th>mlflow_run</th>
           <th>train_date</th>
-          <th>model/config</th>
-          <th>best_epoch</th>
         </tr>
       </thead>
       <tbody id="training-report-body">
-        <tr><td colspan="10">Загрузка...</td></tr>
+        <tr><td colspan="6">Загрузка...</td></tr>
       </tbody>
     </table>
   </div>
@@ -76,6 +72,11 @@
       return `<a class="secondary-link compact-link" href="${escapeHtml(runUrl)}">${escapeHtml(label || "MLflow")}</a>`;
     }
 
+    function mlflowIconLink(runUrl) {
+      if (!runUrl) return "n/a";
+      return `<a class="mlflow-icon-link" href="${escapeHtml(runUrl)}" title="MLflow run" aria-label="Open MLflow run"><span aria-hidden="true">&#8599;</span></a>`;
+    }
+
     function badge(value) {
       if (!value) return "";
       const cls = value === "no runs" ? "neutral" : "warning";
@@ -95,22 +96,18 @@
       statusBadge.className = "badge " + (data.status === "stale" ? "warning" : "ok");
       const rows = data.classes || [];
       if (!rows.length) {
-        body.innerHTML = '<tr><td colspan="10">Нет данных</td></tr>';
+        body.innerHTML = '<tr><td colspan="6">Нет данных</td></tr>';
         return;
       }
       const overall = data.overall_best;
       const overallRow = overall ? `
         <tr class="training-overall-row">
           <td><b>overall best</b><br>${escapeHtml(overall.class_name)}</td>
-          <td title="${escapeHtml(overall.dataset_version)}">${escapeHtml(versionLabel(overall.dataset_version))}</td>
-          <td>${escapeHtml(overall.dataset_date)}</td>
+          <td title="${escapeHtml(overall.dataset_version)}">${escapeHtml(overall.dataset_date)}</td>
           <td>${escapeHtml(overall.dataset_objects)}</td>
           <td>${escapeHtml(overall.dataset_scenes)}</td>
           <td>${f1(overall.pixel_f1)}</td>
-          <td>${mlflowLink(overall.run_url, overall.run_id)}</td>
           <td>${escapeHtml(overall.train_date)}</td>
-          <td>${escapeHtml(overall.params_summary || overall.model_name)}</td>
-          <td>${epoch(overall.best_epoch)}</td>
         </tr>` : "";
       body.innerHTML = overallRow + rows.map((item) => {
         const slug = escapeHtml(item.class_slug);
@@ -119,41 +116,33 @@
         const mainRow = `
           <tr class="training-main-row training-report-expandable" data-slug="${slug}" aria-expanded="false">
             <td><b>${escapeHtml(item.class_name)}</b> ${warning}</td>
-            <td title="${escapeHtml(item.dataset_version)}">${escapeHtml(versionLabel(item.dataset_version))}</td>
-            <td>${escapeHtml(item.dataset_date)}</td>
+            <td title="${escapeHtml(item.dataset_version)}">${escapeHtml(item.dataset_date)}</td>
             <td>${escapeHtml(item.dataset_objects)}</td>
             <td>${escapeHtml(item.dataset_scenes)}</td>
             <td>${f1(item.best_pixel_f1)}</td>
-            <td>${mlflowLink(item.best_run_url, item.best_run_id)}</td>
             <td>${escapeHtml(item.best_train_date)}</td>
-            <td>${escapeHtml(best.params_summary || best.model_name)}</td>
-            <td>${epoch(best.best_epoch)}</td>
           </tr>`;
         const versionRows = (item.dataset_versions || item.top_runs || []).map((run) => `
-          <tr>
-            <td>${escapeHtml(run.class_name || item.class_name)}</td>
-            <td title="${escapeHtml(run.dataset_version)}">${escapeHtml(versionLabel(run.dataset_version))}</td>
+          <tr title="${escapeHtml(run.dataset_version)}">
             <td>${escapeHtml(run.dataset_date)}</td>
             <td>${escapeHtml(run.dataset_objects)}</td>
             <td>${escapeHtml(run.dataset_scenes)}</td>
             <td>${f1(run.pixel_f1)}</td>
-            <td>${mlflowLink(run.run_url, run.run_id)}</td>
+            <td>${mlflowIconLink(run.run_url)}</td>
             <td>${escapeHtml(run.train_date)}</td>
             <td>${escapeHtml(run.params_summary || run.model_name)}</td>
             <td>${epoch(run.best_epoch)}</td>
           </tr>`).join("");
-        const empty = '<tr><td colspan="10">Нет run\u2019ов</td></tr>';
+        const empty = '<tr><td colspan="8">Нет run\u2019ов</td></tr>';
         const detailRow = `
           <tr class="training-detail-row" data-detail-for="${slug}">
-            <td colspan="10">
+            <td colspan="6">
               <div class="detail-collapse">
                 <div class="subtable-title">Лучший по версии датасета</div>
                 <div class="table-wrap subtable-wrap">
                   <table class="training-subtable">
                     <thead>
                       <tr>
-                        <th>class</th>
-                        <th>dataset_version</th>
                         <th>dataset_date</th>
                         <th>objects</th>
                         <th>scenes</th>

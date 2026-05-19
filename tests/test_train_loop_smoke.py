@@ -30,8 +30,10 @@ class TrainLoopSmokeTests(unittest.TestCase):
         self.assertEqual(result.status, "done")
         self.assertEqual(result.epochs_completed, 1)
         self.assertIsNotNone(result.checkpoint)
-        self.assertIn("model_metrics/f1_pixel", result.mlflow_metrics)
-        self.assertIn("model_metrics/epochs_total", result.mlflow_metrics)
+        self.assertIn("f1_pixel", result.mlflow_metrics)
+        self.assertIn("epochs_total", result.mlflow_metrics)
+        self.assertFalse(any(key.startswith("diagnostics/") for key in result.mlflow_metrics))
+        self.assertTrue((Path(tmp) / "training_diagnostics.json").exists())
 
 
 if __name__ == "__main__":
