@@ -351,6 +351,16 @@ def _best_current_dataset_run(runs: list[dict[str, Any]], inventory: dict[str, A
         if str(run.get("dataset_version") or "") in current_ids or str(run.get("dataset_fingerprint") or "") in current_ids
     ]
     if not matches:
+        inventory_objects = _int_or_none(inventory.get("objects_count"))
+        inventory_scenes = _int_or_none(inventory.get("scenes_count"))
+        if inventory_objects is not None and inventory_scenes is not None:
+            matches = [
+                run
+                for run in runs
+                if _int_or_none(run.get("dataset_objects")) == inventory_objects
+                and _int_or_none(run.get("dataset_scenes")) == inventory_scenes
+            ]
+    if not matches:
         return None
     matches.sort(key=lambda item: (_sort_f1(item.get("pixel_f1")), item.get("train_date") or ""))
     return matches[0]
