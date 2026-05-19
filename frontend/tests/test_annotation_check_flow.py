@@ -96,7 +96,7 @@ class AnnotationCheckFlowTests(unittest.TestCase):
 
             with patch("frontend.app.main.store_uploads", side_effect=fake_store), \
                 patch("frontend.app.main.MLSystemApiClient", FakeApiClient), \
-                patch("frontend.app.main.threading.Thread", InlineThread):
+                patch("frontend.app.main.BACKGROUND_THREAD", InlineThread):
                 response = client.post(
                     "/api/annotation-check",
                     files={
@@ -149,7 +149,7 @@ class AnnotationCheckFlowTests(unittest.TestCase):
 
             with patch("frontend.app.main.store_uploads", side_effect=fake_store), \
                 patch("frontend.app.main.MLSystemApiClient", FailingApiClient), \
-                patch("frontend.app.main.threading.Thread", InlineThread):
+                patch("frontend.app.main.BACKGROUND_THREAD", InlineThread):
                 response = client.post(
                     "/api/annotation-check",
                     files={

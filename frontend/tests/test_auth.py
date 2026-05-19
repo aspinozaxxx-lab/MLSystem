@@ -12,7 +12,7 @@ from frontend.app.config import FrontendConfig
 from frontend.app.main import create_app
 
 
-def test_config(tmp: Path) -> FrontendConfig:
+def make_config(tmp: Path) -> FrontendConfig:
     return FrontendConfig(
         username="mluser",
         password="qazwsxedc",
@@ -27,7 +27,7 @@ def test_config(tmp: Path) -> FrontendConfig:
 class FrontendAuthTests(unittest.TestCase):
     def test_login_success_and_logout(self) -> None:
         with tempfile.TemporaryDirectory() as td:
-            client = TestClient(create_app(test_config(Path(td))))
+            client = TestClient(create_app(make_config(Path(td))))
             response = client.post("/login", data={"username": "mluser", "password": "qazwsxedc"}, follow_redirects=False)
             self.assertEqual(response.status_code, 303)
             self.assertEqual(response.headers["location"], "/")
@@ -38,7 +38,7 @@ class FrontendAuthTests(unittest.TestCase):
 
     def test_login_fail_and_protected_redirect(self) -> None:
         with tempfile.TemporaryDirectory() as td:
-            client = TestClient(create_app(test_config(Path(td))))
+            client = TestClient(create_app(make_config(Path(td))))
             protected = client.get("/", follow_redirects=False)
             self.assertEqual(protected.status_code, 303)
             response = client.post("/login", data={"username": "mluser", "password": "wrong"})
@@ -46,13 +46,13 @@ class FrontendAuthTests(unittest.TestCase):
 
     def test_head_login_for_proxy_validation(self) -> None:
         with tempfile.TemporaryDirectory() as td:
-            client = TestClient(create_app(test_config(Path(td))))
+            client = TestClient(create_app(make_config(Path(td))))
             response = client.head("/login")
             self.assertEqual(response.status_code, 200)
 
     def test_proxy_check_requires_valid_session(self) -> None:
         with tempfile.TemporaryDirectory() as td:
-            client = TestClient(create_app(test_config(Path(td))))
+            client = TestClient(create_app(make_config(Path(td))))
             denied = client.get("/auth/proxy-check")
             self.assertEqual(denied.status_code, 401)
             client.post("/login", data={"username": "mluser", "password": "qazwsxedc"})
@@ -63,7 +63,7 @@ class FrontendAuthTests(unittest.TestCase):
 
     def test_home_has_admin_gateway_cards(self) -> None:
         with tempfile.TemporaryDirectory() as td:
-            client = TestClient(create_app(test_config(Path(td))))
+            client = TestClient(create_app(make_config(Path(td))))
             client.post("/login", data={"username": "mluser", "password": "qazwsxedc"})
             response = client.get("/")
             self.assertEqual(response.status_code, 200)
@@ -89,7 +89,7 @@ class FrontendAuthTests(unittest.TestCase):
 
     def test_queue_metrics_proxy_uses_inference_engine_api(self) -> None:
         with tempfile.TemporaryDirectory() as td:
-            config = test_config(Path(td))
+            config = make_config(Path(td))
             config = FrontendConfig(**{**config.__dict__, "inference_engine_api_url": "http://ie:8095", "inference_engine_api_token": "ie-token"})
             client = TestClient(create_app(config))
             client.post("/login", data={"username": "mluser", "password": "qazwsxedc"})
@@ -130,7 +130,7 @@ class FrontendAuthTests(unittest.TestCase):
 
     def test_services_status_uses_internal_upstreams(self) -> None:
         with tempfile.TemporaryDirectory() as td:
-            config = test_config(Path(td))
+            config = make_config(Path(td))
             config = FrontendConfig(**{**config.__dict__, "inference_engine_api_url": "http://ie:8095", "inference_engine_api_token": "ie-token"})
             client = TestClient(create_app(config))
             client.post("/login", data={"username": "mluser", "password": "qazwsxedc"})

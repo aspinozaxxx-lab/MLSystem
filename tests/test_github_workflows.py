@@ -89,3 +89,23 @@ def test_cicd_contains_all_previous_path_triggers() -> None:
     for trigger_name in ["push", "pull_request"]:
         paths = set(triggers[trigger_name]["paths"])
         assert EXPECTED_TRIGGER_PATHS <= paths
+
+
+def test_cicd_has_lightweight_workflow_check_job() -> None:
+    data = _load_workflow(WORKFLOWS / ORCHESTRATOR)
+    assert "workflow_checks" in data["jobs"]
+    assert data["jobs"]["workflow_checks"]["if"] == "${{ needs.plan.outputs.run_workflow_checks == 'true' }}"
+
+
+def test_cicd_change_does_not_fan_out_to_all_reusable_checks() -> None:
+    text = (WORKFLOWS / ORCHESTRATOR).read_text(encoding="utf-8")
+    assert "|^\\.github/workflows/cicd\\.yml" not in text
+    assert 'force_all=true' not in text
+
+
+def test_cicd_test_only_changes_do_not_deploy_services() -> None:
+    text = (WORKFLOWS / ORCHESTRATOR).read_text(encoding="utf-8")
+    assert 'reason_mlsystem_service="tests changed"' in text
+    assert 'reason_inference_service="tests changed"' in text
+    assert 'reason_frontend_site="tests changed"' in text
+    assert "grep -q 'tests changed'" in text

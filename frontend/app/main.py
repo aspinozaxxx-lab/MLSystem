@@ -32,6 +32,16 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 logger = logging.getLogger("mlsystem.frontend")
 ANNOTATION_RUNNING_STALE_SEC = 45 * 60
 TERMINAL_ANNOTATION_STATUSES = {"succeeded", "failed"}
+BACKGROUND_THREAD = threading.Thread
+
+
+def _template_response(request: Request, name: str, context: dict[str, Any] | None = None, *, status_code: int = 200) -> HTMLResponse:
+    context = dict(context or {})
+    try:
+        return templates.TemplateResponse(request, name, context, status_code=status_code)
+    except (TypeError, ValueError):
+        legacy_context = {"request": request, **context}
+        return templates.TemplateResponse(name, legacy_context, status_code=status_code)
 
 
 def create_app(config: FrontendConfig | None = None) -> FastAPI:
@@ -80,7 +90,7 @@ def create_app(config: FrontendConfig | None = None) -> FastAPI:
     def login_page(request: Request) -> HTMLResponse:
         if is_authenticated(request):
             return RedirectResponse("/", status_code=303)
-        return templates.TemplateResponse(request, "login.html", {"error": None})
+        return _template_response(request, "login.html", {"error": None})
 
     @app.head("/login")
     def login_head() -> Response:
@@ -95,7 +105,7 @@ def create_app(config: FrontendConfig | None = None) -> FastAPI:
         if verify_credentials(username, password, config):
             login_session(request, username)
             return RedirectResponse("/", status_code=303)
-        return templates.TemplateResponse(request, "login.html", {"error": "Неверный логин или пароль"}, status_code=401)
+        return _template_response(request, "login.html", {"error": "Неверный логин или пароль"}, status_code=401)
 
     @app.post("/logout")
     def logout(request: Request) -> RedirectResponse:
@@ -107,7 +117,7 @@ def create_app(config: FrontendConfig | None = None) -> FastAPI:
         redirect = redirect_if_unauthorized(request)
         if redirect:
             return redirect
-        return templates.TemplateResponse(
+        return _template_response(
             request,
             "index.html",
             {
@@ -127,7 +137,7 @@ def create_app(config: FrontendConfig | None = None) -> FastAPI:
         redirect = redirect_if_unauthorized(request)
         if redirect:
             return redirect
-        return templates.TemplateResponse(
+        return _template_response(
             request,
             "annotation_check.html",
             {
@@ -146,14 +156,14 @@ def create_app(config: FrontendConfig | None = None) -> FastAPI:
             return redirect
         path = Path(__file__).resolve().parents[2] / "docs" / "frontend.md"
         text = path.read_text(encoding="utf-8") if path.exists() else "docs/frontend.md is not available in this container."
-        return templates.TemplateResponse(request, "docs.html", {"title": "Frontend", "text": text})
+        return _template_response(request, "docs.html", {"title": "Frontend", "text": text})
 
     @app.get("/training-report", response_class=HTMLResponse)
     def training_report_page(request: Request) -> HTMLResponse:
         redirect = redirect_if_unauthorized(request)
         if redirect:
             return redirect
-        return templates.TemplateResponse(request, "training_report.html", {})
+        return _template_response(request, "training_report.html", {})
 
     @app.head("/training-report")
     def training_report_head(request: Request) -> Response:
@@ -181,7 +191,7 @@ def create_app(config: FrontendConfig | None = None) -> FastAPI:
     @app.get("/minio-browser/", response_class=HTMLResponse)
     def minio_browser(request: Request, bucket: str = "", prefix: str = "", _user: str = Depends(require_user)) -> HTMLResponse:
         listing = _minio_listing(config, bucket=bucket.strip(), prefix=prefix.strip())
-        return templates.TemplateResponse(
+        return _template_response(
             request,
             "minio_browser.html",
             {
@@ -269,7 +279,7 @@ def create_app(config: FrontendConfig | None = None) -> FastAPI:
                 "scene_count": uploads.scene_count,
             },
         )
-        thread = threading.Thread(target=_run_annotation_check, args=(config, run_id, payload), daemon=True)
+        thread = BACKGROUND_THREAD(target=_run_annotation_check, args=(config, run_id, payload), daemon=True)
         thread.start()
         return JSONResponse({"status": "queued", "run_id": run_id})
 

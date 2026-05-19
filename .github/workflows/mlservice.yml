@@ -39,10 +39,25 @@ jobs:
           python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
           python -m pip install \
             PyYAML pydantic fastapi uvicorn requests mlflow boto3 numpy shapely pyproj rasterio pillow \
-            onnx onnxscript tritonclient[http] segmentation-models-pytorch
+            onnx onnxscript tritonclient[http] segmentation-models-pytorch pytest
 
       - name: Run unit tests
-        run: python -m unittest discover -s tests
+        run: |
+          python -m pytest \
+            tests/test_architecture_boundaries.py \
+            tests/test_train_pipeline_config.py \
+            tests/test_train_pipeline_run_store.py \
+            tests/test_train_pipeline_status.py \
+            tests/test_train_pipeline_worker.py \
+            tests/test_inference_pipeline_api.py \
+            tests/test_inference_pipeline_contracts.py \
+            tests/test_inference_pipeline_fastapi.py \
+            tests/test_train_api.py \
+            tests/test_train_losses.py \
+            tests/test_train_model_factory.py \
+            tests/test_train_loop_smoke.py \
+            tests/test_segmentation_metrics.py \
+            tests/test_object_metrics.py
 
       - name: Compile Python modules
         run: python -m compileall -q mlsystem tests

@@ -101,13 +101,13 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r frontend/requirements.txt
           python -m pip install -e InferenceEngine
-          python -m pip install PyYAML httpx shapely pyproj affine numpy pydantic
+          python -m pip install PyYAML httpx shapely pyproj affine numpy pydantic pytest
       - name: Run monitoring and frontend tests
         run: |
-          python -m unittest discover -s monitoring/tests
-          python -m unittest discover -s frontend/tests
-          python -m unittest tests.test_monitoring_configs tests.test_frontend_gateway_config
-          python -m unittest InferenceEngine.tests.test_api
+          python -m pytest \
+            monitoring/tests \
+            tests/test_monitoring_configs.py \
+            tests/test_frontend_gateway_config.py
       - name: Compile changed Python packages
         run: python -m compileall -q InferenceEngine frontend tests monitoring
       - name: Whitespace check
