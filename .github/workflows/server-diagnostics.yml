@@ -1,16 +1,22 @@
 name: Server diagnostics
 
 on:
-  push:
-    branches: [main, master]
-    paths:
-      - ".github/workflows/server-diagnostics.yml"
-  workflow_dispatch:
+  workflow_call:
+    inputs:
+      mode:
+        type: string
+        default: diagnostics
+
+permissions:
+  contents: read
 
 jobs:
   diagnostics:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    concurrency:
+      group: mlsystem-gpu-server
+      cancel-in-progress: false
     env:
       GPU_SERVER_HOST: ${{ secrets.GPU_SERVER_HOST }}
       GPU_SERVER_USER: ${{ secrets.GPU_SERVER_USER }}
@@ -76,3 +82,12 @@ jobs:
           echo ==== nvidia-smi ====
           nvidia-smi || true
           "'
+      - name: Write workflow summary
+        if: always()
+        run: |
+          {
+            echo "### Server diagnostics workflow"
+            echo
+            echo "- mode: ${{ inputs.mode }}"
+            echo "- diagnostics: completed"
+          } >> "$GITHUB_STEP_SUMMARY"

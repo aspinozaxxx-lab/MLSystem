@@ -1,41 +1,39 @@
 name: ansible
 
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
       mode:
         description: "Run infrastructure check or apply"
-        required: true
+        required: false
         default: "check"
-        type: choice
-        options:
-          - check
-          - apply
+        type: string
+      deploy:
+        description: "Apply platform infrastructure"
+        required: false
+        default: false
+        type: boolean
+      validate:
+        description: "Run server validation after deploy"
+        required: false
+        default: true
+        type: boolean
       bootstrap:
         description: "Install/repair Docker, NVIDIA driver and NVIDIA container toolkit before apply"
         required: false
-        default: "false"
-        type: choice
-        options:
-          - "false"
-          - "true"
-  pull_request:
-    paths:
-      - "ansible/**"
-      - "deploy/**"
-      - ".github/workflows/ansible.yml"
-  push:
-    branches: [main, master]
-    paths:
-      - "ansible/**"
-      - "deploy/**"         
-      - ".github/workflows/ansible.yml"
+        default: false
+        type: boolean
+      run_real_validation:
+        description: "Run long real validation"
+        required: false
+        default: false
+        type: boolean
 permissions:
   contents: read
 
 concurrency:
   group: mlsystem-ansible-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   syntax:
@@ -99,10 +97,10 @@ jobs:
   apply-infra:
     runs-on: ubuntu-latest
     needs: plan-or-check
-    if: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')) || (github.event_name == 'workflow_dispatch' && inputs.mode == 'apply') }}
+    if: ${{ inputs.deploy || inputs.mode == 'apply' || inputs.mode == 'deploy' }}
     concurrency:
-      group: mlsystem-gpu-server-${{ github.ref }}
-      cancel-in-progress: true
+      group: mlsystem-gpu-server
+      cancel-in-progress: false
     env:
       GPU_SERVER_HOST: ${{ secrets.GPU_SERVER_HOST }}
       GPU_SERVER_USER: ${{ secrets.GPU_SERVER_USER }}
@@ -148,7 +146,7 @@ jobs:
           EOF
 
       - name: Bootstrap GPU server
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.bootstrap == 'true' }}
+        if: ${{ inputs.bootstrap }}
         run: ansible-playbook -i ansible/inventory/gpu-ci.ini ansible/playbooks/bootstrap_gpu_server.yml
 
       - name: Apply GPU ML platform infrastructure
@@ -157,10 +155,10 @@ jobs:
   validate-infra:
     runs-on: ubuntu-latest
     needs: apply-infra
-    if: ${{ needs.apply-infra.result == 'success' }}
+    if: ${{ inputs.validate && needs.apply-infra.result == 'success' }}
     concurrency:
-      group: mlsystem-gpu-server-${{ github.ref }}
-      cancel-in-progress: true
+      group: mlsystem-gpu-server
+      cancel-in-progress: false
     env:
       GPU_SERVER_HOST: ${{ secrets.GPU_SERVER_HOST }}
       GPU_SERVER_USER: ${{ secrets.GPU_SERVER_USER }}
@@ -182,9 +180,34 @@ jobs:
           $SSH "curl -fsS http://127.0.0.1:8088/health | python3 -m json.tool"
           $SSH "curl -fsS http://127.0.0.1:8088/ready | python3 -m json.tool"
           COMPOSE="docker compose --env-file /etc/mlsystem/gpu-platform.env -f /data/mlsystem/platform/docker-compose.yml"
-          $SSH "$COMPOSE exec -T mlsystem-api python -c \"from src.pipeline_runner.stages import DEFAULT_PIPELINE_STAGES; print(','.join(DEFAULT_PIPELINE_STAGES))\""
+          $SSH "$COMPOSE exec -T mlsystem-api python -c \"from src.train_pipeline.config import DEFAULT_PIPELINE_STAGES; from src.train_pipeline.stages import STAGE_POOLS; missing=[stage for stage in DEFAULT_PIPELINE_STAGES if stage not in STAGE_POOLS]; assert not missing, missing; print(','.join(DEFAULT_PIPELINE_STAGES))\""
           $SSH "$COMPOSE exec -T mlsystem-api sh -lc 'nvidia-smi || python -c \"import torch; print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else \\\"NO_CUDA\\\")\"'"
           $SSH "docker ps --format '{{.Names}}' | grep -i airflow && exit 1 || true"
           $SSH "$COMPOSE ps | grep -i airflow && exit 1 || true"
-          $SSH "cd /opt/mlsystem/repo && timeout 3600 python3 scripts/smoke_pipeline_api_no_airflow.py --api http://127.0.0.1:8088 --token-file /etc/mlsystem/gpu-platform.env --dry-run --real-train --poll-sec 30 --train-timeout-sec 1800 --out /tmp/mlsystem-pipeline-smoke.json"
+          $SSH "cd /opt/mlsystem/repo && timeout 600 python3 scripts/smoke_pipeline_api_no_airflow.py --api http://127.0.0.1:8088 --token-file /etc/mlsystem/gpu-platform.env --dry-run --poll-sec 10 --out /tmp/mlsystem-pipeline-smoke.json"
           $SSH "cat /tmp/mlsystem-pipeline-smoke.json"
+
+      - name: Optional real MLSystem validation
+        if: ${{ inputs.run_real_validation }}
+        run: |
+          SSH="ssh -i ~/.ssh/gpu_server_key -o StrictHostKeyChecking=yes ${GPU_SERVER_USER}@${GPU_SERVER_HOST}"
+          $SSH "cd /opt/mlsystem/repo && timeout 3600 python3 scripts/smoke_pipeline_api_no_airflow.py --api http://127.0.0.1:8088 --token-file /etc/mlsystem/gpu-platform.env --dry-run --real-train --poll-sec 30 --train-timeout-sec 1800 --out /tmp/mlsystem-pipeline-real-smoke.json"
+          $SSH "cat /tmp/mlsystem-pipeline-real-smoke.json"
+
+  summary:
+    runs-on: ubuntu-latest
+    needs: [syntax, plan-or-check, apply-infra, validate-infra]
+    if: ${{ always() }}
+    steps:
+      - name: Write workflow summary
+        run: |
+          {
+            echo "### Platform infra workflow"
+            echo
+            echo "- mode: ${{ inputs.mode }}"
+            echo "- deploy: ${{ inputs.deploy }}"
+            echo "- validate: ${{ inputs.validate }}"
+            echo "- syntax: ${{ needs.syntax.result }}"
+            echo "- apply-infra: ${{ needs.apply-infra.result }}"
+            echo "- validate-infra: ${{ needs.validate-infra.result }}"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,16 +1,17 @@
 name: frontend-ansible
 
 on:
-  workflow_dispatch:
-  pull_request:
-    paths:
-      - "ansible/**"
-      - ".github/workflows/frontend-ansible.yml"
-  push:
-    branches: [main, master]
-    paths:
-      - "ansible/**"
-      - ".github/workflows/frontend-ansible.yml"
+  workflow_call:
+    inputs:
+      mode:
+        type: string
+        default: check
+      deploy:
+        type: boolean
+        default: false
+      validate:
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -56,9 +57,9 @@ jobs:
   apply-frontend-settings:
     runs-on: ubuntu-latest
     needs: syntax
-    if: ${{ github.event_name == 'workflow_dispatch' }}
+    if: ${{ inputs.deploy || inputs.mode == 'deploy' || inputs.mode == 'apply' }}
     concurrency:
-      group: mlsystem-gpu-server-${{ github.ref }}
+      group: mlsystem-gpu-server
       cancel-in-progress: false
     env:
       GPU_SERVER_HOST: ${{ secrets.GPU_SERVER_HOST }}
@@ -109,9 +110,9 @@ jobs:
   validate-frontend-settings:
     runs-on: ubuntu-latest
     needs: apply-frontend-settings
-    if: ${{ needs.apply-frontend-settings.result == 'success' }}
+    if: ${{ inputs.validate && needs.apply-frontend-settings.result == 'success' }}
     concurrency:
-      group: mlsystem-gpu-server-${{ github.ref }}
+      group: mlsystem-gpu-server
       cancel-in-progress: false
     env:
       GPU_SERVER_HOST: ${{ secrets.GPU_SERVER_HOST }}
@@ -135,3 +136,21 @@ jobs:
           $SSH "curl -fsS http://127.0.0.1:8090/health | python3 -m json.tool"
           $SSH "curl -fsS http://127.0.0.1/health | python3 -m json.tool"
           $SSH "set -e; USER=\$(awk -F= '/^MLSYSTEM_FRONTEND_USER=/{print substr(\$0,index(\$0,\"=\")+1)}' /etc/mlsystem/gpu-platform.env); PASS=\$(awk -F= '/^MLSYSTEM_FRONTEND_PASSWORD=/{print substr(\$0,index(\$0,\"=\")+1)}' /etc/mlsystem/gpu-platform.env); rm -f /tmp/mlsystem-frontend-cookie; curl -fsS -c /tmp/mlsystem-frontend-cookie -d \"username=\$USER&password=\$PASS\" http://127.0.0.1/login >/dev/null; curl -fsS -b /tmp/mlsystem-frontend-cookie http://127.0.0.1/ | grep 'RabbitMQ'; curl -fsS -b /tmp/mlsystem-frontend-cookie http://127.0.0.1/ | grep 'MLSystem'; curl -fsS -b /tmp/mlsystem-frontend-cookie http://127.0.0.1/ | grep 'training-report'; curl -fsSI -b /tmp/mlsystem-frontend-cookie http://127.0.0.1/training-report; curl -fsSI -b /tmp/mlsystem-frontend-cookie http://127.0.0.1/mlflow/ | head -20; curl -fsSI -b /tmp/mlsystem-frontend-cookie http://127.0.0.1/rabbitmq/ | head -20; curl -fsSI -b /tmp/mlsystem-frontend-cookie http://127.0.0.1/grafana/ | head -20; curl -fsS -b /tmp/mlsystem-frontend-cookie http://127.0.0.1/minio-browser/ | grep 'MinIO artifacts'"
+
+  summary:
+    runs-on: ubuntu-latest
+    needs: [syntax, apply-frontend-settings, validate-frontend-settings]
+    if: ${{ always() }}
+    steps:
+      - name: Write workflow summary
+        run: |
+          {
+            echo "### Frontend settings workflow"
+            echo
+            echo "- mode: ${{ inputs.mode }}"
+            echo "- deploy: ${{ inputs.deploy }}"
+            echo "- validate: ${{ inputs.validate }}"
+            echo "- syntax: ${{ needs.syntax.result }}"
+            echo "- apply-frontend-settings: ${{ needs.apply-frontend-settings.result }}"
+            echo "- validate-frontend-settings: ${{ needs.validate-frontend-settings.result }}"
+          } >> "$GITHUB_STEP_SUMMARY"

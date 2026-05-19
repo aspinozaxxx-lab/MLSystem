@@ -1,0 +1,625 @@
+name: CI/CD orchestrator
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Run checks only or deploy changed pipelines"
+        required: true
+        default: "check"
+        type: choice
+        options:
+          - check
+          - deploy
+      force_all:
+        description: "Force all pipelines"
+        required: false
+        default: false
+        type: boolean
+      force_platform_infra:
+        required: false
+        default: false
+        type: boolean
+      force_inference_infra:
+        required: false
+        default: false
+        type: boolean
+      force_mlsystem_service:
+        required: false
+        default: false
+        type: boolean
+      force_inference_service:
+        required: false
+        default: false
+        type: boolean
+      force_frontend_settings:
+        required: false
+        default: false
+        type: boolean
+      force_frontend_site:
+        required: false
+        default: false
+        type: boolean
+      force_monitoring:
+        required: false
+        default: false
+        type: boolean
+      run_server_diagnostics:
+        required: false
+        default: false
+        type: boolean
+      bootstrap:
+        description: "Allow platform bootstrap during deploy"
+        required: false
+        default: false
+        type: boolean
+      run_real_validation:
+        description: "Allow long real server validation"
+        required: false
+        default: false
+        type: boolean
+  pull_request:
+    paths:
+      - "ansible/**"
+      - "deploy/**"
+      - "mlsystem/**"
+      - "InferenceEngine/**"
+      - "frontend/**"
+      - "monitoring/**"
+      - "configs/**"
+      - "scripts/**"
+      - "tests/**"
+      - ".github/workflows/**"
+  push:
+    branches: [main, master]
+    paths:
+      - "ansible/**"
+      - "deploy/**"
+      - "mlsystem/**"
+      - "InferenceEngine/**"
+      - "frontend/**"
+      - "monitoring/**"
+      - "configs/**"
+      - "scripts/**"
+      - "tests/**"
+      - ".github/workflows/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mlsystem-cicd-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: "🧭 plan"
+    runs-on: ubuntu-latest
+    outputs:
+      mode: ${{ steps.plan.outputs.mode }}
+      deploy_enabled: ${{ steps.plan.outputs.deploy_enabled }}
+      workflow_only: ${{ steps.plan.outputs.workflow_only }}
+      run_platform_infra: ${{ steps.plan.outputs.run_platform_infra }}
+      run_inference_infra: ${{ steps.plan.outputs.run_inference_infra }}
+      run_mlsystem_service: ${{ steps.plan.outputs.run_mlsystem_service }}
+      run_inference_service: ${{ steps.plan.outputs.run_inference_service }}
+      run_frontend_settings: ${{ steps.plan.outputs.run_frontend_settings }}
+      run_frontend_site: ${{ steps.plan.outputs.run_frontend_site }}
+      run_monitoring: ${{ steps.plan.outputs.run_monitoring }}
+      run_server_diagnostics: ${{ steps.plan.outputs.run_server_diagnostics }}
+      deploy_platform_infra: ${{ steps.plan.outputs.deploy_platform_infra }}
+      deploy_inference_infra: ${{ steps.plan.outputs.deploy_inference_infra }}
+      deploy_mlsystem_service: ${{ steps.plan.outputs.deploy_mlsystem_service }}
+      deploy_inference_service: ${{ steps.plan.outputs.deploy_inference_service }}
+      deploy_frontend_settings: ${{ steps.plan.outputs.deploy_frontend_settings }}
+      deploy_frontend_site: ${{ steps.plan.outputs.deploy_frontend_site }}
+      deploy_monitoring: ${{ steps.plan.outputs.deploy_monitoring }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: plan
+        name: Build execution plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.sha }}
+          INPUT_MODE: ${{ inputs.mode || 'check' }}
+          FORCE_ALL: ${{ inputs.force_all || false }}
+          FORCE_PLATFORM_INFRA: ${{ inputs.force_platform_infra || false }}
+          FORCE_INFERENCE_INFRA: ${{ inputs.force_inference_infra || false }}
+          FORCE_MLSYSTEM_SERVICE: ${{ inputs.force_mlsystem_service || false }}
+          FORCE_INFERENCE_SERVICE: ${{ inputs.force_inference_service || false }}
+          FORCE_FRONTEND_SETTINGS: ${{ inputs.force_frontend_settings || false }}
+          FORCE_FRONTEND_SITE: ${{ inputs.force_frontend_site || false }}
+          FORCE_MONITORING: ${{ inputs.force_monitoring || false }}
+          RUN_SERVER_DIAGNOSTICS: ${{ inputs.run_server_diagnostics || false }}
+        run: |
+          set -euo pipefail
+
+          bool() {
+            case "${1:-false}" in
+              true|True|TRUE|1|yes|on) echo true ;;
+              *) echo false ;;
+            esac
+          }
+
+          mode="$INPUT_MODE"
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            mode="check"
+          elif [ "$EVENT_NAME" = "push" ]; then
+            mode="deploy"
+          fi
+          deploy_enabled=false
+          if [ "$mode" = "deploy" ] && [ "$EVENT_NAME" != "pull_request" ]; then
+            deploy_enabled=true
+          fi
+
+          base=""
+          head="$HEAD_SHA"
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            base="$BASE_SHA"
+          elif [ -n "${BEFORE_SHA:-}" ] && ! echo "$BEFORE_SHA" | grep -q '^0\{40\}$'; then
+            base="$BEFORE_SHA"
+          else
+            base="$(git rev-parse HEAD^ 2>/dev/null || true)"
+          fi
+
+          if [ -n "$base" ] && git cat-file -e "$base^{commit}" 2>/dev/null; then
+            git diff --name-only "$base" "$head" > /tmp/changed_files.txt
+          else
+            git ls-files > /tmp/changed_files.txt
+          fi
+          changed_count="$(wc -l < /tmp/changed_files.txt | tr -d ' ')"
+
+          force_all="$(bool "$FORCE_ALL")"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$mode" = "check" ] && [ "$force_all" = "false" ]; then
+            force_all=true
+          fi
+
+          has() { grep -Eq "$1" /tmp/changed_files.txt; }
+          only_workflows=false
+          if [ "$changed_count" != "0" ] && ! grep -Ev '^\.github/workflows/' /tmp/changed_files.txt >/dev/null; then
+            only_workflows=true
+          fi
+
+          run_platform_infra=false
+          run_inference_infra=false
+          run_mlsystem_service=false
+          run_inference_service=false
+          run_frontend_settings=false
+          run_frontend_site=false
+          run_monitoring=false
+          run_server_diagnostics="$(bool "$RUN_SERVER_DIAGNOSTICS")"
+
+          reason_platform_infra="no matching changes"
+          reason_inference_infra="no matching changes"
+          reason_mlsystem_service="no matching changes"
+          reason_inference_service="no matching changes"
+          reason_frontend_settings="no matching changes"
+          reason_frontend_site="no matching changes"
+          reason_monitoring="no matching changes"
+          reason_server_diagnostics="not requested"
+
+          if has '^(ansible/|deploy/)'; then run_platform_infra=true; reason_platform_infra="ansible/deploy changed"; fi
+          if has '^(InferenceEngine/Dockerfile|ansible/.*(inference|rabbit|triton)|deploy/.*(inference|rabbit|triton))'; then run_inference_infra=true; reason_inference_infra="inference infra changed"; fi
+          if has '^monitoring/'; then run_monitoring=true; reason_monitoring="monitoring changed"; fi
+          if has '^(mlsystem/|configs/|scripts/|tests/)'; then run_mlsystem_service=true; reason_mlsystem_service="MLSystem/config/scripts/tests changed"; fi
+          if has '^InferenceEngine/'; then run_inference_service=true; reason_inference_service="InferenceEngine changed"; fi
+          if has '^frontend/'; then run_frontend_site=true; reason_frontend_site="frontend changed"; fi
+          if has '^(ansible/playbooks/deploy_frontend\.yml|ansible/roles/frontend/)'; then run_frontend_settings=true; reason_frontend_settings="frontend Ansible/settings changed"; fi
+
+          if has '^\.github/workflows/ansible\.yml|^\.github/workflows/cicd\.yml'; then run_platform_infra=true; reason_platform_infra="workflow changed"; fi
+          if has '^\.github/workflows/inference-engine-infra\.yml|^\.github/workflows/cicd\.yml'; then run_inference_infra=true; reason_inference_infra="workflow changed"; fi
+          if has '^\.github/workflows/mlservice\.yml|^\.github/workflows/cicd\.yml'; then run_mlsystem_service=true; reason_mlsystem_service="workflow changed"; fi
+          if has '^\.github/workflows/inference-engine-service\.yml|^\.github/workflows/cicd\.yml'; then run_inference_service=true; reason_inference_service="workflow changed"; fi
+          if has '^\.github/workflows/frontend-ansible\.yml|^\.github/workflows/cicd\.yml'; then run_frontend_settings=true; reason_frontend_settings="workflow changed"; fi
+          if has '^\.github/workflows/frontend-site\.yml|^\.github/workflows/cicd\.yml'; then run_frontend_site=true; reason_frontend_site="workflow changed"; fi
+          if has '^\.github/workflows/monitoring\.yml|^\.github/workflows/cicd\.yml'; then run_monitoring=true; reason_monitoring="workflow changed"; fi
+          if has '^\.github/workflows/server-diagnostics\.yml|^\.github/workflows/cicd\.yml'; then run_server_diagnostics=true; reason_server_diagnostics="workflow changed"; fi
+
+          force_pipeline() {
+            local name="$1"
+            local force="$2"
+            if [ "$force_all" = "true" ] || [ "$(bool "$force")" = "true" ]; then
+              printf '%s' true
+            else
+              printf '%s' "$name"
+            fi
+          }
+          run_platform_infra="$(force_pipeline "$run_platform_infra" "$FORCE_PLATFORM_INFRA")"
+          run_inference_infra="$(force_pipeline "$run_inference_infra" "$FORCE_INFERENCE_INFRA")"
+          run_mlsystem_service="$(force_pipeline "$run_mlsystem_service" "$FORCE_MLSYSTEM_SERVICE")"
+          run_inference_service="$(force_pipeline "$run_inference_service" "$FORCE_INFERENCE_SERVICE")"
+          run_frontend_settings="$(force_pipeline "$run_frontend_settings" "$FORCE_FRONTEND_SETTINGS")"
+          run_frontend_site="$(force_pipeline "$run_frontend_site" "$FORCE_FRONTEND_SITE")"
+          run_monitoring="$(force_pipeline "$run_monitoring" "$FORCE_MONITORING")"
+
+          [ "$run_platform_infra" = "true" ] && { [ "$force_all" = "true" ] || [ "$(bool "$FORCE_PLATFORM_INFRA")" = "true" ]; } && reason_platform_infra="forced"
+          [ "$run_inference_infra" = "true" ] && { [ "$force_all" = "true" ] || [ "$(bool "$FORCE_INFERENCE_INFRA")" = "true" ]; } && reason_inference_infra="forced"
+          [ "$run_mlsystem_service" = "true" ] && { [ "$force_all" = "true" ] || [ "$(bool "$FORCE_MLSYSTEM_SERVICE")" = "true" ]; } && reason_mlsystem_service="forced"
+          [ "$run_inference_service" = "true" ] && { [ "$force_all" = "true" ] || [ "$(bool "$FORCE_INFERENCE_SERVICE")" = "true" ]; } && reason_inference_service="forced"
+          [ "$run_frontend_settings" = "true" ] && { [ "$force_all" = "true" ] || [ "$(bool "$FORCE_FRONTEND_SETTINGS")" = "true" ]; } && reason_frontend_settings="forced"
+          [ "$run_frontend_site" = "true" ] && { [ "$force_all" = "true" ] || [ "$(bool "$FORCE_FRONTEND_SITE")" = "true" ]; } && reason_frontend_site="forced"
+          [ "$run_monitoring" = "true" ] && { [ "$force_all" = "true" ] || [ "$(bool "$FORCE_MONITORING")" = "true" ]; } && reason_monitoring="forced"
+          [ "$run_server_diagnostics" = "true" ] && reason_server_diagnostics="requested or workflow changed"
+
+          any_force=false
+          for force in \
+            "$FORCE_PLATFORM_INFRA" \
+            "$FORCE_INFERENCE_INFRA" \
+            "$FORCE_MLSYSTEM_SERVICE" \
+            "$FORCE_INFERENCE_SERVICE" \
+            "$FORCE_FRONTEND_SETTINGS" \
+            "$FORCE_FRONTEND_SITE" \
+            "$FORCE_MONITORING"
+          do
+            if [ "$(bool "$force")" = "true" ]; then
+              any_force=true
+            fi
+          done
+
+          allow_workflow_deploy=false
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && { [ "$force_all" = "true" ] || [ "$any_force" = "true" ]; }; then
+            allow_workflow_deploy=true
+          fi
+          can_deploy_pipeline() {
+            local run="$1"
+            local reason="$2"
+            if [ "$deploy_enabled" != "true" ] || [ "$run" != "true" ]; then
+              echo false
+            elif [ "$only_workflows" = "true" ] && [ "$allow_workflow_deploy" != "true" ] && [ "$reason" = "workflow changed" ]; then
+              echo false
+            else
+              echo true
+            fi
+          }
+
+          deploy_platform_infra="$(can_deploy_pipeline "$run_platform_infra" "$reason_platform_infra")"
+          deploy_inference_infra="$(can_deploy_pipeline "$run_inference_infra" "$reason_inference_infra")"
+          deploy_mlsystem_service="$(can_deploy_pipeline "$run_mlsystem_service" "$reason_mlsystem_service")"
+          deploy_inference_service="$(can_deploy_pipeline "$run_inference_service" "$reason_inference_service")"
+          deploy_frontend_settings="$(can_deploy_pipeline "$run_frontend_settings" "$reason_frontend_settings")"
+          deploy_frontend_site="$(can_deploy_pipeline "$run_frontend_site" "$reason_frontend_site")"
+          deploy_monitoring="$(can_deploy_pipeline "$run_monitoring" "$reason_monitoring")"
+
+          {
+            echo "mode=$mode"
+            echo "deploy_enabled=$deploy_enabled"
+            echo "workflow_only=$only_workflows"
+            echo "run_platform_infra=$run_platform_infra"
+            echo "run_inference_infra=$run_inference_infra"
+            echo "run_mlsystem_service=$run_mlsystem_service"
+            echo "run_inference_service=$run_inference_service"
+            echo "run_frontend_settings=$run_frontend_settings"
+            echo "run_frontend_site=$run_frontend_site"
+            echo "run_monitoring=$run_monitoring"
+            echo "run_server_diagnostics=$run_server_diagnostics"
+            echo "deploy_platform_infra=$deploy_platform_infra"
+            echo "deploy_inference_infra=$deploy_inference_infra"
+            echo "deploy_mlsystem_service=$deploy_mlsystem_service"
+            echo "deploy_inference_service=$deploy_inference_service"
+            echo "deploy_frontend_settings=$deploy_frontend_settings"
+            echo "deploy_frontend_site=$deploy_frontend_site"
+            echo "deploy_monitoring=$deploy_monitoring"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### CI/CD plan"
+            echo
+            echo "| pipeline | run/skip | reason | mode |"
+            echo "|---|---:|---|---|"
+            echo "| platform infra | $run_platform_infra | $reason_platform_infra | $mode |"
+            echo "| inference infra | $run_inference_infra | $reason_inference_infra | $mode |"
+            echo "| MLSystem service | $run_mlsystem_service | $reason_mlsystem_service | $mode |"
+            echo "| InferenceEngine service | $run_inference_service | $reason_inference_service | $mode |"
+            echo "| frontend settings | $run_frontend_settings | $reason_frontend_settings | $mode |"
+            echo "| frontend site | $run_frontend_site | $reason_frontend_site | $mode |"
+            echo "| monitoring | $run_monitoring | $reason_monitoring | $mode |"
+            echo "| server diagnostics | $run_server_diagnostics | $reason_server_diagnostics | $mode |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  check_platform_infra:
+    name: "✅ checks / platform infra"
+    needs: plan
+    if: ${{ needs.plan.outputs.run_platform_infra == 'true' }}
+    uses: ./.github/workflows/ansible.yml
+    with:
+      mode: check
+      deploy: false
+      validate: false
+      bootstrap: false
+      run_real_validation: false
+    secrets: inherit
+
+  check_inference_infra:
+    name: "✅ checks / inference infra"
+    needs: plan
+    if: ${{ needs.plan.outputs.run_inference_infra == 'true' }}
+    uses: ./.github/workflows/inference-engine-infra.yml
+    with:
+      mode: check
+      deploy: false
+      validate: false
+      bootstrap: false
+    secrets: inherit
+
+  check_mlsystem_service:
+    name: "✅ checks / MLSystem service"
+    needs: plan
+    if: ${{ needs.plan.outputs.run_mlsystem_service == 'true' }}
+    uses: ./.github/workflows/mlservice.yml
+    with:
+      mode: check
+      deploy: false
+      validate: false
+      run_real_validation: false
+    secrets: inherit
+
+  check_inference_service:
+    name: "✅ checks / InferenceEngine service"
+    needs: plan
+    if: ${{ needs.plan.outputs.run_inference_service == 'true' }}
+    uses: ./.github/workflows/inference-engine-service.yml
+    with:
+      mode: check
+      deploy: false
+      validate: false
+      run_real_validation: false
+    secrets: inherit
+
+  check_frontend_settings:
+    name: "✅ checks / frontend settings"
+    needs: plan
+    if: ${{ needs.plan.outputs.run_frontend_settings == 'true' }}
+    uses: ./.github/workflows/frontend-ansible.yml
+    with:
+      mode: check
+      deploy: false
+      validate: false
+    secrets: inherit
+
+  check_frontend_site:
+    name: "✅ checks / frontend site"
+    needs: plan
+    if: ${{ needs.plan.outputs.run_frontend_site == 'true' }}
+    uses: ./.github/workflows/frontend-site.yml
+    with:
+      mode: check
+      deploy: false
+      validate: false
+    secrets: inherit
+
+  check_monitoring:
+    name: "✅ checks / monitoring"
+    needs: plan
+    if: ${{ needs.plan.outputs.run_monitoring == 'true' }}
+    uses: ./.github/workflows/monitoring.yml
+    with:
+      mode: check
+      deploy: false
+      validate: false
+    secrets: inherit
+
+  checks:
+    name: "✅ checks"
+    runs-on: ubuntu-latest
+    needs:
+      - plan
+      - check_platform_infra
+      - check_inference_infra
+      - check_mlsystem_service
+      - check_inference_service
+      - check_frontend_settings
+      - check_frontend_site
+      - check_monitoring
+    if: ${{ always() }}
+    steps:
+      - name: Summarize check results
+        env:
+          NEEDS_JSON: ${{ toJson(needs) }}
+        run: |
+          python - <<'PY'
+          import json, os, sys
+          data = json.loads(os.environ["NEEDS_JSON"])
+          failures = {
+              name: item.get("result")
+              for name, item in data.items()
+              if name != "plan" and item.get("result") in {"failure", "cancelled"}
+          }
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fp:
+              fp.write("### Check results\n\n")
+              fp.write("| job | result |\n|---|---:|\n")
+              for name, item in data.items():
+                  if name != "plan":
+                      fp.write(f"| {name} | {item.get('result')} |\n")
+          if failures:
+              print(failures)
+              sys.exit(1)
+          PY
+
+  platform_infra:
+    name: "🏗 platform infra"
+    needs: [plan, checks]
+    if: ${{ always() && needs.checks.result == 'success' && needs.plan.outputs.deploy_platform_infra == 'true' }}
+    uses: ./.github/workflows/ansible.yml
+    with:
+      mode: deploy
+      deploy: true
+      validate: false
+      bootstrap: ${{ inputs.bootstrap || false }}
+      run_real_validation: false
+    secrets: inherit
+
+  inference_infra:
+    name: "🐇 inference infra"
+    needs: [plan, checks, platform_infra]
+    if: ${{ always() && needs.checks.result == 'success' && (needs.platform_infra.result == 'success' || needs.platform_infra.result == 'skipped') && needs.plan.outputs.deploy_inference_infra == 'true' }}
+    uses: ./.github/workflows/inference-engine-infra.yml
+    with:
+      mode: deploy
+      deploy: true
+      validate: false
+      bootstrap: false
+    secrets: inherit
+
+  monitoring:
+    name: "📊 monitoring"
+    needs: [plan, checks, platform_infra, inference_infra]
+    if: ${{ always() && needs.checks.result == 'success' && (needs.platform_infra.result == 'success' || needs.platform_infra.result == 'skipped') && (needs.inference_infra.result == 'success' || needs.inference_infra.result == 'skipped') && needs.plan.outputs.deploy_monitoring == 'true' }}
+    uses: ./.github/workflows/monitoring.yml
+    with:
+      mode: deploy
+      deploy: true
+      validate: false
+    secrets: inherit
+
+  mlsystem_service:
+    name: "🧠 MLSystem service"
+    needs: [plan, checks, platform_infra, inference_infra, monitoring]
+    if: ${{ always() && needs.checks.result == 'success' && (needs.platform_infra.result == 'success' || needs.platform_infra.result == 'skipped') && (needs.inference_infra.result == 'success' || needs.inference_infra.result == 'skipped') && (needs.monitoring.result == 'success' || needs.monitoring.result == 'skipped') && needs.plan.outputs.deploy_mlsystem_service == 'true' }}
+    uses: ./.github/workflows/mlservice.yml
+    with:
+      mode: deploy
+      deploy: true
+      validate: false
+      run_real_validation: false
+    secrets: inherit
+
+  inference_service:
+    name: "🔎 InferenceEngine service"
+    needs: [plan, checks, platform_infra, inference_infra, monitoring, mlsystem_service]
+    if: ${{ always() && needs.checks.result == 'success' && (needs.platform_infra.result == 'success' || needs.platform_infra.result == 'skipped') && (needs.inference_infra.result == 'success' || needs.inference_infra.result == 'skipped') && (needs.monitoring.result == 'success' || needs.monitoring.result == 'skipped') && (needs.mlsystem_service.result == 'success' || needs.mlsystem_service.result == 'skipped') && needs.plan.outputs.deploy_inference_service == 'true' }}
+    uses: ./.github/workflows/inference-engine-service.yml
+    with:
+      mode: deploy
+      deploy: true
+      validate: false
+      run_real_validation: false
+    secrets: inherit
+
+  frontend_settings:
+    name: "🌐 frontend settings"
+    needs: [plan, checks, platform_infra, inference_infra, monitoring, mlsystem_service, inference_service]
+    if: ${{ always() && needs.checks.result == 'success' && (needs.platform_infra.result == 'success' || needs.platform_infra.result == 'skipped') && (needs.inference_infra.result == 'success' || needs.inference_infra.result == 'skipped') && (needs.monitoring.result == 'success' || needs.monitoring.result == 'skipped') && (needs.mlsystem_service.result == 'success' || needs.mlsystem_service.result == 'skipped') && (needs.inference_service.result == 'success' || needs.inference_service.result == 'skipped') && needs.plan.outputs.deploy_frontend_settings == 'true' }}
+    uses: ./.github/workflows/frontend-ansible.yml
+    with:
+      mode: deploy
+      deploy: true
+      validate: false
+    secrets: inherit
+
+  frontend_site:
+    name: "🌐 frontend"
+    needs: [plan, checks, platform_infra, inference_infra, monitoring, mlsystem_service, inference_service, frontend_settings]
+    if: ${{ always() && needs.checks.result == 'success' && (needs.platform_infra.result == 'success' || needs.platform_infra.result == 'skipped') && (needs.inference_infra.result == 'success' || needs.inference_infra.result == 'skipped') && (needs.monitoring.result == 'success' || needs.monitoring.result == 'skipped') && (needs.mlsystem_service.result == 'success' || needs.mlsystem_service.result == 'skipped') && (needs.inference_service.result == 'success' || needs.inference_service.result == 'skipped') && (needs.frontend_settings.result == 'success' || needs.frontend_settings.result == 'skipped') && needs.plan.outputs.deploy_frontend_site == 'true' }}
+    uses: ./.github/workflows/frontend-site.yml
+    with:
+      mode: deploy
+      deploy: true
+      validate: false
+    secrets: inherit
+
+  final_server_validation:
+    name: "🧪 final server validation"
+    runs-on: ubuntu-latest
+    needs:
+      - plan
+      - checks
+      - platform_infra
+      - inference_infra
+      - monitoring
+      - mlsystem_service
+      - inference_service
+      - frontend_settings
+      - frontend_site
+    if: ${{ always() && needs.checks.result == 'success' && needs.plan.outputs.deploy_enabled == 'true' && (needs.plan.outputs.deploy_platform_infra == 'true' || needs.plan.outputs.deploy_inference_infra == 'true' || needs.plan.outputs.deploy_monitoring == 'true' || needs.plan.outputs.deploy_mlsystem_service == 'true' || needs.plan.outputs.deploy_inference_service == 'true' || needs.plan.outputs.deploy_frontend_settings == 'true' || needs.plan.outputs.deploy_frontend_site == 'true') && (needs.platform_infra.result == 'success' || needs.platform_infra.result == 'skipped') && (needs.inference_infra.result == 'success' || needs.inference_infra.result == 'skipped') && (needs.monitoring.result == 'success' || needs.monitoring.result == 'skipped') && (needs.mlsystem_service.result == 'success' || needs.mlsystem_service.result == 'skipped') && (needs.inference_service.result == 'success' || needs.inference_service.result == 'skipped') && (needs.frontend_settings.result == 'success' || needs.frontend_settings.result == 'skipped') && (needs.frontend_site.result == 'success' || needs.frontend_site.result == 'skipped') }}
+    timeout-minutes: 30
+    concurrency:
+      group: mlsystem-gpu-server
+      cancel-in-progress: false
+    env:
+      GPU_SERVER_HOST: ${{ secrets.GPU_SERVER_HOST }}
+      GPU_SERVER_USER: ${{ secrets.GPU_SERVER_USER }}
+      EXPECT_API_COMMIT: ${{ needs.plan.outputs.deploy_mlsystem_service }}
+      CHECK_MONITORING: ${{ needs.plan.outputs.deploy_monitoring }}
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          umask 077
+          cat > ~/.ssh/gpu_server_key <<'KEY'
+          ${{ secrets.GPU_SERVER_SSH_KEY }}
+          KEY
+          sed -i 's/^          //' ~/.ssh/gpu_server_key
+          ssh-keyscan -H "$GPU_SERVER_HOST" >> ~/.ssh/known_hosts
+
+      - name: Validate deployed server
+        run: |
+          set -euo pipefail
+          SSH="ssh -i ~/.ssh/gpu_server_key -o StrictHostKeyChecking=yes ${GPU_SERVER_USER}@${GPU_SERVER_HOST}"
+          $SSH "curl -fsS http://127.0.0.1:8088/health | python3 -m json.tool"
+          $SSH "curl -fsS http://127.0.0.1:8088/ready | python3 -m json.tool"
+          if [ "$EXPECT_API_COMMIT" = "true" ]; then
+            commit="$($SSH "python3 - <<'PY'
+          import json, urllib.request
+          print(json.load(urllib.request.urlopen('http://127.0.0.1:8088/health')).get('commit'))
+          PY")"
+            test "$commit" = "$GITHUB_SHA"
+          fi
+          COMPOSE="docker compose --env-file /etc/mlsystem/gpu-platform.env -f /data/mlsystem/platform/docker-compose.yml"
+          $SSH "$COMPOSE exec -T mlsystem-api python - <<'PY'
+          from mlsystem.src.train_pipeline.api import start_train_pipeline_run, get_train_pipeline_run
+          from mlsystem.src.inference_pipeline.api import start_pseudolabel_run, get_pseudolabel_run
+          from mlsystem.src.dataset_preparing.api import inspect_dataset, prepare_training_dataset
+          from mlsystem.src.mlflow_adapter.api import check_mlflow
+          print('mlsystem imports ok')
+          PY"
+          $SSH "curl -fsS http://127.0.0.1:8095/health | python3 -m json.tool"
+          $SSH "curl -fsS http://127.0.0.1:8095/ready | python3 -m json.tool"
+          $SSH "curl -fsS http://127.0.0.1:8095/queues | python3 -m json.tool"
+          $SSH "curl -fsS http://127.0.0.1:8090/health | python3 -m json.tool"
+          $SSH "curl -fsSI http://127.0.0.1:8090/login | head -20"
+          $SSH "set -e; USER=\$(awk -F= '/^MLSYSTEM_FRONTEND_USER=/{print substr(\$0,index(\$0,\"=\")+1)}' /etc/mlsystem/gpu-platform.env); PASS=\$(awk -F= '/^MLSYSTEM_FRONTEND_PASSWORD=/{print substr(\$0,index(\$0,\"=\")+1)}' /etc/mlsystem/gpu-platform.env); COOKIE=/tmp/mlsystem-cicd-cookie; rm -f \"\$COOKIE\"; curl -fsS -c \"\$COOKIE\" -b \"\$COOKIE\" -d \"username=\$USER&password=\$PASS\" http://127.0.0.1:8090/login >/dev/null; curl -fsSI -b \"\$COOKIE\" http://127.0.0.1:8090/training-report | head -20; curl -fsS -b \"\$COOKIE\" http://127.0.0.1:8090/api/training-report | python3 -m json.tool >/tmp/training-report.json; rm -f \"\$COOKIE\""
+          if [ "$CHECK_MONITORING" = "true" ]; then
+            $SSH "curl -fsS http://127.0.0.1:9090/prometheus/-/ready"
+            $SSH "curl -fsS http://127.0.0.1:3000/api/health | python3 -m json.tool"
+            $SSH "curl -fsS 'http://127.0.0.1:9090/prometheus/api/v1/targets' >/tmp/prometheus-targets.json && python3 - <<'PY'
+          import json
+          with open('/tmp/prometheus-targets.json', encoding='utf-8') as fp:
+              data=json.load(fp)['data']['activeTargets']
+          required={'node-exporter','cadvisor','rabbitmq','triton','inference-engine','mlsystem-monitor-exporter'}
+          up={target['labels'].get('job') for target in data if target.get('health')=='up'}
+          missing=required-up
+          print('targets up', sorted(up))
+          if missing:
+              raise SystemExit(f'missing targets: {sorted(missing)}')
+          PY"
+          fi
+          $SSH "docker ps --format '{{.Names}}' | grep -i airflow && exit 1 || true"
+          $SSH "$COMPOSE ps | grep -i airflow && exit 1 || true"
+
+      - name: Write validation summary
+        if: always()
+        run: |
+          {
+            echo "### Final server validation"
+            echo
+            echo "- MLSystem API: checked"
+            echo "- InferenceEngine: checked"
+            echo "- Frontend: checked"
+            echo "- Monitoring: ${CHECK_MONITORING}"
+            echo "- Airflow containers: forbidden and checked"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  server_diagnostics:
+    name: "🧪 optional diagnostics"
+    needs: [plan, final_server_validation]
+    if: ${{ always() && needs.plan.outputs.run_server_diagnostics == 'true' && (needs.final_server_validation.result == 'success' || needs.final_server_validation.result == 'skipped') }}
+    uses: ./.github/workflows/server-diagnostics.yml
+    with:
+      mode: diagnostics
+    secrets: inherit

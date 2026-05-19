@@ -1,18 +1,20 @@
 name: InferenceEngine service
 
 on:
-  pull_request:
-    paths:
-      - "InferenceEngine/**"
-      - "mlsystem/**"          
-      - ".github/workflows/inference-engine-service.yml"
-  push:
-    branches: [main, master]
-    paths:
-      - "InferenceEngine/**"
-      - "mlsystem/**"            
-      - ".github/workflows/inference-engine-service.yml"
-  workflow_dispatch:
+  workflow_call:
+    inputs:
+      mode:
+        type: string
+        default: check
+      deploy:
+        type: boolean
+        default: false
+      validate:
+        type: boolean
+        default: true
+      run_real_validation:
+        type: boolean
+        default: false
 
 concurrency:
   group: inference-engine-service-${{ github.ref }}
@@ -64,9 +66,9 @@ jobs:
   deploy-service-code:
     runs-on: ubuntu-latest
     needs: build-artifact
-    if: github.event_name == 'workflow_dispatch'
+    if: ${{ inputs.deploy || inputs.mode == 'deploy' || inputs.mode == 'apply' }}
     concurrency:
-      group: mlsystem-gpu-server-${{ github.ref }}
+      group: mlsystem-gpu-server
       cancel-in-progress: false
     env:
       GPU_SERVER_HOST: ${{ secrets.GPU_SERVER_HOST }}
@@ -112,9 +114,9 @@ jobs:
   validate-service:
     runs-on: ubuntu-latest
     needs: deploy-service-code
-    if: github.event_name == 'workflow_dispatch'
+    if: ${{ inputs.validate && needs.deploy-service-code.result == 'success' }}
     concurrency:
-      group: mlsystem-gpu-server-${{ github.ref }}
+      group: mlsystem-gpu-server
       cancel-in-progress: false
     env:
       GPU_SERVER_HOST: ${{ secrets.GPU_SERVER_HOST }}
@@ -143,9 +145,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: validate-service
     timeout-minutes: 360
-    if: github.event_name == 'workflow_dispatch'
+    if: ${{ inputs.run_real_validation && needs.validate-service.result == 'success' }}
     concurrency:
-      group: mlsystem-gpu-server-${{ github.ref }}
+      group: mlsystem-gpu-server
       cancel-in-progress: false
     env:
       GPU_SERVER_HOST: ${{ secrets.GPU_SERVER_HOST }}
@@ -175,3 +177,23 @@ jobs:
           name: inference-engine-server-validation
           path: inference_engine_server_validation.json
           if-no-files-found: ignore
+
+  summary:
+    runs-on: ubuntu-latest
+    needs: [test, build-artifact, deploy-service-code, validate-service, validate-real-server]
+    if: ${{ always() }}
+    steps:
+      - name: Write workflow summary
+        run: |
+          {
+            echo "### InferenceEngine service workflow"
+            echo
+            echo "- mode: ${{ inputs.mode }}"
+            echo "- deploy: ${{ inputs.deploy }}"
+            echo "- validate: ${{ inputs.validate }}"
+            echo "- test: ${{ needs.test.result }}"
+            echo "- build-artifact: ${{ needs.build-artifact.result }}"
+            echo "- deploy-service-code: ${{ needs.deploy-service-code.result }}"
+            echo "- validate-service: ${{ needs.validate-service.result }}"
+            echo "- validate-real-server: ${{ needs.validate-real-server.result }}"
+          } >> "$GITHUB_STEP_SUMMARY"
