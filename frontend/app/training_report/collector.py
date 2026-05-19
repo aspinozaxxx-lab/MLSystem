@@ -360,6 +360,12 @@ def _best_current_dataset_run(runs: list[dict[str, Any]], inventory: dict[str, A
                 if _int_or_none(run.get("dataset_objects")) == inventory_objects
                 and _int_or_none(run.get("dataset_scenes")) == inventory_scenes
             ]
+        if not matches and inventory_objects is not None:
+            matches = [
+                run
+                for run in runs
+                if _int_or_none(run.get("dataset_objects")) == inventory_objects
+            ]
     if not matches:
         return None
     matches.sort(key=lambda item: (_sort_f1(item.get("pixel_f1")), item.get("train_date") or ""))

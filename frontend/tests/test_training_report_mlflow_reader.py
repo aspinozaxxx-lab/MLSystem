@@ -187,6 +187,42 @@ class TrainingReportMLflowReaderTests(unittest.TestCase):
         self.assertEqual(lakes["dataset_objects"], 410)
         self.assertEqual(lakes["dataset_scenes"], 28)
 
+    def test_current_inventory_dataset_can_match_by_objects_when_scene_count_is_unknown(self) -> None:
+        collector = object.__new__(TrainingReportCollector)
+        rows = collector._build_class_rows(  # pylint: disable=protected-access
+            {"lakes": {"objects_count": 410, "scenes_count": 0, "dataset_fingerprint": "inventory-fp"}},
+            [
+                {
+                    "run_id": "old_high",
+                    "class_slug": "lakes",
+                    "pixel_f1": 0.9,
+                    "train_date": "2026-05-10",
+                    "best_epoch": 12,
+                    "epochs_completed": 12,
+                    "dataset_version": "old-fp",
+                    "dataset_fingerprint": "old-fp",
+                    "dataset_objects": 300,
+                    "dataset_scenes": 24,
+                },
+                {
+                    "run_id": "current_lower",
+                    "class_slug": "lakes",
+                    "pixel_f1": 0.4,
+                    "train_date": "2026-05-19",
+                    "best_epoch": 12,
+                    "epochs_completed": 12,
+                    "dataset_version": "mlmarkup-commit",
+                    "dataset_fingerprint": "pipeline-fp",
+                    "dataset_objects": 410,
+                    "dataset_scenes": 28,
+                },
+            ],
+        )
+        lakes = next(item for item in rows if item["class_slug"] == "lakes")
+        self.assertEqual(lakes["best_run_id"], "current_lower")
+        self.assertEqual(lakes["dataset_objects"], 410)
+        self.assertEqual(lakes["dataset_scenes"], 28)
+
     def test_overall_best_selected_from_best_per_dataset_version_rows(self) -> None:
         collector = object.__new__(TrainingReportCollector)
         rows = collector._build_class_rows(  # pylint: disable=protected-access
