@@ -56,6 +56,7 @@ class TrainingReportCollector:
         runs_by_id = _merge_runs_by_id([*runtime_runs, *mlflow_runs])
         known_run_ids = sorted(runs_by_id)
         class_rows = self._build_class_rows(inventories, list(runs_by_id.values()))
+        overall_best = _overall_best(class_rows)
         updated_at = utc_now_iso()
         payload = {
             "status": "ok" if not errors else "stale" if self.cache.read_index() else "ok",
@@ -66,6 +67,7 @@ class TrainingReportCollector:
                 "cache_path": str(self.cache.index_path),
             },
             "classes": class_rows,
+            "overall_best": overall_best,
         }
         self.cache.write_index(payload)
         state.update(
@@ -145,7 +147,7 @@ class TrainingReportCollector:
                         "rules": [
                             "exclude missing or perfect pixel F1",
                             f"exclude runs before {MIN_TRUSTED_TRAIN_DATE}",
-                            f"exclude runs whose best epoch is before {int(MIN_TRUSTED_BEST_EPOCH)}",
+                            f"exclude runs with fewer than {int(MIN_TRUSTED_BEST_EPOCH)} completed epochs",
                         ],
                     },
                     "dataset_versions": dataset_versions,
@@ -315,6 +317,20 @@ def _best_runs_by_dataset_version(runs: list[dict[str, Any]]) -> list[dict[str, 
         best.append(group[0])
     best.sort(key=lambda item: (_sort_f1(item.get("pixel_f1")), item.get("train_date") or ""))
     return best
+
+
+def _overall_best(class_rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    candidates: list[dict[str, Any]] = []
+    for row in class_rows:
+        for version in row.get("dataset_versions") or []:
+            item = dict(version)
+            item.setdefault("class_name", row.get("class_name"))
+            item.setdefault("class_slug", row.get("class_slug"))
+            candidates.append(item)
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: (_sort_f1(item.get("pixel_f1")), item.get("train_date") or ""))
+    return candidates[0]
 
 
 def _read_runtime_report_runs(report_root: Path) -> list[dict[str, Any]]:
@@ -521,8 +537,12 @@ def _is_trusted_training_run(run: dict[str, Any]) -> bool:
     train_date = _date_only(run.get("train_date"))
     if not train_date or train_date < MIN_TRUSTED_TRAIN_DATE:
         return False
-    best_epoch = _float_or_none(run.get("best_epoch"))
-    if best_epoch is None or best_epoch < MIN_TRUSTED_BEST_EPOCH:
+    epochs_completed = _float_or_none(run.get("epochs_completed"))
+    if epochs_completed is None:
+        epochs_completed = _float_or_none(run.get("epochs_planned"))
+    if epochs_completed is None:
+        epochs_completed = _float_or_none(run.get("best_epoch"))
+    if epochs_completed is None or epochs_completed < MIN_TRUSTED_BEST_EPOCH:
         return False
     metric_source = str(run.get("metric_name_source") or "").casefold()
     if metric_source and "object" in metric_source:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from frontend.app.training_report.collector import TrainingReportCollector
+from frontend.app.training_report.collector import TrainingReportCollector, _overall_best
 from frontend.app.training_report.mlflow_reader import normalize_pixel_f1, normalize_run
 
 
@@ -78,6 +78,7 @@ class TrainingReportMLflowReaderTests(unittest.TestCase):
                     "run_url": "/mlflow/#/experiments/1/runs/low",
                     "train_date": "2026-05-10",
                     "best_epoch": 12,
+                    "epochs_completed": 12,
                     "dataset_version": "v1",
                 },
                 {
@@ -87,6 +88,7 @@ class TrainingReportMLflowReaderTests(unittest.TestCase):
                     "run_url": "/mlflow/#/experiments/1/runs/high",
                     "train_date": "2026-05-10",
                     "best_epoch": 12,
+                    "epochs_completed": 12,
                     "dataset_version": "v1",
                 },
                 {
@@ -96,6 +98,7 @@ class TrainingReportMLflowReaderTests(unittest.TestCase):
                     "run_url": "/mlflow/#/experiments/1/runs/other_version",
                     "train_date": "2026-05-10",
                     "best_epoch": 12,
+                    "epochs_completed": 12,
                     "dataset_version": "v2",
                 },
             ],
@@ -105,6 +108,18 @@ class TrainingReportMLflowReaderTests(unittest.TestCase):
         self.assertEqual(lakes["top_runs"][0]["run_id"], "high")
         self.assertEqual(lakes["best_pixel_f1"], 0.9)
         self.assertEqual(lakes["dataset_version"], "v1")
+
+    def test_overall_best_selected_from_best_per_dataset_version_rows(self) -> None:
+        collector = object.__new__(TrainingReportCollector)
+        rows = collector._build_class_rows(  # pylint: disable=protected-access
+            {"lakes": {"objects_count": 2, "scenes_count": 3}, "deforest": {"objects_count": 3, "scenes_count": 4}},
+            [
+                {"run_id": "lakes", "class_slug": "lakes", "pixel_f1": 0.4, "train_date": "2026-05-10", "best_epoch": 2, "epochs_completed": 10, "dataset_version": "v1"},
+                {"run_id": "deforest", "class_slug": "deforest", "pixel_f1": 0.7, "train_date": "2026-05-10", "best_epoch": 10, "epochs_completed": 10, "dataset_version": "v2"},
+            ],
+        )
+        overall = _overall_best(rows)  # pylint: disable=protected-access
+        self.assertEqual(overall["run_id"], "deforest")
 
     def test_perfect_pixel_f1_runs_are_excluded(self) -> None:
         collector = object.__new__(TrainingReportCollector)
@@ -126,6 +141,7 @@ class TrainingReportMLflowReaderTests(unittest.TestCase):
                     "run_url": "/mlflow/#/experiments/1/runs/real",
                     "train_date": "2026-05-10",
                     "best_epoch": 12,
+                    "epochs_completed": 12,
                 },
             ],
         )
@@ -145,6 +161,7 @@ class TrainingReportMLflowReaderTests(unittest.TestCase):
                     "run_url": "/mlflow/#/experiments/1/runs/run",
                     "train_date": "2026-05-10",
                     "best_epoch": 12,
+                    "epochs_completed": 12,
                 },
             ],
         )
@@ -164,6 +181,7 @@ class TrainingReportMLflowReaderTests(unittest.TestCase):
                     "run_url": "/mlflow/#/experiments/1/runs/old",
                     "train_date": "2026-05-05",
                     "best_epoch": 12,
+                    "epochs_completed": 12,
                     "run_status": "FINISHED",
                 },
                 {
@@ -173,6 +191,7 @@ class TrainingReportMLflowReaderTests(unittest.TestCase):
                     "run_url": "/mlflow/#/experiments/1/runs/early_best",
                     "train_date": "2026-05-10",
                     "best_epoch": 9,
+                    "epochs_completed": 9,
                     "run_status": "FINISHED",
                 },
                 {
@@ -181,7 +200,8 @@ class TrainingReportMLflowReaderTests(unittest.TestCase):
                     "pixel_f1": 0.18,
                     "run_url": "/mlflow/#/experiments/1/runs/trusted",
                     "train_date": "2026-05-10",
-                    "best_epoch": 10,
+                    "best_epoch": 1,
+                    "epochs_completed": 10,
                     "run_status": "FINISHED",
                 },
             ],

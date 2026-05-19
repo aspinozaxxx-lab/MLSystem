@@ -98,7 +98,21 @@
         body.innerHTML = '<tr><td colspan="10">Нет данных</td></tr>';
         return;
       }
-      body.innerHTML = rows.map((item) => {
+      const overall = data.overall_best;
+      const overallRow = overall ? `
+        <tr class="training-overall-row">
+          <td><b>overall best</b><br>${escapeHtml(overall.class_name)}</td>
+          <td title="${escapeHtml(overall.dataset_version)}">${escapeHtml(versionLabel(overall.dataset_version))}</td>
+          <td>${escapeHtml(overall.dataset_date)}</td>
+          <td>${escapeHtml(overall.dataset_objects)}</td>
+          <td>${escapeHtml(overall.dataset_scenes)}</td>
+          <td>${f1(overall.pixel_f1)}</td>
+          <td>${mlflowLink(overall.run_url, overall.run_id)}</td>
+          <td>${escapeHtml(overall.train_date)}</td>
+          <td>${escapeHtml(overall.params_summary || overall.model_name)}</td>
+          <td>${epoch(overall.best_epoch)}</td>
+        </tr>` : "";
+      body.innerHTML = overallRow + rows.map((item) => {
         const slug = escapeHtml(item.class_slug);
         const warning = item.warning ? badge(item.warning) : "";
         const best = (item.dataset_versions || item.top_runs || [])[0] || {};
