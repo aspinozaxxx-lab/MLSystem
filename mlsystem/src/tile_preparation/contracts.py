@@ -28,4 +28,10 @@ class TileDatasetRequest:
     augmentation_level: int = 2
     mosaic_enabled: bool | None = None
     normalization_mode: str = "uint8_255"
+    max_empty_tile_share: float | None = None
+    max_tiles_per_scene: int | None = None
+    max_train_tiles: int | None = None
+    max_val_tiles: int | None = None
+    augmentations: dict[str, Any] | None = None
+    seed: int | None = None
     metadata: dict[str, Any] = field(default_factory=dict)

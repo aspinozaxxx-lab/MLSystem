@@ -31,6 +31,7 @@ class TrainConfig:
     scheduler: dict[str, Any] | str | None = None
     loss: dict[str, Any] = field(default_factory=dict)
     metric_threshold: float = 0.5
+    metric_thresholds: list[float] | None = None
     device: str | None = None
     require_gpu: bool = False
     batch_size: int | None = None

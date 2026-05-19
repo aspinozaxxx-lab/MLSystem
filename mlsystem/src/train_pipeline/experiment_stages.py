@@ -67,6 +67,11 @@ MODEL_METRIC_KEYS = {
     "epochs_total",
     "epoch_time_sec",
     "training_time_sec",
+    "val/best_threshold",
+    "val/pixel_f1_best_threshold",
+    "val/precision_best_threshold",
+    "val/recall_best_threshold",
+    "val/pixel_iou_best_threshold",
 }
 
 
@@ -538,6 +543,11 @@ def _history_mlflow_metric_rows(result: Any) -> list[tuple[int, dict[str, float 
             payload["f1_pixel"] = f1
         if duration > 0:
             payload["epoch_time_sec"] = round(duration, 4)
+        for key, value in metrics.items():
+            if _is_training_threshold_metric(key):
+                finite = _finite_float(value)
+                if finite is not None:
+                    payload[key] = finite
         rows.append((int(epoch.epoch), payload))
     return rows
 
@@ -624,6 +634,12 @@ def _run_training_pipeline(conf: PipelineRunConfig, store: Any) -> dict[str, Any
                 augmentation_level=augmentation_level,
                 mosaic_enabled=job.preprocess.get("mosaic_enabled"),
                 normalization_mode=str(job.preprocess.get("normalization_mode") or "uint8_255"),
+                max_empty_tile_share=_optional_float(job.preprocess.get("max_empty_tile_share", job.train.get("max_empty_tile_share"))),
+                max_tiles_per_scene=_optional_int(job.preprocess.get("max_tiles_per_scene", job.train.get("max_tiles_per_scene"))),
+                max_train_tiles=_optional_int(job.preprocess.get("max_train_tiles", job.train.get("max_train_tiles"))),
+                max_val_tiles=_optional_int(job.preprocess.get("max_val_tiles", job.train.get("max_val_tiles"))),
+                augmentations=job.train.get("augmentations"),
+                seed=_optional_int(job.preprocess.get("split_seed", job.train.get("seed"))),
             )
         )
         batch_size = int(job.train.get("batch_size") or 1)
@@ -643,6 +659,7 @@ def _run_training_pipeline(conf: PipelineRunConfig, store: Any) -> dict[str, Any
         scheduler=job.train.get("scheduler") or job.train.get("scheduler_name"),
         loss=dict(job.train.get("loss") or {}),
         metric_threshold=float(job.train.get("metric_threshold") or job.evaluate.get("threshold") or 0.5),
+        metric_thresholds=_normalized_metric_thresholds(job.train.get("metric_thresholds") or job.evaluate.get("metric_thresholds")),
         require_gpu=bool(job.train.get("require_gpu", True)),
         max_train_batches=job.train.get("max_train_batches"),
         max_val_batches=job.train.get("max_val_batches"),
@@ -966,7 +983,45 @@ def _diagnostic_metric_payload(metrics: dict[str, Any], counters: dict[str, Any]
 
 
 def _allowed_training_metric_payload(metrics: dict[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in metrics.items() if key in MODEL_METRIC_KEYS}
+    return {key: value for key, value in metrics.items() if key in MODEL_METRIC_KEYS or _is_training_threshold_metric(key)}
+
+
+def _is_training_threshold_metric(key: str) -> bool:
+    return (
+        key.startswith("val/pixel_f1_at_threshold_")
+        or key.startswith("val/pixel_precision_at_threshold_")
+        or key.startswith("val/pixel_recall_at_threshold_")
+        or key.startswith("val/pixel_iou_at_threshold_")
+        or key.startswith("val/pixel_accuracy_at_threshold_")
+        or key.startswith("val/pixel_tp_at_threshold_")
+        or key.startswith("val/pixel_fp_at_threshold_")
+        or key.startswith("val/pixel_fn_at_threshold_")
+        or key.startswith("val/pixel_tn_at_threshold_")
+    )
+
+
+def _normalized_metric_thresholds(raw: Any) -> list[float] | None:
+    if raw is None:
+        return None
+    values = raw if isinstance(raw, list | tuple) else str(raw).split(",")
+    thresholds: list[float] = []
+    for item in values:
+        value = _finite_float(item)
+        if value is None:
+            continue
+        value = max(0.0, min(1.0, value))
+        if value not in thresholds:
+            thresholds.append(value)
+    return thresholds or None
+
+
+def _optional_float(value: Any) -> float | None:
+    return _finite_float(value) if value is not None else None
+
+
+def _optional_int(value: Any) -> int | None:
+    number = _finite_float(value)
+    return None if number is None else int(number)
 
 
 def _finite_float(value: Any) -> float | None:

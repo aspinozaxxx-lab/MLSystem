@@ -124,6 +124,12 @@ class TilePreparationBuilder:
         augmentation_level: int = 2,
         mosaic_enabled: bool | None = None,
         normalization_mode: str = "uint8_255",
+        max_empty_tile_share: float | None = None,
+        max_tiles_per_scene: int | None = None,
+        max_train_tiles: int | None = None,
+        max_val_tiles: int | None = None,
+        augmentations: dict | None = None,
+        seed: int | None = None,
     ) -> TilePreparationBundle:
         annotation = AnnotationInput(
             geojson_path=Path(annotation_path),
@@ -139,6 +145,18 @@ class TilePreparationBuilder:
         if normalization_mode not in {"uint8_255", "tile_percentile", "scene_percentile"}:
             raise ValueError("normalization_mode must be one of: uint8_255, tile_percentile, scene_percentile")
         train_config.normalization_mode = normalization_mode
+        if max_empty_tile_share is not None:
+            train_config.max_empty_tile_share = max(0.0, min(1.0, float(max_empty_tile_share)))
+        if max_tiles_per_scene is not None:
+            train_config.max_records_per_scene = max(0, int(max_tiles_per_scene))
+        if max_train_tiles is not None:
+            train_config.max_records = max(0, int(max_train_tiles))
+        if augmentations is not None:
+            train_config.augmentations = dict(augmentations)
+            train_config.apply_random_augmentations = any(bool(value) for value in train_config.augmentations.values())
+        if seed is not None:
+            train_config.seed = int(seed)
+            train_config.augmentation_seed = int(seed)
         mosaic_active = DEFAULT_MOSAIC_MODE == "auto" if mosaic_enabled is None else bool(mosaic_enabled)
         train_config.mosaic_enabled = mosaic_active and len(train_scenes) > 1
 
@@ -160,6 +178,10 @@ class TilePreparationBuilder:
             shuffle=False,
             augmentation_level=0,
         )
+        if max_val_tiles is not None:
+            val_config.max_records = max(0, int(max_val_tiles))
+        if max_tiles_per_scene is not None:
+            val_config.max_records_per_scene = max(0, int(max_tiles_per_scene))
         val_config.mosaic_enabled = mosaic_active and len(val_scenes) > 1
 
         train_dataset = TrainingTileDataset(train_scenes, annotation, train_config, train=True)
@@ -283,6 +305,8 @@ def bundle_to_jsonable(bundle: TilePreparationBundle) -> dict:
             "hard_negative_repeat_factor": bundle.config.hard_negative_repeat_factor,
             "negative_repeat_factor": bundle.config.negative_repeat_factor,
             "max_empty_tile_share": bundle.config.max_empty_tile_share,
+            "max_records": bundle.config.max_records,
+            "max_records_per_scene": bundle.config.max_records_per_scene,
             "mosaic_enabled": bundle.config.mosaic_enabled,
             "cutout_mask_mode": bundle.config.cutout_mask_mode,
             "drop_fully_invalid_tiles": bundle.config.drop_fully_invalid_tiles,

@@ -35,6 +35,33 @@ class TrainLoopSmokeTests(unittest.TestCase):
         self.assertIn("epochs_total", result.mlflow_metrics)
         self.assertFalse(any(key.startswith("diagnostics/") for key in result.mlflow_metrics))
 
+    def test_threshold_sweep_is_logged_separately_from_configured_f1(self) -> None:
+        x = torch.rand((4, 4, 16, 16), dtype=torch.float32)
+        y = (torch.rand((4, 1, 16, 16)) > 0.5).float()
+        loader = DataLoader(TensorDataset(x, y), batch_size=2)
+        with tempfile.TemporaryDirectory() as tmp:
+            result = train_model(
+                TrainRequest(
+                    config=TrainConfig(
+                        model_name="tiny_unet_4ch",
+                        base_channels=2,
+                        epochs=1,
+                        require_gpu=False,
+                        metric_threshold=0.8,
+                        metric_thresholds=[0.5, 0.8],
+                    ),
+                    train_dataloader=loader,
+                    val_dataloader=loader,
+                    output_dir=Path(tmp),
+                )
+            )
+        last_metrics = result.history[-1].metrics
+        self.assertIn("val/pixel_f1", last_metrics)
+        self.assertIn("val/pixel_f1_at_threshold_0_5", last_metrics)
+        self.assertIn("val/pixel_f1_at_threshold_0_8", last_metrics)
+        self.assertIn("val/pixel_f1_best_threshold", last_metrics)
+        self.assertIn("val/pixel_f1_best_threshold", result.mlflow_metrics)
+
 
 if __name__ == "__main__":
     unittest.main()

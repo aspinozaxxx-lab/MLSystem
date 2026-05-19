@@ -86,6 +86,7 @@ def run_training(request: TrainRequest, progress_sink: TrainProgressSink | None 
             device,
             loss_config=cfg.loss,
             threshold=cfg.metric_threshold,
+            thresholds=cfg.metric_thresholds,
             max_batches=cfg.max_val_batches,
         )
         row: dict[str, Any] = {
@@ -149,6 +150,8 @@ def run_training(request: TrainRequest, progress_sink: TrainProgressSink | None 
         "train.weight_decay": cfg.weight_decay,
         "train.metric_threshold": cfg.metric_threshold,
     }
+    if cfg.metric_thresholds:
+        mlflow_params["train.metric_thresholds"] = ",".join(str(float(item)) for item in cfg.metric_thresholds)
     mlflow_metrics = _canonical_mlflow_metrics(
         history_rows=history_rows,
         best_row=best_row,
@@ -226,6 +229,16 @@ def _canonical_mlflow_metrics(
         "epoch_time_sec": round(epoch_time_sec, 4),
         "training_time_sec": total_duration_sec,
     }
+    for key in (
+        "val/best_threshold",
+        "val/pixel_f1_best_threshold",
+        "val/precision_best_threshold",
+        "val/recall_best_threshold",
+        "val/pixel_iou_best_threshold",
+    ):
+        value = _float_or_none(best_row.get(key))
+        if value is not None:
+            payload[key] = value
     return {key: value for key, value in payload.items() if value is not None}
 
 
@@ -311,11 +324,14 @@ def _run_val_epoch(
     *,
     loss_config: dict[str, Any],
     threshold: float,
+    thresholds: list[float] | None,
     max_batches: int | None,
 ) -> dict[str, float | int]:
     model.eval()
     losses = _WeightedLossAccumulator()
     metrics = PixelMetricAccumulator(threshold=threshold)
+    sweep_thresholds = _normalized_thresholds(thresholds, configured_threshold=threshold)
+    sweep_metrics = {item: PixelMetricAccumulator(threshold=item) for item in sweep_thresholds}
     batches = 0
     samples = 0
     for batch in loader:
@@ -329,15 +345,63 @@ def _run_val_epoch(
         batch_size = int(x.shape[0])
         losses.update({key: value.detach().item() for key, value in components.items()}, weight=batch_size)
         metrics.update_from_logits(logits, y)
+        for accumulator in sweep_metrics.values():
+            accumulator.update_from_logits(logits, y)
         batches += 1
         samples += batch_size
     metric_payload = metrics.metrics()
+    sweep_payload: dict[str, float | int] = {}
+    best_sweep_threshold: float | None = None
+    best_sweep_metrics: dict[str, float | int] | None = None
+    for sweep_threshold, accumulator in sweep_metrics.items():
+        current = accumulator.metrics()
+        suffix = _threshold_suffix(sweep_threshold)
+        for key, value in current.items():
+            if key == "threshold":
+                continue
+            sweep_payload[f"val/{key}_at_threshold_{suffix}"] = value
+        if best_sweep_metrics is None or float(current.get("pixel_f1", 0.0)) > float(best_sweep_metrics.get("pixel_f1", 0.0)):
+            best_sweep_threshold = sweep_threshold
+            best_sweep_metrics = current
+    if best_sweep_threshold is not None and best_sweep_metrics is not None:
+        sweep_payload.update(
+            {
+                "val/best_threshold": best_sweep_threshold,
+                "val/pixel_f1_best_threshold": float(best_sweep_metrics.get("pixel_f1", 0.0)),
+                "val/precision_best_threshold": float(best_sweep_metrics.get("pixel_precision", best_sweep_metrics.get("precision", 0.0))),
+                "val/recall_best_threshold": float(best_sweep_metrics.get("pixel_recall", best_sweep_metrics.get("recall", 0.0))),
+                "val/pixel_iou_best_threshold": float(best_sweep_metrics.get("pixel_iou", best_sweep_metrics.get("iou", 0.0))),
+            }
+        )
     return {
         **losses.averages("val"),
         **{f"val/{key}": value for key, value in metric_payload.items()},
+        **sweep_payload,
         "val/batches": float(batches),
         "val/samples": float(samples),
     }
+
+
+def _normalized_thresholds(thresholds: list[float] | None, *, configured_threshold: float) -> list[float]:
+    if thresholds is None:
+        return []
+    normalized: list[float] = []
+    for item in thresholds:
+        try:
+            value = max(0.0, min(1.0, float(item)))
+        except (TypeError, ValueError):
+            continue
+        if value not in normalized:
+            normalized.append(value)
+    configured = max(0.0, min(1.0, float(configured_threshold)))
+    if configured not in normalized:
+        normalized.append(configured)
+    return normalized
+
+
+def _threshold_suffix(value: float) -> str:
+    text = f"{float(value):.6f}".rstrip("0").rstrip(".")
+    return text.replace(".", "_")
 
 
 def _batch_xy(batch: Any) -> tuple[torch.Tensor, torch.Tensor]:

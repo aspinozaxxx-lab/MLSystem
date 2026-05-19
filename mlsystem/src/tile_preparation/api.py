@@ -19,6 +19,12 @@ def build_datasets(request: TileDatasetRequest) -> Any:
         augmentation_level=request.augmentation_level,
         mosaic_enabled=request.mosaic_enabled,
         normalization_mode=request.normalization_mode,
+        max_empty_tile_share=request.max_empty_tile_share,
+        max_tiles_per_scene=request.max_tiles_per_scene,
+        max_train_tiles=request.max_train_tiles,
+        max_val_tiles=request.max_val_tiles,
+        augmentations=request.augmentations,
+        seed=request.seed,
     )
 
 
