@@ -116,7 +116,7 @@ class TrainingReportCollector:
                 run["rank"] = index
                 dataset_versions.append(_public_run(run))
 
-            best = dataset_versions[0] if dataset_versions else None
+            best = _best_current_dataset_run(dataset_versions, inventory) or (dataset_versions[0] if dataset_versions else None)
             dataset_objects = _int_or_zero((best or {}).get("dataset_objects"), inventory.get("objects_count"))
             dataset_scenes = _int_or_zero((best or {}).get("dataset_scenes"), inventory.get("scenes_count"))
             validation_kind = (best or {}).get("validation_kind") or "unknown"
@@ -330,6 +330,30 @@ def _best_runs_by_dataset_version(runs: list[dict[str, Any]]) -> list[dict[str, 
         best.append(group[0])
     best.sort(key=lambda item: (_sort_f1(item.get("pixel_f1")), item.get("train_date") or ""))
     return best
+
+
+def _best_current_dataset_run(runs: list[dict[str, Any]], inventory: dict[str, Any]) -> dict[str, Any] | None:
+    current_ids = {
+        str(value)
+        for value in (
+            inventory.get("dataset_version"),
+            inventory.get("dataset_fingerprint"),
+            inventory.get("git_commit"),
+            inventory.get("mlmarkup_commit"),
+        )
+        if value
+    }
+    if not current_ids:
+        return None
+    matches = [
+        run
+        for run in runs
+        if str(run.get("dataset_version") or "") in current_ids or str(run.get("dataset_fingerprint") or "") in current_ids
+    ]
+    if not matches:
+        return None
+    matches.sort(key=lambda item: (_sort_f1(item.get("pixel_f1")), item.get("train_date") or ""))
+    return matches[0]
 
 
 def _overall_best(class_rows: list[dict[str, Any]]) -> dict[str, Any] | None:

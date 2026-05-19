@@ -115,6 +115,42 @@ class TrainingReportMLflowReaderTests(unittest.TestCase):
         self.assertEqual(lakes["best_pixel_f1"], 0.9)
         self.assertEqual(lakes["dataset_version"], "v1")
 
+    def test_current_inventory_dataset_is_main_class_best(self) -> None:
+        collector = object.__new__(TrainingReportCollector)
+        rows = collector._build_class_rows(  # pylint: disable=protected-access
+            {"lakes": {"objects_count": 2, "scenes_count": 3, "dataset_fingerprint": "current-fp"}},
+            [
+                {
+                    "run_id": "old_high",
+                    "class_slug": "lakes",
+                    "pixel_f1": 0.9,
+                    "train_date": "2026-05-10",
+                    "best_epoch": 12,
+                    "epochs_completed": 12,
+                    "dataset_version": "old-fp",
+                    "dataset_fingerprint": "old-fp",
+                    "dataset_objects": 2,
+                    "dataset_scenes": 3,
+                },
+                {
+                    "run_id": "current_lower",
+                    "class_slug": "lakes",
+                    "pixel_f1": 0.4,
+                    "train_date": "2026-05-19",
+                    "best_epoch": 12,
+                    "epochs_completed": 12,
+                    "dataset_version": "current-fp",
+                    "dataset_fingerprint": "current-fp",
+                    "dataset_objects": 2,
+                    "dataset_scenes": 3,
+                },
+            ],
+        )
+        lakes = next(item for item in rows if item["class_slug"] == "lakes")
+        self.assertEqual(lakes["best_run_id"], "current_lower")
+        self.assertEqual(lakes["dataset_version"], "current-fp")
+        self.assertEqual([run["run_id"] for run in lakes["dataset_versions"]], ["old_high", "current_lower"])
+
     def test_overall_best_selected_from_best_per_dataset_version_rows(self) -> None:
         collector = object.__new__(TrainingReportCollector)
         rows = collector._build_class_rows(  # pylint: disable=protected-access
