@@ -4,7 +4,7 @@
 
 `mlsystem/src/train_pipeline` - orchestration модуль для training pipeline run.
 
-Он отвечает за создание run, хранение trace, запуск worker process, lifecycle стадий обучения, status/log/progress/cancel/final summary и MLflow metadata logging через `mlflow_adapter`.
+Он отвечает за создание run, хранение trace, запуск worker process, lifecycle стадий обучения, status/log/progress/cancel/final summary и MLflow logging calls через `mlflow_adapter`.
 
 ## Public API
 
@@ -66,14 +66,15 @@ python -m mlsystem.src.train_pipeline.cli
 3. `TrainPipelineRunner.start_run` запускает worker process.
 4. Worker последовательно выполняет training stages.
 5. Stage `train_model` вызывает только `mlsystem.src.train.api.train_model`.
-6. Pipeline записывает JSON/report/log/status.
-7. Pipeline логирует MLflow metadata/artifacts через `mlflow_adapter`.
+6. Pipeline записывает JSON/report/log/status и передает `TrainResult` в `mlflow_adapter`.
+7. Pipeline вызывает MLflow public API adapter, но не выбирает MLflow metric keys и не решает, что попадет в MLflow UI.
 8. Финальный статус и summary фиксируются после завершения.
 
 ## Границы
 
 - `train_pipeline` не обучает модель сам, а вызывает `train.api`.
 - `train_pipeline` не пишет в MLflow напрямую, а использует `mlflow_adapter`.
+- `train_pipeline` не владеет MLflow logging policy.
 - `train_pipeline` не создает псевдоразметку. Это зона `inference_pipeline`.
 - `train_pipeline` не копирует InferenceEngine logic.
 - `train_pipeline` не является deprecated wrapper вокруг старого имени модуля.
@@ -85,10 +86,4 @@ Pipeline также логирует dataset artifacts, если они суще
 
 ## MLflow metrics
 
-Основная таблица модели использует только:
-- `model_metrics/f1_pixel`;
-- `model_metrics/epochs_total`;
-- `model_metrics/epoch_time_sec`;
-- `model_metrics/training_time_sec`.
-
-Diagnostics metrics логируются только из whitelist `diagnostics/*`; pixel counters, threshold sweeps and debug/microtiming payloads остаются artifacts.
+`train_pipeline` не владеет MLflow logging policy. Для training result он вызывает public API `mlflow_adapter`, например `log_training_result_to_run(...)`. Только `mlflow_adapter` решает, какие данные попадут в MLflow metrics table, params/tags, artifacts и dataset input.

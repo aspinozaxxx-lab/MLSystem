@@ -53,9 +53,9 @@ class MLMarkupAnnotationTests(unittest.TestCase):
             self.assertEqual(read_s3_text(config, scenes_uri), "scene_a.tif\n")
 
     def test_recource_and_resource_metrics_are_excluded_from_mlflow(self) -> None:
-        for key in ("recource/cpu", "recource_cpu", "resource/final_ram", "resources.disk", "resourse/foo"):
+        for key in ("recource/cpu", "recource_cpu", "resource/final_ram", "resources.disk", "resourse/foo", "val/pixel_f1"):
             self.assertTrue(_is_excluded_metric_key(key))
-        self.assertFalse(_is_excluded_metric_key("val/pixel_f1"))
+        self.assertFalse(_is_excluded_metric_key("f1_pixel"))
 
     def test_mlmarkup_git_metadata_can_be_read_without_git_binary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

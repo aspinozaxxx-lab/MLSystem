@@ -6,7 +6,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 from mlsystem.src.train_pipeline.experiment_stages import run_stage
-from mlsystem.src.train_pipeline.experiment_stages import _allowed_training_metric_payload
 from mlsystem.src.train_pipeline.api import TrainPipelineRunStore, parse_pipeline_run_config
 
 
@@ -29,19 +28,10 @@ class ExperimentStagesTests(unittest.TestCase):
             self.assertEqual(payload["status"], "success")
             self.assertEqual(payload["mlflow"]["run_id"], "mlflow-run-1")
 
-    def test_training_metric_filter_keeps_threshold_sweep(self) -> None:
-        payload = _allowed_training_metric_payload(
-            {
-                "f1_pixel": 0.7,
-                "val/pixel_f1_at_threshold_0_8": 0.6,
-                "val/pixel_f1_best_threshold": 0.75,
-                "debug/not_logged": 1.0,
-            }
-        )
-        self.assertEqual(payload["f1_pixel"], 0.7)
-        self.assertEqual(payload["val/pixel_f1_at_threshold_0_8"], 0.6)
-        self.assertEqual(payload["val/pixel_f1_best_threshold"], 0.75)
-        self.assertNotIn("debug/not_logged", payload)
+    def test_train_pipeline_delegates_training_result_logging_to_mlflow_adapter(self) -> None:
+        source = Path("mlsystem/src/train_pipeline/experiment_stages.py").read_text(encoding="utf-8")
+        self.assertIn("mlflow_log_training_result_to_run(", source)
+        self.assertNotIn("_allowed_training_metric_payload", source)
 
 
 if __name__ == "__main__":

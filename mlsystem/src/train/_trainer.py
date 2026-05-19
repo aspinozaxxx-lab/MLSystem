@@ -142,17 +142,7 @@ def run_training(request: TrainRequest, progress_sink: TrainProgressSink | None 
     total_duration_sec = round(time.time() - started, 4)
     last = history_rows[-1] if history_rows else {}
     best_row = max(history_rows, key=lambda row: float(row.get("val/pixel_f1", 0.0)), default={})
-    mlflow_params = {
-        "train.model_name": cfg.model_name,
-        "train.epochs": cfg.epochs,
-        "train.optimizer": cfg.optimizer,
-        "train.learning_rate": cfg.learning_rate,
-        "train.weight_decay": cfg.weight_decay,
-        "train.metric_threshold": cfg.metric_threshold,
-    }
-    if cfg.metric_thresholds:
-        mlflow_params["train.metric_thresholds"] = ",".join(str(float(item)) for item in cfg.metric_thresholds)
-    mlflow_metrics = _canonical_mlflow_metrics(
+    training_summary = _training_summary(
         history_rows=history_rows,
         best_row=best_row,
         last_row=last,
@@ -181,7 +171,15 @@ def run_training(request: TrainRequest, progress_sink: TrainProgressSink | None 
             encoding="utf-8",
         )
         artifacts.append(str(diagnostics_path))
-    emit_progress(progress_sink, TrainProgressEvent(stage="completed", metrics=mlflow_metrics))
+        threshold_sweep = _threshold_sweep_summary(history_rows)
+        if threshold_sweep:
+            threshold_sweep_path = output_dir / "threshold_sweep_summary.json"
+            threshold_sweep_path.write_text(
+                json.dumps(threshold_sweep, ensure_ascii=False, indent=2, sort_keys=True, default=str) + "\n",
+                encoding="utf-8",
+            )
+            artifacts.append(str(threshold_sweep_path))
+    emit_progress(progress_sink, TrainProgressEvent(stage="completed", metrics=training_summary))
     return TrainResult(
         status="done",
         model_name=cfg.model_name,
@@ -194,9 +192,7 @@ def run_training(request: TrainRequest, progress_sink: TrainProgressSink | None 
         last_val_pixel_f1=float(last.get("val/pixel_f1", 0.0)),
         checkpoint=checkpoint,
         history=[EpochMetrics(epoch=int(row["epoch"]), metrics=_numeric_metrics(row)) for row in history_rows],
-        mlflow_params=mlflow_params,
-        mlflow_metrics=mlflow_metrics,
-        mlflow_artifacts=artifacts,
+        training_time_sec=total_duration_sec,
     )
 
 
@@ -208,7 +204,7 @@ def result_to_dict(result: TrainResult) -> dict[str, Any]:
     return payload
 
 
-def _canonical_mlflow_metrics(
+def _training_summary(
     *,
     history_rows: list[dict[str, Any]],
     best_row: dict[str, Any],
@@ -224,22 +220,46 @@ def _canonical_mlflow_metrics(
         else 0.0
     )
     payload: dict[str, float | int] = {
-        "f1_pixel": best_f1,
-        "epochs_total": epochs_total,
-        "epoch_time_sec": round(epoch_time_sec, 4),
+        "best_val_pixel_f1": best_f1,
+        "epochs_completed": epochs_total,
+        "average_epoch_time_sec": round(epoch_time_sec, 4),
         "training_time_sec": total_duration_sec,
     }
-    for key in (
-        "val/best_threshold",
-        "val/pixel_f1_best_threshold",
-        "val/precision_best_threshold",
-        "val/recall_best_threshold",
-        "val/pixel_iou_best_threshold",
-    ):
-        value = _float_or_none(best_row.get(key))
-        if value is not None:
-            payload[key] = value
+    early = _float_or_none(1 if early_stopped else 0)
+    best_epoch = _float_or_none(best_row.get("epoch"))
+    last_f1 = _float_or_none(last_row.get("val/pixel_f1"))
+    if early is not None:
+        payload["early_stopped"] = early
+    if best_epoch is not None:
+        payload["best_epoch"] = best_epoch
+    if last_f1 is not None:
+        payload["last_val_pixel_f1"] = last_f1
     return {key: value for key, value in payload.items() if value is not None}
+
+
+def _threshold_sweep_summary(history_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    thresholds: dict[str, list[dict[str, float | int]]] = {}
+    best_by_epoch: list[dict[str, float | int]] = []
+    for row in history_rows:
+        epoch = int(row.get("epoch", 0) or 0)
+        for key, value in row.items():
+            marker = "_at_threshold_"
+            if marker not in key:
+                continue
+            metric, suffix = key.split(marker, 1)
+            if not metric.endswith("pixel_f1"):
+                continue
+            number = _float_or_none(value)
+            if number is None:
+                continue
+            thresholds.setdefault(suffix, []).append({"epoch": epoch, "pixel_f1": number})
+        best_threshold = _float_or_none(row.get("val/best_threshold"))
+        best_f1 = _float_or_none(row.get("val/pixel_f1_best_threshold"))
+        if best_threshold is not None and best_f1 is not None:
+            best_by_epoch.append({"epoch": epoch, "threshold": best_threshold, "pixel_f1": best_f1})
+    if not thresholds and not best_by_epoch:
+        return {}
+    return {"thresholds": thresholds, "best_by_epoch": best_by_epoch}
 
 
 def _training_diagnostics(

@@ -137,6 +137,37 @@ def test_mlflow_adapter_dataset_input_helper_exists() -> None:
     assert "log_dataset_input_to_run" in api.__all__
 
 
+def test_mlflow_adapter_training_result_helper_exists() -> None:
+    import mlsystem.src.mlflow_adapter.api as api
+
+    assert "log_training_result_to_run" in api.__all__
+
+
+def test_mlflow_logging_policy_is_documented_in_adapter() -> None:
+    doc = (ARCH / "mlflow_adapter_module.md").read_text(encoding="utf-8")
+    assert "MLflow logging policy" in doc
+    assert "log_training_result_to_run" in doc
+
+
+def test_train_docs_do_not_make_train_responsible_for_mlflow_metrics() -> None:
+    doc = (ARCH / "train_module.md").read_text(encoding="utf-8")
+    assert "mlflow_metrics" not in doc
+    assert "не возвращает готовые MLflow table metrics" in doc
+
+
+def test_train_pipeline_docs_do_not_own_mlflow_metric_whitelist() -> None:
+    doc = (ARCH / "train_pipeline_module.md").read_text(encoding="utf-8")
+    forbidden = [
+        "model_metrics/f1_pixel",
+        "model_metrics/epochs_total",
+        "model_metrics/epoch_time_sec",
+        "model_metrics/training_time_sec",
+        "diagnostics whitelist",
+    ]
+    assert [item for item in forbidden if item in doc] == []
+    assert "log_training_result_to_run" in doc
+
+
 def test_pipeline_package_absent_or_formal_module() -> None:
     pipeline = SRC / "pipeline"
     if not pipeline.exists():

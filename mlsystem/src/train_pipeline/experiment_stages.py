@@ -19,9 +19,8 @@ from ..mlflow_adapter.api import (
     MLFLOW_EXCLUDED_ARTIFACT_NAMES,
     create_run as mlflow_create_run,
     log_artifacts_to_run as mlflow_log_artifacts_to_run,
-    log_dataset_input_to_run as mlflow_log_dataset_input_to_run,
-    log_metrics_to_run as mlflow_log_metrics_to_run,
     log_params_to_run as mlflow_log_params_to_run,
+    log_training_result_to_run as mlflow_log_training_result_to_run,
     mlflow_tuning_metadata,
     mlflow_url_fields,
     run_with_active_mlflow_run as mlflow_run_with_active_mlflow_run,
@@ -62,19 +61,6 @@ DISPATCHER_STAGE_NAMES = {
     "write_codex_api_summary",
     "finalize_mlflow_run",
 }
-MODEL_METRIC_KEYS = {
-    "f1_pixel",
-    "epochs_total",
-    "epoch_time_sec",
-    "training_time_sec",
-    "val/best_threshold",
-    "val/pixel_f1_best_threshold",
-    "val/precision_best_threshold",
-    "val/recall_best_threshold",
-    "val/pixel_iou_best_threshold",
-}
-
-
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -527,36 +513,6 @@ def _validate_explicit_training_epochs(conf: PipelineRunConfig) -> None:
         raise ValueError("train.epochs or train.max_epochs is required for non-smoke training runs.")
 
 
-def _history_mlflow_metric_rows(result: Any) -> list[tuple[int, dict[str, float | int]]]:
-    rows: list[tuple[int, dict[str, float | int]]] = []
-    cumulative_sec = 0.0
-    for epoch in result.history or []:
-        metrics = epoch.metrics or {}
-        duration = _finite_float(metrics.get("epoch_duration_sec")) or 0.0
-        cumulative_sec += duration
-        payload: dict[str, float | int] = {
-            "epochs_total": int(epoch.epoch),
-            "training_time_sec": round(cumulative_sec, 4),
-        }
-        f1 = _finite_float(metrics.get("val/pixel_f1"))
-        if f1 is not None:
-            payload["f1_pixel"] = f1
-        if duration > 0:
-            payload["epoch_time_sec"] = round(duration, 4)
-        for key, value in metrics.items():
-            if _is_training_threshold_metric(key):
-                finite = _finite_float(value)
-                if finite is not None:
-                    payload[key] = finite
-        rows.append((int(epoch.epoch), payload))
-    return rows
-
-
-def _log_training_history_metrics(pipeline_config: Any, run_id: str, result: Any) -> None:
-    for epoch, metrics in _history_mlflow_metric_rows(result):
-        mlflow_log_metrics_to_run(pipeline_config, run_id, _allowed_training_metric_payload(metrics), step=epoch)
-
-
 def _run_training_pipeline(conf: PipelineRunConfig, store: Any) -> dict[str, Any]:
     summary = store.read_summary()
     mlflow_info = summary.get("mlflow") or {}
@@ -593,8 +549,6 @@ def _run_training_pipeline(conf: PipelineRunConfig, store: Any) -> dict[str, Any
         if path.exists() and path.is_file()
     ]
     if run_id and not str(run_id).startswith("smoke-"):
-        if dataset_identity is not None:
-            mlflow_log_dataset_input_to_run(pipeline_config, str(run_id), dataset_identity, context="training")
         mlflow_log_artifacts_to_run(pipeline_config, str(run_id), dataset_artifacts)
     train_loader = None
     val_loader = None
@@ -691,7 +645,7 @@ def _run_training_pipeline(conf: PipelineRunConfig, store: Any) -> dict[str, Any
                 pipeline_config,
                 str(run_id),
                 _call_train_model,
-                log_system_metrics=True,
+                log_system_metrics=False,
             )
         else:
             result_obj = _call_train_model()
@@ -712,20 +666,18 @@ def _run_training_pipeline(conf: PipelineRunConfig, store: Any) -> dict[str, Any
         "model.name": conf.model.get("name"),
         "preprocess.tile_size": conf.preprocess.get("tile_size"),
         "preprocess.max_scenes": conf.preprocess.get("max_scenes"),
-        **result_obj.mlflow_params,
         **extra_params,
     }
     if run_id and not str(run_id).startswith("smoke-"):
         mlflow_log_params_to_run(pipeline_config, str(run_id), params)
-        _log_training_history_metrics(pipeline_config, str(run_id), result_obj)
-        final_metrics = _allowed_training_metric_payload(result_obj.mlflow_metrics)
-        final_f1 = {"f1_pixel": final_metrics["f1_pixel"]} if "f1_pixel" in final_metrics else {}
-        final_rest = {key: value for key, value in final_metrics.items() if key != "f1_pixel"}
-        if final_f1:
-            mlflow_log_metrics_to_run(pipeline_config, str(run_id), final_f1, step=result_obj.best_epoch or result_obj.epochs_completed)
-        if final_rest:
-            mlflow_log_metrics_to_run(pipeline_config, str(run_id), final_rest, step=result_obj.epochs_completed)
-        artifact_errors = mlflow_log_artifacts_to_run(pipeline_config, str(run_id), [*result_obj.mlflow_artifacts, *dataset_artifacts])
+        artifact_errors = mlflow_log_training_result_to_run(
+            pipeline_config,
+            str(run_id),
+            result_obj,
+            dataset_identity=dataset_identity,
+            context="training",
+        )
+        artifact_errors.extend(mlflow_log_artifacts_to_run(pipeline_config, str(run_id), dataset_artifacts))
         if artifact_errors:
             result["warnings"] = list(result.get("warnings") or []) + artifact_errors
         mlflow_set_run_tags(pipeline_config, str(run_id), {"job_status": "training_completed", "pipeline_training_status": "success", **extra_tags})
@@ -980,24 +932,6 @@ def _log_mlflow_metrics_if_available(store: Any, metrics: dict[str, Any], counte
 
 def _diagnostic_metric_payload(metrics: dict[str, Any], counters: dict[str, Any]) -> dict[str, float]:
     return {}
-
-
-def _allowed_training_metric_payload(metrics: dict[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in metrics.items() if key in MODEL_METRIC_KEYS or _is_training_threshold_metric(key)}
-
-
-def _is_training_threshold_metric(key: str) -> bool:
-    return (
-        key.startswith("val/pixel_f1_at_threshold_")
-        or key.startswith("val/pixel_precision_at_threshold_")
-        or key.startswith("val/pixel_recall_at_threshold_")
-        or key.startswith("val/pixel_iou_at_threshold_")
-        or key.startswith("val/pixel_accuracy_at_threshold_")
-        or key.startswith("val/pixel_tp_at_threshold_")
-        or key.startswith("val/pixel_fp_at_threshold_")
-        or key.startswith("val/pixel_fn_at_threshold_")
-        or key.startswith("val/pixel_tn_at_threshold_")
-    )
 
 
 def _normalized_metric_thresholds(raw: Any) -> list[float] | None:

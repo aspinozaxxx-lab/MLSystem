@@ -93,7 +93,5 @@ class TrainResult:
     last_val_pixel_f1: float
     checkpoint: CheckpointArtifact | None
     history: list[EpochMetrics]
-    mlflow_params: dict[str, Any] = field(default_factory=dict)
-    mlflow_metrics: dict[str, float | int] = field(default_factory=dict)
-    mlflow_artifacts: list[str] = field(default_factory=list)
+    training_time_sec: float = 0.0
     warnings: list[str] = field(default_factory=list)

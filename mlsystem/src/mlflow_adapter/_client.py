@@ -21,6 +21,18 @@ MLFLOW_EXCLUDED_ARTIFACT_NAMES = {
     "windows_preview.geojson",
 }
 MLFLOW_EXCLUDED_METRIC_PREFIXES = (
+    "val/",
+    "val.",
+    "val_",
+    "train/",
+    "train.",
+    "train_",
+    "diagnostics/",
+    "diagnostics.",
+    "diagnostics_",
+    "system/",
+    "system.",
+    "system_",
     "recource/",
     "recource.",
     "recource_",
@@ -33,6 +45,15 @@ MLFLOW_EXCLUDED_METRIC_PREFIXES = (
     "resources/",
     "resources.",
     "resources_",
+)
+TRAINING_UI_METRIC_KEYS = ("f1_pixel", "epochs_total", "epoch_time_sec", "training_time_sec")
+TRAINING_RESULT_ARTIFACT_NAMES = (
+    "history.json",
+    "history.csv",
+    "training_diagnostics.json",
+    "threshold_sweep_summary.json",
+    "system_metrics.json",
+    "resource_samples.json",
 )
 
 def utc_now() -> str:
@@ -518,6 +539,19 @@ def _is_number(value: Any) -> bool:
     return number == number and number not in {float("inf"), float("-inf")}
 
 
+def _finite_float(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number == number and number not in {float("inf"), float("-inf")} else None
+
+
+def _optional_int(value: Any) -> int | None:
+    number = _finite_float(value)
+    return None if number is None else int(number)
+
+
 def _enable_system_metrics_logging(mlflow_module: Any) -> None:
     try:
         enable = getattr(mlflow_module, "enable_system_metrics_logging", None)
@@ -793,7 +827,103 @@ def start_job_run(
 
 def _is_excluded_metric_key(key: str) -> bool:
     lowered = key.lower()
-    return any(lowered.startswith(prefix) for prefix in MLFLOW_EXCLUDED_METRIC_PREFIXES)
+    if any(lowered.startswith(prefix) for prefix in MLFLOW_EXCLUDED_METRIC_PREFIXES):
+        return True
+    if "threshold_sweep" in lowered or "best_threshold" in lowered:
+        return True
+    if lowered.endswith("_best_threshold") or lowered.endswith("/best_threshold") or lowered.endswith(".best_threshold"):
+        return True
+    if "microtiming" in lowered or "debug" in lowered:
+        return True
+    pixel_counter_names = {
+        "pixel_tp",
+        "pixel_fp",
+        "pixel_fn",
+        "pixel_tn",
+        "tp_pixels",
+        "fp_pixels",
+        "fn_pixels",
+        "tn_pixels",
+    }
+    normalized = lowered.replace("/", "_").replace(".", "_")
+    return normalized in pixel_counter_names or any(normalized.endswith(f"_{name}") for name in pixel_counter_names)
+
+
+def log_training_result_to_run(
+    config: PipelineConfig,
+    run_id: str,
+    train_result: Any,
+    *,
+    dataset_identity: Any | None = None,
+    context: str = "training",
+) -> list[str]:
+    """Log a raw TrainResult according to the central MLflow training policy."""
+    errors: list[str] = []
+    if dataset_identity is not None:
+        log_dataset_input_to_run(config, run_id, dataset_identity, context=context)
+    metrics = _training_result_ui_metrics(train_result)
+    if metrics:
+        step = _optional_int(getattr(train_result, "best_epoch", None)) or _optional_int(getattr(train_result, "epochs_completed", None))
+        log_metrics_to_run(config, run_id, metrics, step=step)
+    params = _training_result_params(train_result)
+    if params:
+        log_params_to_run(config, run_id, params)
+    artifacts = _training_result_artifacts(train_result)
+    if artifacts:
+        errors.extend(log_artifacts_to_run(config, run_id, artifacts))
+    return errors
+
+
+def _training_result_ui_metrics(train_result: Any) -> dict[str, float | int]:
+    history = list(getattr(train_result, "history", None) or [])
+    durations = [
+        value
+        for value in (_finite_float((getattr(epoch, "metrics", {}) or {}).get("epoch_duration_sec")) for epoch in history)
+        if value is not None
+    ]
+    epochs_total = _optional_int(getattr(train_result, "epochs_completed", None)) or len(history)
+    training_time = _finite_float(getattr(train_result, "training_time_sec", None))
+    if training_time is None and durations:
+        training_time = sum(durations)
+    payload: dict[str, float | int | None] = {
+        "f1_pixel": _finite_float(getattr(train_result, "best_val_pixel_f1", None)),
+        "epochs_total": epochs_total,
+        "epoch_time_sec": round(sum(durations) / len(durations), 4) if durations else None,
+        "training_time_sec": round(training_time, 4) if training_time is not None else None,
+    }
+    return {key: value for key, value in payload.items() if key in TRAINING_UI_METRIC_KEYS and value is not None}
+
+
+def _training_result_params(train_result: Any) -> dict[str, Any]:
+    checkpoint = getattr(train_result, "checkpoint", None)
+    return {
+        "train.model_name": getattr(train_result, "model_name", None),
+        "train.epochs_completed": getattr(train_result, "epochs_completed", None),
+        "train.best_epoch": getattr(train_result, "best_epoch", None),
+        "train.checkpoint_path": getattr(checkpoint, "path", None),
+    }
+
+
+def _training_result_artifacts(train_result: Any) -> list[Path]:
+    artifacts: list[Path] = []
+    checkpoint = getattr(train_result, "checkpoint", None)
+    checkpoint_path = Path(getattr(checkpoint, "path", "")) if getattr(checkpoint, "path", None) else None
+    if checkpoint_path is not None:
+        artifacts.append(checkpoint_path)
+    output_dir = checkpoint_path.parent if checkpoint_path is not None else None
+    for raw in getattr(train_result, "artifact_paths", []) or []:
+        artifacts.append(Path(raw))
+    if output_dir is not None:
+        for name in TRAINING_RESULT_ARTIFACT_NAMES:
+            artifacts.append(output_dir / name)
+    seen: set[str] = set()
+    result: list[Path] = []
+    for path in artifacts:
+        key = str(path)
+        if key not in seen and path.exists() and path.is_file():
+            seen.add(key)
+            result.append(path)
+    return result
 
 
 def mlflow_tuning_metadata(params: dict[str, Any] | None) -> tuple[dict[str, str], dict[str, str]]:
@@ -902,6 +1032,7 @@ __all__ = [
     "log_metrics_to_run",
     "log_params_to_run",
     "log_pipeline_metadata",
+    "log_training_result_to_run",
     "mlflow_tuning_metadata",
     "mlflow_url_fields",
     "search_child_runs",
