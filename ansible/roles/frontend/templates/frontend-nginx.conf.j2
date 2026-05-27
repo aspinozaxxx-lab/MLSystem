@@ -97,7 +97,6 @@ server {
         proxy_set_header Accept-Encoding "";
         sub_filter '<base href="/"/>' '<base href="/minio/"/>';
         sub_filter_once on;
-        sub_filter_types text/html;
 
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
