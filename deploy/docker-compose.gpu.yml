@@ -35,6 +35,9 @@
       MINIO_IMAGES_CONSOLE_USER: ${MINIO_IMAGES_CONSOLE_USER:-mlsystem-images-reader}
       MINIO_IMAGES_CONSOLE_PASSWORD: ${MINIO_IMAGES_CONSOLE_PASSWORD:-}
       MINIO_IMAGES_CONSOLE_POLICY: ${MINIO_IMAGES_CONSOLE_POLICY:-mlsystem-images-readonly}
+      MINIO_KANOPUS_READER_USER: ${MINIO_KANOPUS_READER_USER:-kanopus-reader}
+      MINIO_KANOPUS_READER_POLICY: ${MINIO_KANOPUS_READER_POLICY:-kanopus-reader-images-access}
+      MINIO_KANOPUS_READER_LEGACY_POLICY: ${MINIO_KANOPUS_READER_LEGACY_POLICY:-kanopus-reader-readonly}
     entrypoint: /bin/sh
     command:
     - -lc
@@ -80,6 +83,68 @@
         mc admin user add local "$${MINIO_IMAGES_CONSOLE_USER}" "$${MINIO_IMAGES_CONSOLE_PASSWORD}" >/dev/null 2>&1 || true
         mc admin user enable local "$${MINIO_IMAGES_CONSOLE_USER}" >/dev/null 2>&1 || true
         mc admin policy attach local "$${MINIO_IMAGES_CONSOLE_POLICY}" --user "$${MINIO_IMAGES_CONSOLE_USER}" >/dev/null 2>&1 || true
+      fi
+      cat > /tmp/kanopus-reader-images-access.json <<EOF
+      {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": ["s3:ListAllMyBuckets"],
+            "Resource": ["arn:aws:s3:::*"]
+          },
+          {
+            "Effect": "Allow",
+            "Action": ["s3:GetBucketLocation"],
+            "Resource": ["arn:aws:s3:::$${MLSYSTEM_BUCKET}"]
+          },
+          {
+            "Effect": "Allow",
+            "Action": ["s3:ListBucket", "s3:ListBucketMultipartUploads"],
+            "Resource": ["arn:aws:s3:::$${MLSYSTEM_BUCKET}"],
+            "Condition": {
+              "StringLike": {
+                "s3:prefix": [
+                  "",
+                  "images",
+                  "images/",
+                  "images/kanopus",
+                  "images/kanopus/",
+                  "images/kanopus/*",
+                  "images/incoming",
+                  "images/incoming/",
+                  "images/incoming/*"
+                ]
+              }
+            }
+          },
+          {
+            "Effect": "Allow",
+            "Action": ["s3:GetObject"],
+            "Resource": [
+              "arn:aws:s3:::$${MLSYSTEM_BUCKET}/images/kanopus/*",
+              "arn:aws:s3:::$${MLSYSTEM_BUCKET}/images/incoming/*"
+            ]
+          },
+          {
+            "Effect": "Allow",
+            "Action": [
+              "s3:PutObject",
+              "s3:DeleteObject",
+              "s3:AbortMultipartUpload",
+              "s3:ListMultipartUploadParts"
+            ],
+            "Resource": ["arn:aws:s3:::$${MLSYSTEM_BUCKET}/images/incoming/*"]
+          }
+        ]
+      }
+      EOF
+      if mc admin user info local "$${MINIO_KANOPUS_READER_USER}" >/dev/null 2>&1; then
+        mc admin policy detach local "$${MINIO_KANOPUS_READER_LEGACY_POLICY}" --user "$${MINIO_KANOPUS_READER_USER}" >/dev/null 2>&1 || true
+        mc admin policy detach local "$${MINIO_KANOPUS_READER_POLICY}" --user "$${MINIO_KANOPUS_READER_USER}" >/dev/null 2>&1 || true
+        mc admin policy rm local "$${MINIO_KANOPUS_READER_POLICY}" >/dev/null 2>&1 || true
+        mc admin policy create local "$${MINIO_KANOPUS_READER_POLICY}" /tmp/kanopus-reader-images-access.json >/dev/null
+        mc admin policy attach local "$${MINIO_KANOPUS_READER_POLICY}" --user "$${MINIO_KANOPUS_READER_USER}" >/dev/null
       fi
     networks:
     - mlsystem-gpu

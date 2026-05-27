@@ -80,13 +80,10 @@ server {
     }
 
     location = /minio {
-        auth_request /auth/proxy-check;
         return 301 /minio/;
     }
 
     location /minio/ {
-        auth_request /auth/proxy-check;
-        auth_request_set $auth_user $upstream_http_x_remote_user;
         set $minio_console_upstream http://minio:{{ mlsystem_gpu_minio_console_port | default(9001) }};
         rewrite ^/minio/(.*)$ /$1 break;
 
@@ -104,8 +101,6 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header X-Forwarded-Host $host;
         proxy_set_header X-Forwarded-Prefix /minio;
-        proxy_set_header X-Remote-User $auth_user;
-        proxy_set_header X-MLSystem-User $auth_user;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $connection_upgrade;
 

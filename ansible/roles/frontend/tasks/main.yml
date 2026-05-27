@@ -30,6 +30,9 @@
     minio_images_console_user_resolved: "{{ lookup('env', 'MINIO_IMAGES_CONSOLE_USER') | default('', true) or (frontend_existing_env | default({})).get('MINIO_IMAGES_CONSOLE_USER', mlsystem_gpu_minio_images_console_user) }}"
     minio_images_console_password_resolved: "{{ lookup('env', 'MINIO_IMAGES_CONSOLE_PASSWORD') | default('', true) or (frontend_existing_env | default({})).get('MINIO_IMAGES_CONSOLE_PASSWORD', lookup('password', '/dev/null length=32 chars=ascii_letters,digits')) }}"
     minio_images_console_policy_resolved: "{{ (frontend_existing_env | default({})).get('MINIO_IMAGES_CONSOLE_POLICY', mlsystem_gpu_minio_images_console_policy) }}"
+    kanopus_reader_user_resolved: "{{ (frontend_existing_env | default({})).get('MINIO_KANOPUS_READER_USER', mlsystem_gpu_minio_kanopus_reader_user) }}"
+    kanopus_reader_policy_resolved: "{{ (frontend_existing_env | default({})).get('MINIO_KANOPUS_READER_POLICY', mlsystem_gpu_minio_kanopus_reader_policy) }}"
+    kanopus_reader_legacy_policy_resolved: "{{ (frontend_existing_env | default({})).get('MINIO_KANOPUS_READER_LEGACY_POLICY', mlsystem_gpu_minio_kanopus_reader_legacy_policy) }}"
   no_log: true
 
 - name: Ensure frontend upload directory exists
@@ -103,6 +106,9 @@
     - { key: "MINIO_IMAGES_CONSOLE_USER", value: "{{ minio_images_console_user_resolved }}" }
     - { key: "MINIO_IMAGES_CONSOLE_PASSWORD", value: "{{ minio_images_console_password_resolved }}" }
     - { key: "MINIO_IMAGES_CONSOLE_POLICY", value: "{{ minio_images_console_policy_resolved }}" }
+    - { key: "MINIO_KANOPUS_READER_USER", value: "{{ kanopus_reader_user_resolved }}" }
+    - { key: "MINIO_KANOPUS_READER_POLICY", value: "{{ kanopus_reader_policy_resolved }}" }
+    - { key: "MINIO_KANOPUS_READER_LEGACY_POLICY", value: "{{ kanopus_reader_legacy_policy_resolved }}" }
     - { key: "FRONTEND_MLFLOW_UI_URL", value: "/mlflow/" }
     - { key: "FRONTEND_MINIO_UI_URL", value: "/minio/browser/{{ frontend_bucket_resolved }}/images/" }
     - { key: "FRONTEND_RABBITMQ_MANAGEMENT_URL", value: "/rabbitmq/" }
@@ -164,6 +170,91 @@
     MINIO_IMAGES_CONSOLE_USER: "{{ minio_images_console_user_resolved }}"
     MINIO_IMAGES_CONSOLE_PASSWORD: "{{ minio_images_console_password_resolved }}"
     MINIO_IMAGES_CONSOLE_POLICY: "{{ minio_images_console_policy_resolved }}"
+  when:
+    - frontend_compose_stat.stat.exists
+    - frontend_env_stat.stat.exists
+  no_log: true
+
+- name: Ensure kanopus-reader images incoming write policy
+  ansible.builtin.shell: |
+    set -eu
+    docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}" exec -T \
+      -e MLSYSTEM_BUCKET="$MLSYSTEM_BUCKET" \
+      -e MINIO_KANOPUS_READER_USER="$MINIO_KANOPUS_READER_USER" \
+      -e MINIO_KANOPUS_READER_POLICY="$MINIO_KANOPUS_READER_POLICY" \
+      -e MINIO_KANOPUS_READER_LEGACY_POLICY="$MINIO_KANOPUS_READER_LEGACY_POLICY" \
+      minio sh -s <<'MINIO_SCRIPT'
+    set -eu
+    mc alias set local http://127.0.0.1:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null
+    cat > /tmp/kanopus-reader-images-access.json <<EOF
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": ["s3:ListAllMyBuckets"],
+          "Resource": ["arn:aws:s3:::*"]
+        },
+        {
+          "Effect": "Allow",
+          "Action": ["s3:GetBucketLocation"],
+          "Resource": ["arn:aws:s3:::${MLSYSTEM_BUCKET}"]
+        },
+        {
+          "Effect": "Allow",
+          "Action": ["s3:ListBucket", "s3:ListBucketMultipartUploads"],
+          "Resource": ["arn:aws:s3:::${MLSYSTEM_BUCKET}"],
+          "Condition": {
+            "StringLike": {
+              "s3:prefix": [
+                "",
+                "images",
+                "images/",
+                "images/kanopus",
+                "images/kanopus/",
+                "images/kanopus/*",
+                "images/incoming",
+                "images/incoming/",
+                "images/incoming/*"
+              ]
+            }
+          }
+        },
+        {
+          "Effect": "Allow",
+          "Action": ["s3:GetObject"],
+          "Resource": [
+            "arn:aws:s3:::${MLSYSTEM_BUCKET}/images/kanopus/*",
+            "arn:aws:s3:::${MLSYSTEM_BUCKET}/images/incoming/*"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "s3:PutObject",
+            "s3:DeleteObject",
+            "s3:AbortMultipartUpload",
+            "s3:ListMultipartUploadParts"
+          ],
+          "Resource": ["arn:aws:s3:::${MLSYSTEM_BUCKET}/images/incoming/*"]
+        }
+      ]
+    }
+    EOF
+    mc admin user info local "$MINIO_KANOPUS_READER_USER" >/dev/null
+    mc admin policy detach local "$MINIO_KANOPUS_READER_LEGACY_POLICY" --user "$MINIO_KANOPUS_READER_USER" >/dev/null 2>&1 || true
+    mc admin policy detach local "$MINIO_KANOPUS_READER_POLICY" --user "$MINIO_KANOPUS_READER_USER" >/dev/null 2>&1 || true
+    mc admin policy rm local "$MINIO_KANOPUS_READER_POLICY" >/dev/null 2>&1 || true
+    mc admin policy create local "$MINIO_KANOPUS_READER_POLICY" /tmp/kanopus-reader-images-access.json >/dev/null
+    mc admin policy attach local "$MINIO_KANOPUS_READER_POLICY" --user "$MINIO_KANOPUS_READER_USER" >/dev/null
+    MINIO_SCRIPT
+  args:
+    executable: /bin/bash
+  environment:
+    MLSYSTEM_BUCKET: "{{ frontend_bucket_resolved }}"
+    MINIO_KANOPUS_READER_USER: "{{ kanopus_reader_user_resolved }}"
+    MINIO_KANOPUS_READER_POLICY: "{{ kanopus_reader_policy_resolved }}"
+    MINIO_KANOPUS_READER_LEGACY_POLICY: "{{ kanopus_reader_legacy_policy_resolved }}"
   when:
     - frontend_compose_stat.stat.exists
     - frontend_env_stat.stat.exists

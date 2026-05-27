@@ -10,7 +10,7 @@ Public entrypoint:
 - `http://31.192.104.147/login`
 - `http://31.192.104.147/health`
 
-Admin UI routes are exposed through the same frontend session:
+Admin UI routes are exposed through the same frontend session, except MinIO Console which uses MinIO's own login:
 
 - `http://31.192.104.147/mlflow/`
 - `http://31.192.104.147/rabbitmq/`
@@ -61,7 +61,7 @@ Grafana is served under `/grafana/` with auth-proxy mode. Nginx passes `X-MLSyst
 ## MinIO
 
 Native MinIO Console SSO is not enabled because the current frontend login is a simple session and not an OIDC/LDAP identity provider.
-MinIO Console is exposed behind the same frontend `auth_request` gateway:
+MinIO Console is exposed under the main domain without frontend session auth:
 
 ```text
 GET /minio/
@@ -74,6 +74,8 @@ The home page opens the Console directly on:
 ```
 
 Users sign in to MinIO Console with a dedicated read-only MinIO user. The policy allows only `GetBucketLocation`, `ListBucket` for `images/`, and `GetObject` for `images/*` in the `mlsystems` bucket. It does not grant write/delete permissions and does not grant access to `mlflow-artifacts`, `models`, `layouts`, `reports`, `pseudolabels`, or other prefixes. MinIO root credentials are never rendered into HTML, JavaScript, docs, or URLs.
+
+The `kanopus-reader` MinIO user has a separate images policy: read access to `mlsystems/images/kanopus/*` and read/write/delete access only to `mlsystems/images/incoming/*`.
 
 ## Home Page
 

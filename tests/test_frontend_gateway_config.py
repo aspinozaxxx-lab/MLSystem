@@ -12,7 +12,6 @@ class FrontendGatewayConfigTests(unittest.TestCase):
         for location in [
             "location /mlflow/",
             "location /rabbitmq/",
-            "location /minio/",
             "location /grafana/",
             "location /prometheus/",
         ]:
@@ -25,6 +24,9 @@ class FrontendGatewayConfigTests(unittest.TestCase):
         self.assertIn('sub_filter \'<base href="/"/>\' \'<base href="/minio/"/>\';', text)
         self.assertIn("proxy_set_header X-Forwarded-Prefix /grafana", text)
         self.assertIn("proxy_set_header X-Forwarded-Prefix /prometheus", text)
+        minio_block = text.split("location /minio/ {", 1)[1].split("location /grafana/", 1)[0]
+        self.assertNotIn("auth_request /auth/proxy-check;", minio_block)
+        self.assertNotIn("X-MLSystem-User", minio_block)
 
     def test_compose_binds_admin_raw_ports_to_localhost(self) -> None:
         compose = yaml.safe_load(Path("deploy/docker-compose.gpu.yml").read_text(encoding="utf-8"))
@@ -34,6 +36,8 @@ class FrontendGatewayConfigTests(unittest.TestCase):
         self.assertEqual(services["minio"]["environment"]["MINIO_BROWSER_REDIRECT_URL"], "${MINIO_BROWSER_REDIRECT_URL:-http://31.192.104.147/minio/}")
         self.assertIn("MINIO_IMAGES_CONSOLE_USER", services["minio-init"]["environment"])
         self.assertIn("MINIO_IMAGES_CONSOLE_PASSWORD", services["minio-init"]["environment"])
+        self.assertIn("MINIO_KANOPUS_READER_USER", services["minio-init"]["environment"])
+        self.assertIn("MINIO_KANOPUS_READER_POLICY", services["minio-init"]["environment"])
         self.assertIn("${RABBITMQ_MANAGEMENT_LISTEN_HOST:-127.0.0.1}:${RABBITMQ_MANAGEMENT_PORT:-15672}:15672", services["rabbitmq"]["ports"])
         self.assertIn("${GRAFANA_LISTEN_HOST:-127.0.0.1}:${GRAFANA_PORT:-3000}:3000", services["grafana"]["ports"])
         self.assertIn("${PROMETHEUS_LISTEN_HOST:-127.0.0.1}:${PROMETHEUS_PORT:-9090}:9090", services["prometheus"]["ports"])

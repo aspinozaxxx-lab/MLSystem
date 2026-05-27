@@ -2,7 +2,9 @@
 
 ## 2026-05-27
 
-- Glavnaya ssylka MinIO perevedena s `/minio-browser/` na polnuyu MinIO Console pod `/minio/browser/mlsystems/images/`, zashchishchennuyu frontend `auth_request`.
+- MinIO Console `/minio/` sdelana dostupnoy bez frontend-login; vhod ostaetsya po MinIO credentials.
+- `kanopus-reader` poluchil read/write/delete tolko dlya `mlsystems/images/incoming/*` s sohraneniem read dostupa k `mlsystems/images/kanopus/*`.
+- Glavnaya ssylka MinIO perevedena s `/minio-browser/` na polnuyu MinIO Console pod `/minio/browser/mlsystems/images/`.
 - Dobavlen server-side MinIO user/policy `mlsystem-images-readonly` dlya read-only dostupa tolko k `mlsystems/images/*` bez write/delete i bez root credentials v browser.
 
 ## 2026-05-15

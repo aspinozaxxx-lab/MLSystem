@@ -19,3 +19,6 @@ mlsystem_gpu_frontend_max_upload_mb: 100
 mlsystem_gpu_minio_console_port: 9001
 mlsystem_gpu_minio_images_console_user: mlsystem-images-reader
 mlsystem_gpu_minio_images_console_policy: mlsystem-images-readonly
+mlsystem_gpu_minio_kanopus_reader_user: kanopus-reader
+mlsystem_gpu_minio_kanopus_reader_policy: kanopus-reader-images-access
+mlsystem_gpu_minio_kanopus_reader_legacy_policy: kanopus-reader-readonly
