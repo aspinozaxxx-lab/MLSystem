@@ -6,6 +6,7 @@
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BROWSER_REDIRECT_URL: ${MINIO_BROWSER_REDIRECT_URL:-http://31.192.104.147/minio/}
     ports:
     - ${MINIO_API_PORT:-9000}:9000
     - ${MINIO_CONSOLE_LISTEN_HOST:-127.0.0.1}:${MINIO_CONSOLE_PORT:-9001}:9001
@@ -31,15 +32,55 @@
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
       MLSYSTEM_BUCKET: ${MLSYSTEM_BUCKET:-mlsystems}
       MLFLOW_BUCKET: ${MLFLOW_BUCKET:-mlflow-artifacts}
+      MINIO_IMAGES_CONSOLE_USER: ${MINIO_IMAGES_CONSOLE_USER:-mlsystem-images-reader}
+      MINIO_IMAGES_CONSOLE_PASSWORD: ${MINIO_IMAGES_CONSOLE_PASSWORD:-}
+      MINIO_IMAGES_CONSOLE_POLICY: ${MINIO_IMAGES_CONSOLE_POLICY:-mlsystem-images-readonly}
     entrypoint: /bin/sh
     command:
     - -lc
-    - "set -eu\nmc alias set local http://minio:9000 \"$${MINIO_ROOT_USER}\" \"$${MINIO_ROOT_PASSWORD}\"\
-      \nmc mb -p \"local/$${MLSYSTEM_BUCKET}\" || true\nmc mb -p \"local/$${MLFLOW_BUCKET}\"\
-      \ || true\nfor p in \\\n  images images/incoming images/kanopus layouts layouts/deforest\
-      \ datasets cache \\\n  models models/checkpoints models/triton predictions pseudolabels\
-      \ reports experiments system uploads; do\n  printf 'MLSystem S3 prefix %s\\\
-      n' \"$${p}\" | mc pipe \"local/$${MLSYSTEM_BUCKET}/$${p}/.keep\"\ndone\n"
+    - |
+      set -eu
+      mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"
+      mc mb -p "local/$${MLSYSTEM_BUCKET}" || true
+      mc mb -p "local/$${MLFLOW_BUCKET}" || true
+      for p in \
+        images images/incoming images/kanopus layouts layouts/deforest datasets cache \
+        models models/checkpoints models/triton predictions pseudolabels reports experiments system uploads; do
+        printf 'MLSystem S3 prefix %s\n' "$${p}" | mc pipe "local/$${MLSYSTEM_BUCKET}/$${p}/.keep"
+      done
+      cat > /tmp/mlsystem-images-readonly.json <<EOF
+      {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": ["s3:GetBucketLocation"],
+            "Resource": ["arn:aws:s3:::$${MLSYSTEM_BUCKET}"]
+          },
+          {
+            "Effect": "Allow",
+            "Action": ["s3:ListBucket"],
+            "Resource": ["arn:aws:s3:::$${MLSYSTEM_BUCKET}"],
+            "Condition": {
+              "StringLike": {
+                "s3:prefix": ["images", "images/", "images/*"]
+              }
+            }
+          },
+          {
+            "Effect": "Allow",
+            "Action": ["s3:GetObject"],
+            "Resource": ["arn:aws:s3:::$${MLSYSTEM_BUCKET}/images/*"]
+          }
+        ]
+      }
+      EOF
+      if [ -n "$${MINIO_IMAGES_CONSOLE_PASSWORD:-}" ]; then
+        mc admin policy create local "$${MINIO_IMAGES_CONSOLE_POLICY}" /tmp/mlsystem-images-readonly.json >/dev/null 2>&1 || true
+        mc admin user add local "$${MINIO_IMAGES_CONSOLE_USER}" "$${MINIO_IMAGES_CONSOLE_PASSWORD}" >/dev/null 2>&1 || true
+        mc admin user enable local "$${MINIO_IMAGES_CONSOLE_USER}" >/dev/null
+        mc admin policy attach local "$${MINIO_IMAGES_CONSOLE_POLICY}" --user "$${MINIO_IMAGES_CONSOLE_USER}" >/dev/null
+      fi
     networks:
     - mlsystem-gpu
   rabbitmq:

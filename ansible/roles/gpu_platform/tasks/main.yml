@@ -19,6 +19,8 @@
   ansible.builtin.set_fact:
     mlsystem_gpu_minio_root_user_resolved: "{{ lookup('env', 'MINIO_ROOT_USER') | default('', true) or (gpu_existing_env | default({})).get('MINIO_ROOT_USER', 'mlsystem') }}"
     mlsystem_gpu_minio_root_password_resolved: "{{ lookup('env', 'MINIO_ROOT_PASSWORD') | default('', true) or (gpu_existing_env | default({})).get('MINIO_ROOT_PASSWORD', lookup('password', '/dev/null length=32 chars=ascii_letters,digits')) }}"
+    mlsystem_gpu_minio_images_console_user_resolved: "{{ lookup('env', 'MINIO_IMAGES_CONSOLE_USER') | default('', true) or (gpu_existing_env | default({})).get('MINIO_IMAGES_CONSOLE_USER', mlsystem_gpu_minio_images_console_user) }}"
+    mlsystem_gpu_minio_images_console_password_resolved: "{{ lookup('env', 'MINIO_IMAGES_CONSOLE_PASSWORD') | default('', true) or (gpu_existing_env | default({})).get('MINIO_IMAGES_CONSOLE_PASSWORD', lookup('password', '/dev/null length=32 chars=ascii_letters,digits')) }}"
     mlsystem_gpu_mlflow_db_password_resolved: "{{ lookup('env', 'MLFLOW_DB_PASSWORD') | default('', true) or (gpu_existing_env | default({})).get('MLFLOW_DB_PASSWORD', lookup('password', '/dev/null length=32 chars=ascii_letters,digits')) }}"
     mlsystem_gpu_api_token_resolved: "{{ lookup('env', 'MLSYSTEM_API_TOKEN') | default('', true) or (gpu_existing_env | default({})).get('MLSYSTEM_API_TOKEN', lookup('password', '/dev/null length=40 chars=ascii_letters,digits')) }}"
     mlsystem_gpu_rabbitmq_user_resolved: "{{ lookup('env', 'RABBITMQ_DEFAULT_USER') | default('', true) or (gpu_existing_env | default({})).get('RABBITMQ_DEFAULT_USER', mlsystem_gpu_rabbitmq_user) }}"
@@ -395,7 +397,7 @@
   ansible.builtin.debug:
     msg:
       mlflow: "{{ mlsystem_gpu_frontend_public_url }}/mlflow/"
-      minio_artifacts: "{{ mlsystem_gpu_frontend_public_url }}/minio-browser/"
+      minio_console: "{{ mlsystem_gpu_frontend_public_url }}/minio/browser/{{ mlsystem_gpu_bucket }}/images/"
       rabbitmq: "{{ mlsystem_gpu_frontend_public_url }}/rabbitmq/"
       grafana: "{{ mlsystem_gpu_frontend_public_url }}/grafana/"
       prometheus: "{{ mlsystem_gpu_frontend_public_url }}/prometheus/"

@@ -14,7 +14,7 @@ Admin UI routes are exposed through the same frontend session:
 
 - `http://31.192.104.147/mlflow/`
 - `http://31.192.104.147/rabbitmq/`
-- `http://31.192.104.147/minio-browser/`
+- `http://31.192.104.147/minio/browser/mlsystems/images/`
 - `http://31.192.104.147/grafana/`
 - `http://31.192.104.147/prometheus/`
 
@@ -60,20 +60,27 @@ Grafana is served under `/grafana/` with auth-proxy mode. Nginx passes `X-MLSyst
 
 ## MinIO
 
-Native MinIO Console SSO is not enabled because the current frontend login is a simple session and not an OIDC/LDAP identity provider. The system therefore exposes a safe alternative:
+Native MinIO Console SSO is not enabled because the current frontend login is a simple session and not an OIDC/LDAP identity provider.
+MinIO Console is exposed behind the same frontend `auth_request` gateway:
 
 ```text
-GET /minio-browser/
+GET /minio/
 ```
 
-This route is frontend-authenticated and performs read-only S3 listing server-side with credentials from container environment. MinIO root credentials are never sent to the browser.
+The home page opens the Console directly on:
+
+```text
+/minio/browser/mlsystems/images/
+```
+
+Users sign in to MinIO Console with a dedicated read-only MinIO user. The policy allows only `GetBucketLocation`, `ListBucket` for `images/`, and `GetObject` for `images/*` in the `mlsystems` bucket. It does not grant write/delete permissions and does not grant access to `mlflow-artifacts`, `models`, `layouts`, `reports`, `pseudolabels`, or other prefixes. MinIO root credentials are never rendered into HTML, JavaScript, docs, or URLs.
 
 ## Home Page
 
 The home page includes active cards:
 
 - `MLflow`
-- `MinIO artifacts`
+- `MinIO Console`
 - `Очереди RabbitMQ`
 - `Grafana`
 - `Prometheus`
@@ -129,7 +136,7 @@ Uploaded runtime data is outside git:
 - `INFERENCE_ENGINE_API_URL`
 - `INFERENCE_ENGINE_API_TOKEN`
 - `FRONTEND_MLFLOW_UI_URL=/mlflow/`
-- `FRONTEND_MINIO_UI_URL=/minio-browser/`
+- `FRONTEND_MINIO_UI_URL=/minio/browser/mlsystems/images/`
 - `FRONTEND_RABBITMQ_MANAGEMENT_URL=/rabbitmq/`
 - `FRONTEND_GRAFANA_URL=/grafana/`
 - `FRONTEND_PROMETHEUS_URL=/prometheus/`

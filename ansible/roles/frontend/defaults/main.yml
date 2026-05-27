@@ -16,3 +16,6 @@ mlsystem_gpu_frontend_default_images_uri: "s3://mlsystems/images/"
 mlsystem_gpu_frontend_default_layout_uri: "s3://mlsystems/frontend-checks/"
 mlsystem_gpu_frontend_default_split_strategy: object_balanced
 mlsystem_gpu_frontend_max_upload_mb: 100
+mlsystem_gpu_minio_console_port: 9001
+mlsystem_gpu_minio_images_console_user: mlsystem-images-reader
+mlsystem_gpu_minio_images_console_policy: mlsystem-images-readonly

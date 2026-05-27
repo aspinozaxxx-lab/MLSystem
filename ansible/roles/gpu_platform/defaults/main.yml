@@ -12,6 +12,8 @@ mlsystem_gpu_mlflow_port: 5000
 mlsystem_gpu_minio_api_port: 9000
 mlsystem_gpu_minio_console_port: 9001
 mlsystem_gpu_minio_console_listen_host: "127.0.0.1"
+mlsystem_gpu_minio_images_console_user: mlsystem-images-reader
+mlsystem_gpu_minio_images_console_policy: mlsystem-images-readonly
 mlsystem_gpu_triton_http_port: 8000
 mlsystem_gpu_triton_grpc_port: 8001
 mlsystem_gpu_triton_metrics_port: 8002

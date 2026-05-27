@@ -615,7 +615,7 @@ def _frontend_gateway_checks(env: dict[str, str]) -> dict[str, Any]:
         "without_session": {},
         "with_session": {},
     }
-    for path in ["/mlflow/", "/rabbitmq/", "/minio-browser/"]:
+    for path in ["/mlflow/", "/rabbitmq/", "/minio/"]:
         result["without_session"][path] = _curl_status(f"http://127.0.0.1{path}")
     if not user or not password:
         result["with_session"] = {"status": "skipped", "reason": "frontend credentials are not available in env file"}
@@ -632,7 +632,7 @@ def _frontend_gateway_checks(env: dict[str, str]) -> dict[str, Any]:
     )
     result["login_status"] = _run_text(login_cmd, check=False).strip()
     result["proxy_check"] = _curl_status("http://127.0.0.1/auth/proxy-check", cookie=cookie)
-    for path in ["/", "/mlflow/", "/rabbitmq/", "/minio-browser/"]:
+    for path in ["/", "/mlflow/", "/rabbitmq/", "/minio/"]:
         result["with_session"][path] = _curl_status(f"http://127.0.0.1{path}", cookie=cookie)
     _run_text(f"rm -f {shlex.quote(cookie)}", check=False)
     return result

@@ -12,7 +12,7 @@ class FrontendGatewayConfigTests(unittest.TestCase):
         for location in [
             "location /mlflow/",
             "location /rabbitmq/",
-            "location /minio-browser/",
+            "location /minio/",
             "location /grafana/",
             "location /prometheus/",
         ]:
@@ -21,6 +21,8 @@ class FrontendGatewayConfigTests(unittest.TestCase):
         self.assertIn('proxy_set_header Authorization "Basic {{ frontend_rabbitmq_proxy_basic_auth }}"', text)
         self.assertIn("proxy_set_header X-Forwarded-Prefix /mlflow", text)
         self.assertIn("proxy_set_header X-Forwarded-Prefix /rabbitmq", text)
+        self.assertIn("proxy_set_header X-Forwarded-Prefix /minio", text)
+        self.assertIn('sub_filter \'<base href="/"/>\' \'<base href="/minio/"/>\';', text)
         self.assertIn("proxy_set_header X-Forwarded-Prefix /grafana", text)
         self.assertIn("proxy_set_header X-Forwarded-Prefix /prometheus", text)
 
@@ -29,6 +31,9 @@ class FrontendGatewayConfigTests(unittest.TestCase):
         services = compose["services"]
         self.assertIn("${MLFLOW_LISTEN_HOST:-127.0.0.1}:${MLFLOW_PORT:-5000}:5000", services["mlflow"]["ports"])
         self.assertIn("${MINIO_CONSOLE_LISTEN_HOST:-127.0.0.1}:${MINIO_CONSOLE_PORT:-9001}:9001", services["minio"]["ports"])
+        self.assertEqual(services["minio"]["environment"]["MINIO_BROWSER_REDIRECT_URL"], "${MINIO_BROWSER_REDIRECT_URL:-http://31.192.104.147/minio/}")
+        self.assertIn("MINIO_IMAGES_CONSOLE_USER", services["minio-init"]["environment"])
+        self.assertIn("MINIO_IMAGES_CONSOLE_PASSWORD", services["minio-init"]["environment"])
         self.assertIn("${RABBITMQ_MANAGEMENT_LISTEN_HOST:-127.0.0.1}:${RABBITMQ_MANAGEMENT_PORT:-15672}:15672", services["rabbitmq"]["ports"])
         self.assertIn("${GRAFANA_LISTEN_HOST:-127.0.0.1}:${GRAFANA_PORT:-3000}:3000", services["grafana"]["ports"])
         self.assertIn("${PROMETHEUS_LISTEN_HOST:-127.0.0.1}:${PROMETHEUS_PORT:-9090}:9090", services["prometheus"]["ports"])

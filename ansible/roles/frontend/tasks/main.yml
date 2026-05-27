@@ -26,6 +26,10 @@
     frontend_password_resolved: "{{ lookup('env', 'MLSYSTEM_FRONTEND_PASSWORD') | default('', true) or (frontend_existing_env | default({})).get('MLSYSTEM_FRONTEND_PASSWORD', mlsystem_gpu_frontend_default_password) }}"
     frontend_session_secret_resolved: "{{ lookup('env', 'MLSYSTEM_FRONTEND_SESSION_SECRET') | default('', true) or (frontend_existing_env | default({})).get('MLSYSTEM_FRONTEND_SESSION_SECRET', lookup('password', '/dev/null length=48 chars=ascii_letters,digits')) }}"
     frontend_rabbitmq_proxy_basic_auth: "{{ (frontend_existing_env | default({})).get('RABBITMQ_MANAGEMENT_PROXY_AUTH', '') or (((frontend_existing_env | default({})).get('RABBITMQ_DEFAULT_USER', 'mlsystem') ~ ':' ~ (frontend_existing_env | default({})).get('RABBITMQ_DEFAULT_PASS', '')) | b64encode) }}"
+    frontend_bucket_resolved: "{{ (frontend_existing_env | default({})).get('MLSYSTEM_BUCKET', 'mlsystems') }}"
+    minio_images_console_user_resolved: "{{ lookup('env', 'MINIO_IMAGES_CONSOLE_USER') | default('', true) or (frontend_existing_env | default({})).get('MINIO_IMAGES_CONSOLE_USER', mlsystem_gpu_minio_images_console_user) }}"
+    minio_images_console_password_resolved: "{{ lookup('env', 'MINIO_IMAGES_CONSOLE_PASSWORD') | default('', true) or (frontend_existing_env | default({})).get('MINIO_IMAGES_CONSOLE_PASSWORD', lookup('password', '/dev/null length=32 chars=ascii_letters,digits')) }}"
+    minio_images_console_policy_resolved: "{{ (frontend_existing_env | default({})).get('MINIO_IMAGES_CONSOLE_POLICY', mlsystem_gpu_minio_images_console_policy) }}"
   no_log: true
 
 - name: Ensure frontend upload directory exists
@@ -95,8 +99,12 @@
     - { key: "MLSYSTEM_FRONTEND_DEFAULT_SPLIT_STRATEGY", value: "{{ mlsystem_gpu_frontend_default_split_strategy }}" }
     - { key: "MLSYSTEM_FRONTEND_MAX_UPLOAD_MB", value: "{{ mlsystem_gpu_frontend_max_upload_mb }}" }
     - { key: "MLSYSTEM_FRONTEND_S3_PREFIX", value: "frontend-checks" }
+    - { key: "MINIO_BROWSER_REDIRECT_URL", value: "{{ mlsystem_gpu_frontend_public_url }}/minio/" }
+    - { key: "MINIO_IMAGES_CONSOLE_USER", value: "{{ minio_images_console_user_resolved }}" }
+    - { key: "MINIO_IMAGES_CONSOLE_PASSWORD", value: "{{ minio_images_console_password_resolved }}" }
+    - { key: "MINIO_IMAGES_CONSOLE_POLICY", value: "{{ minio_images_console_policy_resolved }}" }
     - { key: "FRONTEND_MLFLOW_UI_URL", value: "/mlflow/" }
-    - { key: "FRONTEND_MINIO_UI_URL", value: "/minio-browser/" }
+    - { key: "FRONTEND_MINIO_UI_URL", value: "/minio/browser/{{ frontend_bucket_resolved }}/images/" }
     - { key: "FRONTEND_RABBITMQ_MANAGEMENT_URL", value: "/rabbitmq/" }
     - { key: "FRONTEND_GRAFANA_URL", value: "/grafana/" }
     - { key: "FRONTEND_PROMETHEUS_URL", value: "/prometheus/" }
@@ -104,6 +112,61 @@
     - { key: "FRONTEND_GRAFANA_MAIN_DASHBOARD_URL", value: "/grafana/d/mlsystem-overview/mlsystem-overview?orgId=1&kiosk" }
     - { key: "RABBITMQ_MANAGEMENT_PUBLIC_URL", value: "/rabbitmq/" }
   when: frontend_env_stat.stat.exists
+  no_log: true
+
+- name: Ensure MinIO Console images reader policy
+  ansible.builtin.shell: |
+    set -eu
+    docker compose --env-file "{{ mlsystem_gpu_env_path }}" -f "{{ mlsystem_gpu_compose_path }}" exec -T \
+      -e MLSYSTEM_BUCKET="$MLSYSTEM_BUCKET" \
+      -e MINIO_IMAGES_CONSOLE_USER="$MINIO_IMAGES_CONSOLE_USER" \
+      -e MINIO_IMAGES_CONSOLE_PASSWORD="$MINIO_IMAGES_CONSOLE_PASSWORD" \
+      -e MINIO_IMAGES_CONSOLE_POLICY="$MINIO_IMAGES_CONSOLE_POLICY" \
+      minio sh -s <<'MINIO_SCRIPT'
+    set -eu
+    mc alias set local http://127.0.0.1:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null
+    cat > /tmp/mlsystem-images-readonly.json <<EOF
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": ["s3:GetBucketLocation"],
+          "Resource": ["arn:aws:s3:::${MLSYSTEM_BUCKET}"]
+        },
+        {
+          "Effect": "Allow",
+          "Action": ["s3:ListBucket"],
+          "Resource": ["arn:aws:s3:::${MLSYSTEM_BUCKET}"],
+          "Condition": {
+            "StringLike": {
+              "s3:prefix": ["images", "images/", "images/*"]
+            }
+          }
+        },
+        {
+          "Effect": "Allow",
+          "Action": ["s3:GetObject"],
+          "Resource": ["arn:aws:s3:::${MLSYSTEM_BUCKET}/images/*"]
+        }
+      ]
+    }
+    EOF
+    mc admin policy create local "$MINIO_IMAGES_CONSOLE_POLICY" /tmp/mlsystem-images-readonly.json >/dev/null 2>&1 || true
+    mc admin user add local "$MINIO_IMAGES_CONSOLE_USER" "$MINIO_IMAGES_CONSOLE_PASSWORD" >/dev/null 2>&1 || true
+    mc admin user enable local "$MINIO_IMAGES_CONSOLE_USER" >/dev/null
+    mc admin policy attach local "$MINIO_IMAGES_CONSOLE_POLICY" --user "$MINIO_IMAGES_CONSOLE_USER" >/dev/null
+    MINIO_SCRIPT
+  args:
+    executable: /bin/bash
+  environment:
+    MLSYSTEM_BUCKET: "{{ frontend_bucket_resolved }}"
+    MINIO_IMAGES_CONSOLE_USER: "{{ minio_images_console_user_resolved }}"
+    MINIO_IMAGES_CONSOLE_PASSWORD: "{{ minio_images_console_password_resolved }}"
+    MINIO_IMAGES_CONSOLE_POLICY: "{{ minio_images_console_policy_resolved }}"
+  when:
+    - frontend_compose_stat.stat.exists
+    - frontend_env_stat.stat.exists
   no_log: true
 
 - name: Deploy MLSystem frontend container

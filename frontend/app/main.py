@@ -188,19 +188,6 @@ def create_app(config: FrontendConfig | None = None) -> FastAPI:
     def training_tuning_status(_user: str = Depends(require_user)) -> dict[str, Any]:
         return read_tuning_status(config.training_tuning_root)
 
-    @app.get("/minio-browser/", response_class=HTMLResponse)
-    def minio_browser(request: Request, bucket: str = "", prefix: str = "", _user: str = Depends(require_user)) -> HTMLResponse:
-        listing = _minio_listing(config, bucket=bucket.strip(), prefix=prefix.strip())
-        return _template_response(
-            request,
-            "minio_browser.html",
-            {
-                "bucket": bucket.strip(),
-                "prefix": prefix.strip(),
-                "listing": listing,
-            },
-        )
-
     @app.post("/api/annotation-check")
     async def start_annotation_check(
         request: Request,
@@ -378,38 +365,6 @@ def _service_status_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if payload.get("status") == "failed":
         return payload
     return {"status": "ok", "payload": payload}
-
-
-def _minio_listing(config: FrontendConfig, *, bucket: str, prefix: str) -> dict[str, Any]:
-    if not (config.aws_access_key_id and config.aws_secret_access_key):
-        return {"status": "failed", "error": "S3 credentials are not configured for the frontend backend."}
-    try:
-        import boto3
-
-        client = boto3.client(
-            "s3",
-            endpoint_url=config.s3_endpoint_url,
-            aws_access_key_id=config.aws_access_key_id,
-            aws_secret_access_key=config.aws_secret_access_key,
-            region_name="us-east-1",
-        )
-        if not bucket:
-            buckets = client.list_buckets().get("Buckets") or []
-            return {"status": "ok", "buckets": [item.get("Name") for item in buckets if item.get("Name")]}
-        payload = client.list_objects_v2(Bucket=bucket, Prefix=prefix, Delimiter="/", MaxKeys=200)
-        prefixes = [item.get("Prefix") for item in payload.get("CommonPrefixes") or [] if item.get("Prefix")]
-        objects = [
-            {
-                "key": item.get("Key"),
-                "size": item.get("Size"),
-                "last_modified": item.get("LastModified").isoformat() if item.get("LastModified") else "",
-            }
-            for item in payload.get("Contents") or []
-            if item.get("Key")
-        ]
-        return {"status": "ok", "bucket": bucket, "prefix": prefix, "prefixes": prefixes, "objects": objects}
-    except Exception as exc:  # noqa: BLE001
-        return {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
 
 
 def _run_annotation_check(config: FrontendConfig, run_id: str, experiment_config: dict[str, Any]) -> None:

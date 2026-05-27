@@ -1,5 +1,10 @@
 ﻿# Changelog
 
+## 2026-05-27
+
+- Glavnaya ssylka MinIO perevedena s `/minio-browser/` na polnuyu MinIO Console pod `/minio/browser/mlsystems/images/`, zashchishchennuyu frontend `auth_request`.
+- Dobavlen server-side MinIO user/policy `mlsystem-images-readonly` dlya read-only dostupa tolko k `mlsystems/images/*` bez write/delete i bez root credentials v browser.
+
 ## 2026-05-15
 
 - Optimizirovan `tile_preparation`: dobavlen facade DataLoader path s workers/prefetch/pin_memory/persistent_workers, STRtree geometry index, `uint8_255` normalization fast path i profiling data-wait/tile-prep metrik.
