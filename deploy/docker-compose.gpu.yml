@@ -100,7 +100,7 @@
           },
           {
             "Effect": "Allow",
-            "Action": ["s3:ListBucket", "s3:ListBucketMultipartUploads"],
+            "Action": ["s3:ListBucket"],
             "Resource": ["arn:aws:s3:::$${MLSYSTEM_BUCKET}"],
             "Condition": {
               "StringLike": {
