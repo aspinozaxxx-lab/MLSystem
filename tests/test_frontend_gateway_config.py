@@ -27,6 +27,10 @@ class FrontendGatewayConfigTests(unittest.TestCase):
         minio_block = text.split("location /minio/ {", 1)[1].split("location /grafana/", 1)[0]
         self.assertNotIn("auth_request /auth/proxy-check;", minio_block)
         self.assertNotIn("X-MLSystem-User", minio_block)
+        self.assertIn("client_max_body_size 0;", minio_block)
+        self.assertIn("proxy_request_buffering off;", minio_block)
+        self.assertIn("proxy_buffering off;", minio_block)
+        self.assertIn("proxy_max_temp_file_size 0;", minio_block)
 
     def test_compose_binds_admin_raw_ports_to_localhost(self) -> None:
         compose = yaml.safe_load(Path("deploy/docker-compose.gpu.yml").read_text(encoding="utf-8"))

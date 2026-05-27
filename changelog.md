@@ -2,6 +2,7 @@
 
 ## 2026-05-27
 
+- Dlya MinIO Console `/minio/` ubrany nginx upload limit i request buffering, chtoby bolshie TIFF do 2 GB prohodili cherez Console.
 - MinIO Console `/minio/` sdelana dostupnoy bez frontend-login; vhod ostaetsya po MinIO credentials.
 - `kanopus-reader` poluchil read/write/delete tolko dlya `mlsystems/images/incoming/*` s sohraneniem read dostupa k `mlsystems/images/kanopus/*`.
 - Glavnaya ssylka MinIO perevedena s `/minio-browser/` na polnuyu MinIO Console pod `/minio/browser/mlsystems/images/`.
