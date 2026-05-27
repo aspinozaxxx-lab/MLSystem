@@ -154,8 +154,8 @@
     EOF
     mc admin policy create local "$MINIO_IMAGES_CONSOLE_POLICY" /tmp/mlsystem-images-readonly.json >/dev/null 2>&1 || true
     mc admin user add local "$MINIO_IMAGES_CONSOLE_USER" "$MINIO_IMAGES_CONSOLE_PASSWORD" >/dev/null 2>&1 || true
-    mc admin user enable local "$MINIO_IMAGES_CONSOLE_USER" >/dev/null
-    mc admin policy attach local "$MINIO_IMAGES_CONSOLE_POLICY" --user "$MINIO_IMAGES_CONSOLE_USER" >/dev/null
+    mc admin user enable local "$MINIO_IMAGES_CONSOLE_USER" >/dev/null 2>&1 || true
+    mc admin policy attach local "$MINIO_IMAGES_CONSOLE_POLICY" --user "$MINIO_IMAGES_CONSOLE_USER" >/dev/null 2>&1 || true
     MINIO_SCRIPT
   args:
     executable: /bin/bash
